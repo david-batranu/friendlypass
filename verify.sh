@@ -114,6 +114,15 @@ check "keepassxc-cli opens it with the kpxc-generated keyfile" \
     env sh -c "printf 'kp\n' | '$CLI' ls -k kf.keyx kf.kdbx"
 
 echo
+echo "== 7. GUI (kpxc-gui): headless UI tests + C++ opens a GUI-written database =="
+check "cargo test -p kpxc-gui (5 headless UI tests + image snapshots)" \
+    cargo test --release -p kpxc-gui --manifest-path "$ROOT/Cargo.toml"
+check "GUI test run writes a database purely through the GUI dialogs" \
+    cargo test --release -p kpxc-gui --manifest-path "$ROOT/Cargo.toml" --test gui write_database_for_external_verification -- --ignored
+check "keepassxc-cli opens the GUI-written database" \
+    env sh -c "printf 'gui-pass-123\n' | '$CLI' ls '$ROOT/target/gui-roundtrip.kdbx'"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

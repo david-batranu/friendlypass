@@ -1,8 +1,7 @@
 # keepassxc-rs
 
-**KeePassXC's headless core, migrated to Rust** — a clean-room reimplementation
-of `keepassxc-cli`'s functionality (the part of KeePassXC that isn't the Qt
-GUI), composing the Rust ecosystem instead of rewriting existing
+**KeePassXC, migrated to Rust** — the headless core *and* a cross-platform
+GUI, composing the Rust ecosystem instead of rewriting existing
 functionality.
 
 The original C++ lives in `../keepassxc` (cloned from
@@ -70,6 +69,7 @@ Current result: **20/20 checks, 13/13 tests.**
 
 ```
 crates/kpxc/          the CLI + library (commands, key handling, save logic)
+crates/kpxc-gui/      the cross-platform GUI (egui) + headless UI tests
 crates/kpxc/tests/    integration tests against the fixtures
 fixtures/             real .kdbx files (see passwords below)
 verify.sh             end-to-end Rust <=> KeePassXC cross-verification
@@ -102,10 +102,47 @@ UserName: user@example.com
 ...
 ```
 
+## GUI (`kpxc-gui`)
+
+`cargo run --release -p kpxc-gui -- [database.kdbx]` launches the
+cross-platform GUI (egui/eframe — pure Rust, runs on macOS, Windows and
+Linux). It mirrors KeePassXC's core GUI workflow:
+
+* **Unlock screen** — database file, password (Enter to unlock), optional
+  key file, friendly error reporting for bad credentials
+* **Group tree** — navigate, add / rename / delete groups
+* **Entry table** — sortable columns (Title / UserName / Password / URL /
+  Notes / Tags), password masking with a global reveal toggle,
+  double-click to edit, search across all groups
+* **Entry details** — copy username / password / URL to the clipboard,
+  attachments with export, edit, delete
+* **Entry editor** — full field editing with a built-in password
+  generator and reveal toggle; edits record entry history like KeePassXC
+* **Password generator dialog** — length, character classes, preview,
+  copy to clipboard
+* **Save / Save As** — with the KDBX 3.1 → 4.1 upgrade dialog
+  (Cmd/Ctrl+S shortcut), atomic writes
+* **Create new database** — Argon2id parameters, optional generated
+  keyfile
+* **Database info** dialog, **lock** button
+
+The GUI is tested **headlessly with `egui_kittest`**
+(`cargo test -p kpxc-gui`): the tests drive the real `eframe` app by
+clicking widgets and typing text, assert on the rendered UI and app
+state, and produce image snapshots of the actual UI in
+`crates/kpxc-gui/tests/snapshots/`. One test creates and saves a
+database entirely through the GUI dialogs, which the original C++
+`keepassxc-cli 2.8.0` then opens successfully (`verify.sh`, section 7).
+
 ## Status & scope
 
 Migrated and verified: the headless core (database open/save, all cipher and
 KDF variants, entries/groups/attachments/protected fields, CLI commands
-above). Not migrated (out of scope for the core-engine goal): the Qt GUI,
-browser integration, SSH agent, KeeShare, auto-type window matching, and
-challenge-response (YubiKey) keys.
+above) and the GUI workflow described above — verified against KeePassXC
+2.8.0 in both directions (`./verify.sh`: 23/23 checks, 18+5 tests).
+
+Not migrated (out of scope for this migration): browser integration, SSH
+agent, KeeShare, auto-type window matching, and challenge-response
+(YubiKey) keys. The GUI covers the core workflow; advanced KeePassXC GUI
+features (icons editor, custom attribute editor, multi-selection, drag &
+drop, referencer/entry references) are not yet implemented.

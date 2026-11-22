@@ -1,0 +1,20 @@
+[package]
+name = "kpxc-gui"
+description = "Cross-platform GUI for the Rust KeePassXC migration (egui)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+arboard = "3.7.0"
+eframe = "0.37.0"
+egui_extras = "0.37.0"
+keepass = { version = "0.17.0", features = ["save_kdbx4"] }
+kpxc = { path = "../kpxc" }
+rfd = "0.18.0"
+rust-argon2 = "3.0.0"
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["eframe", "wgpu", "snapshot"] }
+tempfile = "3.27.0"

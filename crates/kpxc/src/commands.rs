@@ -105,8 +105,8 @@ pub fn db_info(args: &DbArgs, key: DatabaseKey) -> Result<()> {
     Ok(())
 }
 
-fn version_string(v: &DatabaseVersion) -> String {
-    match v {
+/// Human-readable database version string (shared with the GUI).
+pub fn version_string(v: &DatabaseVersion) -> String {    match v {
         DatabaseVersion::KDB(_) => "KDB 1.x".into(),
         DatabaseVersion::KDB2(m) => format!("KDBX 2.{m}"),
         DatabaseVersion::KDB3(m) => format!("KDBX 3.{m}"),
@@ -114,7 +114,8 @@ fn version_string(v: &DatabaseVersion) -> String {
     }
 }
 
-fn outer_cipher_name(c: &OuterCipherConfig) -> &'static str {
+/// Human-readable outer cipher name (shared with the GUI).
+pub fn outer_cipher_name(c: &OuterCipherConfig) -> &'static str {
     match c {
         OuterCipherConfig::AES256 => "AES 256-bit",
         OuterCipherConfig::Twofish => "Twofish 256-bit",
@@ -123,7 +124,8 @@ fn outer_cipher_name(c: &OuterCipherConfig) -> &'static str {
     }
 }
 
-fn compression_name(c: &CompressionConfig) -> &'static str {
+/// Human-readable compression name (shared with the GUI).
+pub fn compression_name(c: &CompressionConfig) -> &'static str {
     match c {
         CompressionConfig::None => "None",
         CompressionConfig::GZip => "GZip",
@@ -131,7 +133,8 @@ fn compression_name(c: &CompressionConfig) -> &'static str {
     }
 }
 
-fn inner_cipher_name(c: &InnerCipherConfig) -> &'static str {
+/// Human-readable inner cipher name (shared with the GUI).
+pub fn inner_cipher_name(c: &InnerCipherConfig) -> &'static str {
     match c {
         InnerCipherConfig::Salsa20 => "Salsa20",
         InnerCipherConfig::ChaCha20 => "ChaCha20",
@@ -139,7 +142,8 @@ fn inner_cipher_name(c: &InnerCipherConfig) -> &'static str {
     }
 }
 
-fn kdf_name(k: &KdfConfig) -> String {
+/// Human-readable KDF description (shared with the GUI).
+pub fn kdf_name(k: &KdfConfig) -> String {
     match k {
         KdfConfig::Aes { rounds } => format!("AES-KDF ({rounds} rounds)"),
         KdfConfig::Argon2 {
@@ -403,7 +407,8 @@ fn find_or_create_group(db: &mut Database, path: &str) -> Result<GroupId> {
 }
 
 /// Upgrade a KDBX3 database to KDBX 4.1 so that it can be saved.
-fn ensure_writable_version(db: &mut Database) {
+/// (Public: the GUI reuses this for its save path.)
+pub fn ensure_writable_version(db: &mut Database) {
     if !matches!(db.config.version, DatabaseVersion::KDB4(_)) {
         let old = version_string(&db.config.version);
         db.config.version = DatabaseVersion::KDB4(1);
@@ -451,5 +456,41 @@ pub fn generate_password(length: usize) -> String {
     getrandom::fill(&mut buf).expect("RNG failure");
     buf.iter()
         .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect()
+}
+
+/// Generate a random password with configurable character classes
+/// (used by the GUI's password generator dialog).
+pub fn generate_password_opts(
+    length: usize,
+    upper: bool,
+    lower: bool,
+    digits: bool,
+    symbols: bool,
+) -> String {
+    const UPPER: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const LOWER: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+    const DIGITS: &[u8] = b"0123456789";
+    const SYMBOLS: &[u8] = b"!@#$%^&*()-_=+[]{};:,.<>?/";
+    let mut alphabet: Vec<u8> = Vec::new();
+    if upper {
+        alphabet.extend_from_slice(UPPER);
+    }
+    if lower {
+        alphabet.extend_from_slice(LOWER);
+    }
+    if digits {
+        alphabet.extend_from_slice(DIGITS);
+    }
+    if symbols {
+        alphabet.extend_from_slice(SYMBOLS);
+    }
+    if alphabet.is_empty() {
+        alphabet.extend_from_slice(LOWER);
+    }
+    let mut buf = vec![0u8; length];
+    getrandom::fill(&mut buf).expect("RNG failure");
+    buf.iter()
+        .map(|b| alphabet[(*b as usize) % alphabet.len()] as char)
         .collect()
 }
