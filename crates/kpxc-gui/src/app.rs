@@ -346,6 +346,90 @@ impl App {
         }
     }
 
+    /// Perform auto-type for an entry: resolves the entry's auto-type
+    /// sequence (or the KeePass default) and injects the keystrokes on a
+    /// background thread after a short countdown, so the user can focus the
+    /// target window — the same UX as KeePassXC.
+    ///
+    /// On macOS this requires the Accessibility permission; failures are
+    /// logged (the GUI cannot inject without the user granting it).
+    pub fn perform_auto_type(&mut self, id: keepass::db::EntryId) {
+        let Some(db) = self.db.as_ref() else { return };
+        let Some(entry) = db.entry(id) else { return };
+        let sequence = entry
+            .autotype
+            .as_ref()
+            .and_then(|a| a.default_sequence.clone())
+            .unwrap_or_else(|| crate::autotype::DEFAULT_SEQUENCE.to_owned());
+        let actions = crate::autotype::resolve_sequence(db, id, &sequence);
+
+        std::thread::spawn(move || {
+            // Countdown so the user can focus the target window.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let result = crate::autotype::EnigoInjector::new()
+                .and_then(|mut injector| crate::autotype::execute(&mut injector, &actions));
+            if let Err(e) = result {
+                eprintln!("auto-type failed: {e:#} (on macOS, grant the app the Accessibility permission)");
+            }
+        });
+        self.status =
+            "Auto-Type starts in 1.5 seconds - focus the target window".into();
+    }
+
+    /// Move a group to another group (drag & drop), with the same
+    /// cycle-prevention as KeePassXC: a group cannot be dropped into itself
+    /// or into one of its own descendants.
+    pub fn move_group_to(&mut self, group: GroupId, target: Option<GroupId>) {
+        let Some(db) = self.db.as_ref() else { return };
+        let root_id = db.root().id();
+        let target_id = target.unwrap_or(root_id);
+
+        if target_id == group {
+            self.status = "Cannot move a group into itself".into();
+            return;
+        }
+        // Reject dropping a group into its own subtree.
+        let mut cur = Some(target_id);
+        while let Some(c) = cur {
+            if c == group {
+                self.status = "Cannot move a group into one of its own groups".into();
+                return;
+            }
+            cur = self
+                .db
+                .as_ref()
+                .and_then(|db| db.group(c))
+                .and_then(|g| g.parent().map(|p| p.id()));
+        }
+
+        let group_name = self
+            .db
+            .as_ref()
+            .and_then(|db| db.group(group))
+            .map(|g| g.name.clone())
+            .unwrap_or_default();
+        let target_name = target
+            .and_then(|t| self.db.as_ref().and_then(|db| db.group(t)).map(|g| g.name.clone()))
+            .unwrap_or_else(|| {
+                self.db
+                    .as_ref()
+                    .map(|db| db.root().name.clone())
+                    .unwrap_or_default()
+            });
+
+        let Some(db) = self.db.as_mut() else { return };
+        if let Some(mut g) = db.group_mut(group) {
+            match g.track_changes().move_to(target_id) {
+                Ok(()) => {
+                    self.dirty = true;
+                    self.selected_group = Some(group);
+                    self.status = format!("Moved group {group_name} to {target_name}");
+                }
+                Err(e) => self.status = format!("cannot move group: {e}"),
+            }
+        }
+    }
+
     /// Move a batch of entries to a group (batch operation on the
     /// multi-selection).
     pub fn move_entries_to(&mut self, ids: &[EntryId], target: GroupId) {

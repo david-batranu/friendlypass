@@ -12,6 +12,7 @@
 //! existing 13 integration tests + `verify.sh`.
 
 pub mod app;
+pub mod autotype;
 pub mod browser;
 pub mod dialogs;
 pub mod icons;

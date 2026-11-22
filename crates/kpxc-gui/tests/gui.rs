@@ -104,6 +104,10 @@ fn browse_groups_entries_and_details() {
     harness.get_by_label("Edit…");
     harness.get_by_label("Copy UserName");
     harness.get_by_label("Copy Password");
+    // The Auto-Type action is available (not clicked here: real injection
+    // needs the OS Accessibility permission; the pipeline itself is unit
+    // tested in src/autotype.rs with a recording injector).
+    harness.get_by_label("Auto-Type");
     stabilize(&mut harness);
     harness.snapshot("gui_entry_details");
 
@@ -814,6 +818,101 @@ fn drag_and_drop_entry_onto_group() {
         .find(|e| e.get("Title") == Some("Sample Entry"))
         .unwrap();
     assert_eq!(web_entry.parent().id(), web_id);
+}
+
+#[test]
+fn drag_and_drop_group_onto_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.run();
+
+    let parent_of = |h: &Harness<kpxc_gui::App>, name: &str| -> Option<keepass::db::GroupId> {
+        h.state()
+            .db
+            .as_ref()
+            .and_then(|db| {
+                db.iter_all_groups()
+                    .find(|g| g.name == name)
+                    .map(|g| (db, g.id(), g.parent().map(|p| p.id())))
+            })
+            .map(|(_, _, parent)| parent)
+            .flatten()
+    };
+
+    // Drag the "Web" group row onto the "Bank" group row.
+    let src = harness.get_by_label("Web (0)").rect().center();
+    let dst = harness.get_by_label("Bank (0)").rect().center();
+    harness.drag_at(src);
+    harness.run();
+    harness.hover_at(egui::Pos2::new(src.x + 24.0, src.y));
+    harness.run();
+    harness.hover_at(dst);
+    harness.run();
+    harness.drop_at(dst);
+    harness.run();
+    harness.drop_at(dst);
+    harness.run();
+
+    let state = harness.state();
+    let db = state.db.as_ref().unwrap();
+    let bank_id = db.iter_all_groups().find(|g| g.name == "Bank").unwrap().id();
+    assert_eq!(parent_of(&harness, "Web"), Some(bank_id), "Web is now a child of Bank");
+    assert!(state.dirty);
+    assert!(
+        state.status.contains("Moved group Web to Bank"),
+        "status: {:?}",
+        state.status
+    );
+
+    // Cycle prevention: dragging Bank onto its own child Web must be rejected.
+    // (After the move above, the tree shows "Bank (0)" and an indented "Web (0)".)
+    let src = harness.get_by_label("Bank (0)").rect().center();
+    let dst = harness.get_by_label("Web (0)").rect().center();
+    harness.drag_at(src);
+    harness.run();
+    harness.hover_at(egui::Pos2::new(src.x + 24.0, src.y));
+    harness.run();
+    harness.hover_at(dst);
+    harness.run();
+    harness.drop_at(dst);
+    harness.run();
+
+    let state = harness.state();
+    let db = state.db.as_ref().unwrap();
+    let root_id = db.root().id();
+    assert_eq!(parent_of(&harness, "Bank"), Some(root_id), "Bank still in root (cycle rejected)");
+    assert!(
+        state.status.contains("Cannot move a group into one of its own groups"),
+        "status: {:?}",
+        state.status
+    );
+
+    // Drag Web back onto the root row.
+    let src = harness.get_by_label("Web (0)").rect().center();
+    let dst = harness.get_by_label("sample4.kdbx (2)").rect().center();
+    harness.drag_at(src);
+    harness.run();
+    harness.hover_at(egui::Pos2::new(src.x + 24.0, src.y));
+    harness.run();
+    harness.hover_at(dst);
+    harness.run();
+    harness.drop_at(dst);
+    harness.run();
+
+    let state = harness.state();
+    let db = state.db.as_ref().unwrap();
+    let root_id = db.root().id();
+    assert_eq!(parent_of(&harness, "Web"), Some(root_id), "Web moved back to root");
+    assert!(
+        state.status.contains("Moved group Web"),
+        "status: {:?}",
+        state.status
+    );
 }
 
 #[test]

@@ -11,6 +11,7 @@ arboard = "3.7.0"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 eframe = "0.37.0"
 egui_extras = "0.37.0"
+enigo = "0.6.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 keepass = { version = "0.17.0", features = ["save_kdbx4"] }
 kpxc = { path = "../kpxc" }

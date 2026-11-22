@@ -193,6 +193,8 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     let mut empty_bin_clicked = false;
     // Entry dropped from the entry table onto a group row: (entry, target).
     let mut dropped: Option<(EntryId, Option<GroupId>)> = None;
+    // Group dropped onto another group row: (group, target).
+    let mut dropped_group: Option<(GroupId, Option<GroupId>)> = None;
 
     // Split borrows: the icon cache is mutated while rendering rows.
     let cache = &mut app.icon_cache;
@@ -203,27 +205,56 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         } else {
             selected_group == row.id
         };
-        // Drop zone: dropping an entry here moves it into this group.
-        let (_inner, payload) = ui.dnd_drop_zone(egui::Frame::default(), |ui| {
-            ui.horizontal(|ui| {
-                for _ in 0..row.depth.saturating_sub(1) {
-                    ui.label("  ");
+        ui.horizontal(|ui| {
+            for _ in 0..row.depth.saturating_sub(1) {
+                ui.label("  ");
+            }
+            crate::icons::draw_icon(ui, cache, Some(&row.icon));
+            let label = if is_root {
+                format!("{root_name} ({root_entries})")
+            } else {
+                format!("{} ({})", row.name, row.entries)
+            };
+            // The row is clickable (select), draggable (move groups), and a
+            // drop zone for both entries and other groups.
+            let resp = ui.add(
+                egui::Button::selectable(selected, label)
+                    .frame(false)
+                    .sense(egui::Sense::click_and_drag()),
+            );
+            if resp.clicked() {
+                selected_group = if is_root { None } else { row.id };
+            }
+            // Drag source: non-root groups can be dragged.
+            if let Some(gid) = row.id {
+                resp.dnd_set_drag_payload(gid);
+            }
+            // Drop zone: entries dropped onto this group move into it.
+            // IMPORTANT: check the payload type non-destructively first —
+            // `dnd_release_payload` consumes ANY payload on a hovered row
+            // even when the type doesn't match.
+            if resp.dnd_hover_payload::<GroupId>().is_some() {
+                // A group is being dropped here (cycle-checked at apply time).
+                if let Some(group_id) = resp.dnd_release_payload::<GroupId>() {
+                    if row.id != Some(*group_id) {
+                        dropped_group = Some((*group_id, row.id));
+                    }
                 }
-                crate::icons::draw_icon(ui, cache, Some(&row.icon));
-                let label = if is_root {
-                    format!("{root_name} ({root_entries})")
-                } else {
-                    format!("{} ({})", row.name, row.entries)
-                };
-                if ui.selectable_label(selected, label).clicked() {
-                    selected_group = if is_root { None } else { row.id };
-                }
-            });
+            } else if let Some(entry_id) = resp.dnd_release_payload::<EntryId>() {
+                // `None` target means the root row was the drop target.
+                dropped = Some((*entry_id, row.id));
+            }
+            // Drop highlight while a drag hovers this row.
+            if egui::DragAndDrop::has_any_payload(ui.ctx()) && resp.contains_pointer() {
+                let rect = resp.rect;
+                ui.painter().rect_stroke(
+                    rect.expand(2.0),
+                    4.0,
+                    ui.visuals().selection.stroke,
+                    egui::StrokeKind::Middle,
+                );
+            }
         });
-        if let Some(entry_id) = payload {
-            // `None` means the root row was the drop target.
-            dropped = Some((*entry_id, row.id));
-        }
     };
 
     row_ui(
@@ -303,6 +334,9 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         if let Some(gid) = gid {
             app.move_entries_to(&[entry_id], gid);
         }
+    }
+    if let Some((group_id, target)) = dropped_group {
+        app.move_group_to(group_id, target);
     }
     if let Some(d) = new_dialog {
         app.dialog = d;
@@ -534,6 +568,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     let mut edit_clicked = false;
     let mut delete_clicked = false;
     let mut history_clicked = false;
+    let mut autotype_clicked = false;
     let mut export: Option<(String, Vec<u8>)> = None;
 
     ui.horizontal(|ui| {
@@ -548,6 +583,13 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             .clicked()
         {
             history_clicked = true;
+        }
+        if ui
+            .button("Auto-Type")
+            .on_hover_text("Type the entry's sequence into the focused window (needs the OS Accessibility permission on macOS)")
+            .clicked()
+        {
+            autotype_clicked = true;
         }
         if ui.button("Delete…").clicked() {
             delete_clicked = true;
@@ -649,6 +691,9 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     }
     if history_clicked {
         app.dialog = crate::dialogs::Dialog::History(id);
+    }
+    if autotype_clicked {
+        app.perform_auto_type(id);
     }
     if delete_clicked {
         app.dialog = crate::dialogs::Dialog::ConfirmDeleteEntry(id);

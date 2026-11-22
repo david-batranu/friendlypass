@@ -115,7 +115,7 @@ check "keepassxc-cli opens it with the kpxc-generated keyfile" \
 
 echo
 echo "== 7. GUI (kpxc-gui): headless UI tests + C++ opens a GUI-written database =="
-check "cargo test -p kpxc-gui (12 headless UI tests: browse, edit, recycle bin, history, attributes/auto-type, icons, multi-selection, references, drag&drop)" \
+check "cargo test -p kpxc-gui (13 headless UI tests + 6 unit tests: browse, edit, recycle bin, history, attributes/auto-type, icons, multi-selection, references, entry & group drag&drop, auto-type pipeline)" \
     cargo test --release -p kpxc-gui --manifest-path "$ROOT/Cargo.toml"
 check "GUI test run writes a database purely through the GUI dialogs" \
     cargo test --release -p kpxc-gui --manifest-path "$ROOT/Cargo.toml" --test gui write_database_for_external_verification -- --ignored

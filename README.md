@@ -122,7 +122,13 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 * **Multi-selection** — Cmd/Ctrl-click rows for batch operations: move to
   group, recycle
 * **Drag & drop** — drag entries onto group rows (including the root and
-  the Recycle Bin) to move them
+  the Recycle Bin) to move them; drag groups onto other groups (into the
+  root, or into the Recycle Bin), with KeePassXC's cycle prevention
+* **Auto-type execution** — the entry's sequence is resolved (all KeePass
+  placeholders, `{TAB}`/`{ENTER}`, `{DELAY x}`) and injected as real
+  keystrokes via `enigo` after a 1.5 s countdown; the pipeline is fully
+  unit-tested through a recording injector (on macOS, actual injection
+  requires the user to grant the app the Accessibility permission)
 * **Entry references** — insert `{REF:…}` references to other entries'
   fields through the editor; the details panel resolves them (and the
   original KeePassXC resolves references written by this GUI)
@@ -165,7 +171,7 @@ attribute in clear text, and reports "Recycle bin is enabled"
 Migrated and verified: the headless core (database open/save, all cipher and
 KDF variants, entries/groups/attachments/protected fields, CLI commands
 above) and the GUI workflow described above — verified against KeePassXC
-2.8.0 in both directions (`./verify.sh`: 27/27 checks, 13+12 tests).
+2.8.0 in both directions (`./verify.sh`: 27/27 checks, 13+13 tests).
 
 ### Feature matrix (GUI)
 
@@ -188,6 +194,9 @@ above) and the GUI workflow described above — verified against KeePassXC
 | Save / Save As / KDBX 3→4.1 upgrade       | ✅ tested + C++ cross-checked |
 | New database (Argon2id, generated keyfile) | ✅ tested + C++ cross-checked |
 | Database info / lock                     | ✅ tested |
-| Drag & drop (entries, groups)             | ✅ entries→groups tested (group DnD not yet) |
-| Auto-type execution (simulating keystrokes) | ❌ not yet (editor + preview only; execution needs OS accessibility permissions) |
-| Browser integration, SSH agent, KeeShare, YubiKey challenge-response | ❌ out of scope (requires browser/USB integrations) |
+| Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
+| Auto-type execution (keystroke injection via `enigo`) | ✅ implemented + pipeline unit-tested with a recording injector; end-to-end injection requires the user to grant the macOS Accessibility permission (manual step) |
+| Browser integration (KeepassXC-Browser protocol) | ❌ not implemented — a browser extension counterpart is required to exercise it end-to-end |
+| SSH agent (key serving) | ❌ not implemented — a large standalone subsystem (ssh-agent socket protocol) |
+| KeeShare (signed share containers) | ❌ not implemented — depends on the sharing/container subsystem |
+| YubiKey challenge-response keys | ❌ not implemented — requires physical YubiKey hardware to verify |
