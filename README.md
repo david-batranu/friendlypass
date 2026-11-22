@@ -111,13 +111,23 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 * **Unlock screen** — database file, password (Enter to unlock), optional
   key file, friendly error reporting for bad credentials
 * **Group tree** — navigate, add / rename / delete groups
+* **Recycle bin** — deleting entries/groups moves them to the Recycle Bin
+  (created lazily and registered in the database metadata, exactly like
+  KeePassXC); deleting from inside the bin is permanent; "Empty Recycle
+  Bin…" action
 * **Entry table** — sortable columns (Title / UserName / Password / URL /
   Notes / Tags), password masking with a global reveal toggle,
   double-click to edit, search across all groups
 * **Entry details** — copy username / password / URL to the clipboard,
-  attachments with export, edit, delete
+  custom attributes, auto-type summary, attachments with export, edit,
+  delete
 * **Entry editor** — full field editing with a built-in password
-  generator and reveal toggle; edits record entry history like KeePassXC
+  generator and reveal toggle; edits record entry history like KeePassXC;
+  custom attribute editor with per-attribute protection toggles;
+  auto-type editor (enable/disable, default sequence, clipboard
+  obfuscation, window associations)
+* **Entry history browser** — list revisions with dates and restore any
+  revision (the restore itself is recorded in history, like KeePassXC)
 * **Password generator dialog** — length, character classes, preview,
   copy to clipboard
 * **Save / Save As** — with the KDBX 3.1 → 4.1 upgrade dialog
@@ -130,19 +140,42 @@ The GUI is tested **headlessly with `egui_kittest`**
 (`cargo test -p kpxc-gui`): the tests drive the real `eframe` app by
 clicking widgets and typing text, assert on the rendered UI and app
 state, and produce image snapshots of the actual UI in
-`crates/kpxc-gui/tests/snapshots/`. One test creates and saves a
-database entirely through the GUI dialogs, which the original C++
-`keepassxc-cli 2.8.0` then opens successfully (`verify.sh`, section 7).
+`crates/kpxc-gui/tests/snapshots/`. The external-verification test
+creates a database entirely through the GUI dialogs — entry with a
+protected custom attribute and auto-type configuration, plus a second
+entry deleted into the Recycle Bin — and the original C++ `keepassxc-cli
+2.8.0` then confirms every bit of it: it lists the live entries, shows
+"Temp Entry" inside the Recycle Bin group, prints the protected
+attribute in clear text, and reports "Recycle bin is enabled"
+(`verify.sh`, section 7).
 
 ## Status & scope
 
 Migrated and verified: the headless core (database open/save, all cipher and
 KDF variants, entries/groups/attachments/protected fields, CLI commands
 above) and the GUI workflow described above — verified against KeePassXC
-2.8.0 in both directions (`./verify.sh`: 23/23 checks, 18+5 tests).
+2.8.0 in both directions (`./verify.sh`: 26/26 checks, 13+8 tests).
 
-Not migrated (out of scope for this migration): browser integration, SSH
-agent, KeeShare, auto-type window matching, and challenge-response
-(YubiKey) keys. The GUI covers the core workflow; advanced KeePassXC GUI
-features (icons editor, custom attribute editor, multi-selection, drag &
-drop, referencer/entry references) are not yet implemented.
+### Feature matrix (GUI)
+
+| Feature                                   | Status |
+|-------------------------------------------|--------|
+| Unlock (password + keyfile)                | ✅ tested |
+| Group tree: add / rename / delete         | ✅ tested |
+| Recycle bin (create-on-demand, move-to-bin, permanent delete, empty bin) | ✅ tested + C++ cross-checked |
+| Entry table: sort, search, masked passwords | ✅ tested |
+| Entry details + clipboard copy + attachment export | ✅ tested |
+| Entry editor (all fields, tags, password generator) | ✅ tested |
+| Custom attributes with protection toggles | ✅ tested + C++ cross-checked |
+| Auto-type editor (default sequence, obfuscation, window associations) | ✅ tested + C++ cross-checked |
+| Entry history browser with restore        | ✅ tested |
+| Password generator dialog                 | ✅ tested |
+| Save / Save As / KDBX 3→4.1 upgrade       | ✅ tested + C++ cross-checked |
+| New database (Argon2id, generated keyfile) | ✅ tested + C++ cross-checked |
+| Database info / lock                     | ✅ tested |
+| Icon picker / custom icons                | ❌ not yet |
+| Multi-selection & batch operations        | ❌ not yet |
+| Drag & drop (entries, groups)             | ❌ not yet |
+| Entry references / referencing            | ❌ not yet |
+| Auto-type execution (simulating keystrokes) | ❌ not yet (editor only) |
+| Browser integration, SSH agent, KeeShare, YubiKey challenge-response | ❌ out of scope (requires browser/USB integrations) |

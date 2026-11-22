@@ -238,35 +238,179 @@ impl App {
         self.dialog = Dialog::EntryEdit(Box::new(dialogs::EntryEdit::from_entry(id, &entry)));
     }
 
-    /// Delete an entry (after confirmation).
+    /// Delete an entry (after confirmation), mirroring KeePassXC's behavior:
+    /// if the recycle bin is enabled and the entry is not already inside it,
+    /// the entry is *moved* to the recycle bin group (created on demand);
+    /// otherwise it is deleted permanently.
     pub fn delete_entry(&mut self, id: keepass::db::EntryId) {
-        if let Some(db) = self.db.as_mut() {
-            if let Some(entry) = db.entry_mut(id) {
-                entry.remove();
-                self.dirty = true;
-                if self.selected_entry == Some(id) {
-                    self.selected_entry = None;
+        let to_recycle = self.deletes_to_recycle_bin_entry(id);
+        let bin_id = to_recycle.then(|| self.ensure_recycle_bin());
+        let Some(db) = self.db.as_mut() else { return };
+
+        if let Some(bin_id) = bin_id {
+            if let Some(mut entry) = db.entry_mut(id) {
+                match entry.track_changes().move_to(bin_id) {
+                    Ok(()) => {
+                        self.dirty = true;
+                        self.selected_entry = None;
+                        self.status = "Entry moved to the Recycle Bin".into();
+                    }
+                    Err(e) => self.status = format!("cannot move entry to recycle bin: {e}"),
                 }
-                self.status = "Entry deleted".into();
+            }
+        } else if let Some(entry) = db.entry_mut(id) {
+            entry.remove();
+            self.dirty = true;
+            if self.selected_entry == Some(id) {
+                self.selected_entry = None;
+            }
+            self.status = "Entry deleted permanently".into();
+        }
+    }
+
+    /// Delete a group (after confirmation) with the same recycle-bin
+    /// semantics as [`App::delete_entry`]. The root group cannot be deleted.
+    pub fn delete_group(&mut self, id: GroupId) {
+        // Decide first (immutable), then mutate.
+        let bin_id_current = self.db.as_ref().and_then(|db| db.recycle_bin()).map(|b| b.id());
+        let in_bin = self
+            .db
+            .as_ref()
+            .and_then(|db| db.group(id))
+            .and_then(|g| g.parent().map(|p| p.id()))
+            .map(|pid| Some(pid) == bin_id_current)
+            .unwrap_or(false);
+        let is_bin_itself = bin_id_current == Some(id);
+        let to_recycle = self.recycle_bin_enabled() && !in_bin && !is_bin_itself;
+
+        let bin_id = to_recycle.then(|| self.ensure_recycle_bin());
+        let Some(db) = self.db.as_mut() else { return };
+
+        if let Some(bin_id) = bin_id {
+            if let Some(mut group) = db.group_mut(id) {
+                match group.track_changes().move_to(bin_id) {
+                    Ok(()) => {
+                        self.dirty = true;
+                        if self.selected_group == Some(id) {
+                            self.selected_group = None;
+                        }
+                        self.status = "Group moved to the Recycle Bin".into();
+                    }
+                    Err(e) => self.status = format!("cannot move group to recycle bin: {e}"),
+                }
+            }
+        } else if let Some(mut group) = db.group_mut(id) {
+            match group.track_changes().remove() {
+                Ok(()) => {
+                    self.dirty = true;
+                    if self.selected_group == Some(id) {
+                        self.selected_group = None;
+                    }
+                    self.status = "Group deleted permanently".into();
+                }
+                Err(e) => self.status = format!("cannot delete group: {e}"),
             }
         }
     }
 
-    /// Delete a group (after confirmation). The root group cannot be deleted.
-    pub fn delete_group(&mut self, id: GroupId) {
+    /// Permanently remove everything inside the recycle bin.
+    pub fn empty_recycle_bin(&mut self) {
         let Some(db) = self.db.as_mut() else { return };
-        let Some(mut group) = db.group_mut(id) else { return };
-        match group.track_changes().remove() {
-            Ok(()) => {
-                self.dirty = true;
-                if self.selected_group == Some(id) {
-                    self.selected_group = None;
-                }
-                self.status = "Group deleted".into();
+        let Some(bin) = db.recycle_bin() else {
+            self.status = "No recycle bin in this database".into();
+            return;
+        };
+        let entry_ids: Vec<_> = bin.entries().map(|e| e.id()).collect();
+        let group_ids: Vec<_> = bin.groups().map(|g| g.id()).collect();
+        let n = entry_ids.len() + group_ids.len();
+
+        for id in entry_ids {
+            if let Some(entry) = db.entry_mut(id) {
+                entry.remove();
             }
-            Err(e) => self.status = format!("cannot delete group: {e}"),
+        }
+        for id in group_ids {
+            if let Some(mut group) = db.group_mut(id) {
+                let _ = group.track_changes().remove();
+            }
+        }
+        self.dirty = true;
+        self.selected_entry = None;
+        self.status = format!("Emptied the Recycle Bin ({n} objects removed)");
+    }
+
+    /// Whether the recycle bin is enabled in this database's metadata.
+    pub fn recycle_bin_enabled(&self) -> bool {
+        self.db
+            .as_ref()
+            .map(|db| db.meta.recyclebin_enabled.unwrap_or(true))
+            .unwrap_or(true)
+    }
+
+    /// Whether deleting this entry would move it to the recycle bin
+    /// (used to word the confirmation dialog like KeePassXC does).
+    pub fn deletes_to_recycle_bin_entry(&self, id: keepass::db::EntryId) -> bool {
+        let Some(db) = self.db.as_ref() else { return false };
+        if !self.recycle_bin_enabled() {
+            return false;
+        }
+        let bin_id = db.recycle_bin().map(|b| b.id());
+        // Already inside the bin (or inside a group within the bin)?
+        let mut parent = db.entry(id).map(|e| e.parent().id());
+        while let Some(pid) = parent {
+            if Some(pid) == bin_id {
+                return false;
+            }
+            parent = db.group(pid).and_then(|g| g.parent().map(|p| p.id()));
+        }
+        true
+    }
+
+    /// Get the recycle bin group id, creating the group (and registering it
+    /// in the metadata) on first use, exactly like KeePassXC.
+    fn ensure_recycle_bin(&mut self) -> GroupId {
+        if let Some(bin) = self.db.as_ref().and_then(|db| db.recycle_bin()) {
+            return bin.id();
+        }
+        let Some(db) = self.db.as_mut() else { unreachable!("db is open") };
+        let mut root = db.root_mut();
+        let mut bin = root.add_group();
+        bin.name = "Recycle Bin".into();
+        let id = bin.id();
+        drop(bin);
+        drop(root);
+        db.meta.recyclebin_uuid = Some(id.uuid());
+        db.meta.recyclebin_changed = Some(chrono::Utc::now().naive_utc());
+        self.dirty = true;
+        id
+    }
+
+    /// Restore a historical revision of an entry: copies all fields of the
+    /// revision into the current entry. Like KeePassXC, the restore itself
+    /// is recorded in the entry's history.
+    pub fn restore_history_entry(&mut self, id: keepass::db::EntryId, index: usize) {
+        let Some(db) = self.db.as_mut() else { return };
+
+        // Snapshot the historical fields.
+        let historical_fields = db
+            .entry(id)
+            .and_then(|e| e.historical(index).map(|h| h.fields.clone()));
+
+        let Some(fields) = historical_fields else {
+            self.status = "History revision not found".into();
+            return;
+        };
+
+        if let Some(mut entry) = db.entry_mut(id) {
+            entry.track_changes().edit(|e| {
+                e.fields = fields;
+            });
+            self.dirty = true;
+            self.dialog = Dialog::None;
+            self.status = "Restored entry from history".into();
         }
     }
+
 }
 
 /// Open a database with friendly error mapping (shared with the CLI layer).

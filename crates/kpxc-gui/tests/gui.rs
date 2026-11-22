@@ -207,9 +207,275 @@ fn add_entry_via_ui_save_with_upgrade_and_reopen() {
     harness.snapshot("gui_after_save");
 }
 
-/// Produces a database entirely through the GUI (created + saved via the
-/// dialogs) for external verification: `verify.sh` opens this file with the
-/// original C++ `keepassxc-cli`. Not part of the normal test run.
+// ---------------------------------------------------------------------------
+// recycle bin
+// ---------------------------------------------------------------------------
+
+#[test]
+fn delete_entry_moves_to_recycle_bin_then_permanent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.run();
+
+    // Deleting an entry outside the bin asks to move it to the Recycle Bin.
+    harness.get_by_label("Web Login").click();
+    harness.run();
+    harness.get_by_label("Delete…").click();
+    harness.run();
+    harness.get_by_label("Move to Recycle Bin").click();
+    harness.run();
+
+    let state = harness.state();
+    let db = state.db.as_ref().unwrap();
+    assert_eq!(db.num_entries(), 2, "entry was moved, not removed");
+    let bin = db.recycle_bin().expect("recycle bin created lazily");
+    assert_eq!(bin.name, "Recycle Bin");
+    assert!(db.meta.recyclebin_uuid.is_some(), "bin registered in metadata");
+    assert_eq!(bin.entries().count(), 1);
+    assert!(
+        state.status.contains("Recycle Bin"),
+        "status: {:?}",
+        state.status
+    );
+    harness.snapshot("gui_recycle_bin_created");
+
+    // The bin appears in the group tree; selecting it enables "Empty Recycle Bin…".
+    harness.get_by_label("Recycle Bin (1)").click();
+    harness.run();
+    harness.get_by_label("Web Login").click();
+    harness.run();
+
+    // Deleting from inside the bin is permanent.
+    harness.get_by_label("Delete…").click();
+    harness.run();
+    // The confirm button now says "Delete" (permanent).
+    harness.get_by_label("Delete").click();
+    harness.run();
+    let state = harness.state();
+    assert_eq!(state.db.as_ref().unwrap().num_entries(), 1);
+    assert!(
+        state.status.contains("permanently"),
+        "status: {:?}",
+        state.status
+    );
+
+    // Empty the bin via the tree action (empty now, but must not fail).
+    harness.state_mut().dialog = kpxc_gui::dialogs::Dialog::ConfirmEmptyRecycleBin;
+    harness.run();
+    harness.get_by_label("Empty Recycle Bin").click();
+    harness.run();
+    let state = harness.state();
+    assert!(
+        state.status.contains("Emptied the Recycle Bin"),
+        "status: {:?}",
+        state.status
+    );
+
+    // Save (with upgrade) and verify the bin + metadata survive on disk.
+    harness.get_by_label("Save").click();
+    harness.run();
+    harness.get_by_label("Upgrade and Save").click();
+    harness.run();
+
+    let mut file = std::fs::File::open(&path).unwrap();
+    let db2 = keepass::Database::open(
+        &mut file,
+        DatabaseKey::new().with_password("testpassword"),
+    )
+    .unwrap();
+    assert_eq!(db2.num_entries(), 1);
+    assert!(db2.recycle_bin().is_some(), "recycle bin persisted");
+    assert!(db2.meta.recyclebin_uuid.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// entry history
+// ---------------------------------------------------------------------------
+
+/// Focus the widget, select all, and replace its text.
+fn replace_text(harness: &mut Harness<kpxc_gui::App>, label: &str, text: &str) {
+    harness.get_by_label(label).click();
+    harness.run();
+    harness.key_combination_modifiers(egui::Modifiers::COMMAND, &[egui::Key::A]);
+    harness.run();
+    harness.event(egui::Event::Text(text.into()));
+    harness.run();
+}
+
+#[test]
+fn entry_history_browser_and_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.run();
+
+    let history_len = |h: &Harness<kpxc_gui::App>| {
+        h.state()
+            .db
+            .as_ref()
+            .unwrap()
+            .iter_all_entries()
+            .find(|e| e.get("Title") == Some("Sample Entry"))
+            .unwrap()
+            .history
+            .as_ref()
+            .map(|hist| hist.get_entries().len())
+            .unwrap_or(0)
+    };
+    let baseline = history_len(&harness);
+
+    // Edit the username through the entry editor -> history is recorded.
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    replace_text(&mut harness, "UserName:", "changed-user@example.org");
+    harness.get_by_label("OK").click();
+    harness.run();
+
+    assert_eq!(history_len(&harness), baseline + 1, "edit recorded a history item");
+    let current_user = harness
+        .state()
+        .db
+        .as_ref()
+        .unwrap()
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap()
+        .get("UserName")
+        .unwrap()
+        .to_string();
+    assert_eq!(current_user, "changed-user@example.org");
+
+    // Open the history browser: the old revision is listed with its old username.
+    harness.get_by_label("History…").click();
+    harness.run();
+    // (The fixture may carry several revisions — at least one must match.)
+    let old_revisions = harness.query_all_by_label_contains("user@example.com");
+    assert!(old_revisions.count() > 0, "history lists the old username");
+    stabilize(&mut harness);
+    harness.snapshot("gui_history_dialog");
+
+    // Restore revision 0: all fields revert, and the restore itself is history.
+    harness.get_by_label("Restore revision 0").click();
+    harness.run();
+    assert!(history_len(&harness) >= baseline + 2, "restore recorded in history");
+    let restored_user = harness
+        .state()
+        .db
+        .as_ref()
+        .unwrap()
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap()
+        .get("UserName")
+        .unwrap()
+        .to_string();
+    assert_eq!(restored_user, "user@example.com", "fields restored");
+    assert!(
+        harness.state().status.contains("Restored"),
+        "status: {:?}",
+        harness.state().status
+    );
+}
+
+// ---------------------------------------------------------------------------
+// custom attributes (with protection) and auto-type editing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn custom_attributes_and_autotype_edit_and_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.run();
+
+    // Open the entry editor for "Sample Entry".
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+    harness.get_by_label("Edit…").click();
+    harness.run();
+
+    // Add a protected custom attribute.
+    harness.get_by_label("Add attribute").click();
+    harness.run();
+    replace_text(&mut harness, "Attribute 0 key:", "API Key");
+    replace_text(&mut harness, "Attribute 0 value:", "sk-secret-12345");
+    harness.get_by_label("Protected 0").click();
+    harness.run();
+
+    // Configure auto-type: default sequence + a window association.
+    replace_text(&mut harness, "Default sequence:", "{USERNAME}{TAB}{PASSWORD}{ENTER}");
+    harness.get_by_label("Add window association").click();
+    harness.run();
+    replace_text(&mut harness, "Window 0:", "* - Notepad");
+    replace_text(&mut harness, "Sequence 0:", "{USERNAME}{ENTER}");
+
+    harness.get_by_label("OK").click();
+    harness.run();
+
+    // Assert on the in-memory database.
+    let entry = harness
+        .state()
+        .db
+        .as_ref()
+        .unwrap()
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap();
+    let attr = entry.fields.get("API Key").expect("attribute stored");
+    assert_eq!(attr.get(), "sk-secret-12345");
+    assert!(attr.is_protected(), "attribute is protected");
+    let at = entry.autotype.as_ref().expect("autotype stored");
+    assert!(at.enabled);
+    assert_eq!(at.default_sequence.as_deref(), Some("{USERNAME}{TAB}{PASSWORD}{ENTER}"));
+    assert_eq!(at.associations.len(), 1);
+    assert_eq!(at.associations[0].window, "* - Notepad");
+    assert_eq!(at.associations[0].sequence, "{USERNAME}{ENTER}");
+
+    // The details panel lists the protected attribute (panics if missing).
+    harness.get_by_label("API Key (protected)");
+    stabilize(&mut harness);
+    harness.snapshot("gui_attributes_details");
+
+    // Save (upgrade dialog) and verify persistence on disk.
+    harness.get_by_label("Save").click();
+    harness.run();
+    harness.get_by_label("Upgrade and Save").click();
+    harness.run();
+
+    let mut file = std::fs::File::open(&path).unwrap();
+    let db2 = keepass::Database::open(
+        &mut file,
+        DatabaseKey::new().with_password("testpassword"),
+    )
+    .unwrap();
+    let entry = db2
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap();
+    let attr = entry.fields.get("API Key").expect("attribute persisted");
+    assert!(attr.is_protected(), "protection flag persisted");
+    assert_eq!(attr.get(), "sk-secret-12345");
+    let at = entry.autotype.as_ref().unwrap();
+    assert_eq!(at.associations.len(), 1, "auto-type association persisted");
+    assert_eq!(at.associations[0].window, "* - Notepad");
+}
+
+
 #[test]
 #[ignore]
 fn write_database_for_external_verification() {
@@ -243,16 +509,40 @@ fn write_database_for_external_verification() {
     assert!(state.db.is_some(), "database created");
     assert!(state.db.as_ref().unwrap().num_entries() == 0);
 
-    // Add an entry through the GUI.
+    // Add an entry through the GUI — with a protected custom attribute and
+    // an auto-type configuration.
     harness.get_by_label("New Entry").click();
     harness.run();
     harness.get_by_label("Title:").click();
     harness.run();
     harness.event(egui::Event::Text("GUI Only Entry".into()));
     harness.run();
+    harness.get_by_label("Add attribute").click();
+    harness.run();
+    replace_text(&mut harness, "Attribute 0 key:", "API Key");
+    replace_text(&mut harness, "Attribute 0 value:", "sk-12345");
+    harness.get_by_label("Protected 0").click();
+    harness.run();
+    replace_text(&mut harness, "Default sequence:", "{USERNAME}{TAB}{PASSWORD}{ENTER}");
     harness.get_by_label("Generate").click();
     harness.run();
     harness.get_by_label("OK").click();
+    harness.run();
+
+    // Add a second entry and delete it -> lands in the Recycle Bin.
+    harness.get_by_label("New Entry").click();
+    harness.run();
+    harness.get_by_label("Title:").click();
+    harness.run();
+    harness.event(egui::Event::Text("Temp Entry".into()));
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+    // The newly added entry is selected automatically -> the details panel
+    // shows "Temp Entry"; delete via the details panel.
+    harness.get_by_label("Delete…").click();
+    harness.run();
+    harness.get_by_label("Move to Recycle Bin").click();
     harness.run();
 
     // Save.
@@ -266,15 +556,24 @@ fn write_database_for_external_verification() {
         state.status
     );
 
-    // The file must open with the keepass engine and contain the entry.
+    // The file must open with the keepass engine and contain the entry,
+    // the protected attribute, the auto-type settings, and the recycle bin.
     let mut file = std::fs::File::open(&out).unwrap();
     let db = keepass::Database::open(
         &mut file,
         DatabaseKey::new().with_password("gui-pass-123"),
     )
     .unwrap();
-    assert_eq!(db.num_entries(), 1);
-    assert!(db.iter_all_entries().any(|e| e.get("Title") == Some("GUI Only Entry")));
+    assert_eq!(db.num_entries(), 2, "one live + one recycled");
+    let entry = db
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("GUI Only Entry"))
+        .unwrap();
+    assert_eq!(entry.fields.get("API Key").unwrap().get(), "sk-12345");
+    assert!(entry.fields.get("API Key").unwrap().is_protected());
+    assert!(entry.autotype.as_ref().unwrap().default_sequence.is_some());
+    assert!(db.recycle_bin().is_some(), "recycle bin group persisted");
+    assert_eq!(db.recycle_bin().unwrap().entries().count(), 1);
 }
 
 // ---------------------------------------------------------------------------

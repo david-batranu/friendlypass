@@ -23,11 +23,30 @@ pub enum Dialog {
     ConfirmUpgrade,
     ConfirmDeleteEntry(EntryId),
     ConfirmDeleteGroup(GroupId),
+    /// Browse / restore an entry's history revisions.
+    History(EntryId),
+    /// Permanently remove everything inside the recycle bin.
+    ConfirmEmptyRecycleBin,
 }
 
 // ---------------------------------------------------------------------------
 // entry editor
 // ---------------------------------------------------------------------------
+
+/// One editable custom attribute in the entry editor.
+#[derive(Clone)]
+pub struct AttributeRow {
+    pub key: String,
+    pub value: String,
+    pub protected: bool,
+}
+
+/// One editable auto-type window association.
+#[derive(Clone)]
+pub struct AssociationRow {
+    pub window: String,
+    pub sequence: String,
+}
 
 pub struct EntryEdit {
     pub entry_id: Option<EntryId>,
@@ -39,6 +58,13 @@ pub struct EntryEdit {
     pub notes: String,
     pub tags: String,
     pub show_password: bool,
+    /// Custom (non-standard) attributes.
+    pub attributes: Vec<AttributeRow>,
+    /// Auto-Type settings.
+    pub at_enabled: bool,
+    pub at_default_sequence: String,
+    pub at_obfuscate: bool,
+    pub at_associations: Vec<AssociationRow>,
 }
 
 impl EntryEdit {
@@ -53,10 +79,28 @@ impl EntryEdit {
             notes: String::new(),
             tags: String::new(),
             show_password: false,
+            attributes: Vec::new(),
+            at_enabled: true,
+            at_default_sequence: String::new(),
+            at_obfuscate: false,
+            at_associations: Vec::new(),
         }
     }
 
     pub fn from_entry(id: EntryId, entry: &keepass::db::EntryRef<'_>) -> Self {
+        let mut attributes: Vec<AttributeRow> = entry
+            .fields
+            .iter()
+            .filter(|(k, _)| !fields::KNOWN_FIELDS.contains(&k.as_str()))
+            .map(|(k, v)| AttributeRow {
+                key: k.clone(),
+                value: v.get().clone(),
+                protected: v.is_protected(),
+            })
+            .collect();
+        attributes.sort_by(|a, b| a.key.cmp(&b.key));
+
+        let autotype = entry.autotype.as_ref();
         EntryEdit {
             entry_id: Some(id),
             group: entry.parent().id(),
@@ -67,7 +111,52 @@ impl EntryEdit {
             notes: entry.get(fields::NOTES).unwrap_or_default().to_owned(),
             tags: entry.tags.join(", "),
             show_password: false,
+            attributes,
+            at_enabled: autotype.map(|a| a.enabled).unwrap_or(true),
+            at_default_sequence: autotype
+                .and_then(|a| a.default_sequence.clone())
+                .unwrap_or_default(),
+            at_obfuscate: autotype
+                .map(|a| {
+                    matches!(a.data_transfer_obfuscation, keepass::db::DataTransferObfuscation::UseClipboard)
+                })
+                .unwrap_or(false),
+            at_associations: autotype
+                .map(|a| {
+                    a.associations
+                        .iter()
+                        .map(|assoc| AssociationRow {
+                            window: assoc.window.clone(),
+                            sequence: assoc.sequence.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
+    }
+
+    /// Build the complete field map for the entry after editing.
+    fn build_fields(&self) -> std::collections::HashMap<String, keepass::db::Value<String>> {
+        use keepass::db::Value;
+        let mut out = std::collections::HashMap::new();
+        out.insert(fields::TITLE.to_owned(), Value::unprotected(self.title.clone()));
+        out.insert(fields::USERNAME.to_owned(), Value::unprotected(self.username.clone()));
+        out.insert(fields::PASSWORD.to_owned(), Value::protected(self.password.clone()));
+        out.insert(fields::URL.to_owned(), Value::unprotected(self.url.clone()));
+        out.insert(fields::NOTES.to_owned(), Value::unprotected(self.notes.clone()));
+        for a in &self.attributes {
+            let key = a.key.trim();
+            if key.is_empty() || fields::KNOWN_FIELDS.contains(&key) {
+                continue;
+            }
+            let value = if a.protected {
+                Value::protected(a.value.clone())
+            } else {
+                Value::unprotected(a.value.clone())
+            };
+            out.insert(key.to_owned(), value);
+        }
+        out
     }
 
     /// Apply the edit: create a new entry or update the existing one
@@ -75,18 +164,36 @@ impl EntryEdit {
     pub fn apply(&self, app: &mut App) {
         let Some(db) = app.db.as_mut() else { return };
 
+        let new_fields = self.build_fields();
+        let autotype = keepass::db::AutoType {
+            enabled: self.at_enabled,
+            default_sequence: (!self.at_default_sequence.is_empty()).then(|| self.at_default_sequence.clone()),
+            data_transfer_obfuscation: if self.at_obfuscate {
+                keepass::db::DataTransferObfuscation::UseClipboard
+            } else {
+                keepass::db::DataTransferObfuscation::None
+            },
+            associations: self
+                .at_associations
+                .iter()
+                .filter(|a| !a.window.trim().is_empty())
+                .map(|a| keepass::db::AutoTypeAssociation {
+                    window: a.window.clone(),
+                    sequence: a.sequence.clone(),
+                })
+                .collect(),
+        };
+        let tags: Vec<String> = self
+            .tags
+            .split(',')
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .collect();
+
         let fill = |entry: &mut keepass::db::Entry| {
-            entry.set_unprotected(fields::TITLE, &self.title);
-            entry.set_unprotected(fields::USERNAME, &self.username);
-            entry.set_protected(fields::PASSWORD, &self.password);
-            entry.set_unprotected(fields::URL, &self.url);
-            entry.set_unprotected(fields::NOTES, &self.notes);
-            entry.tags = self
-                .tags
-                .split(',')
-                .map(|t| t.trim().to_owned())
-                .filter(|t| !t.is_empty())
-                .collect();
+            entry.fields = new_fields;
+            entry.autotype = Some(autotype);
+            entry.tags = tags;
         };
 
         match self.entry_id {
@@ -285,6 +392,77 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         r.labelled_by(l.id);
                         ui.end_row();
                     });
+
+                    // --- custom attributes -----------------------------------
+                    ui.separator();
+                    ui.strong("Custom attributes");
+                    let mut remove_attr: Option<usize> = None;
+                    for (i, a) in d.attributes.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            let l = ui.label(format!("Attribute {i} key:"));
+                            let r = ui.text_edit_singleline(&mut a.key);
+                            r.labelled_by(l.id);
+                            let l = ui.label(format!("Attribute {i} value:"));
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut a.value).password(a.protected),
+                            );
+                            r.labelled_by(l.id);
+                            ui.checkbox(&mut a.protected, format!("Protected {i}"));
+                            if ui.button(format!("Remove attribute {i}")).clicked() {
+                                remove_attr = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove_attr {
+                        d.attributes.remove(i);
+                    }
+                    if ui.button("Add attribute").clicked() {
+                        d.attributes.push(AttributeRow {
+                            key: String::new(),
+                            value: String::new(),
+                            protected: false,
+                        });
+                    }
+
+                    // --- auto-type --------------------------------------------
+                    ui.separator();
+                    ui.strong("Auto-Type");
+                    ui.checkbox(&mut d.at_enabled, "Auto-Type enabled");
+                    ui.horizontal(|ui| {
+                        let l = ui.label("Default sequence:");
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.at_default_sequence)
+                                .hint_text("{USERNAME}{TAB}{PASSWORD}{ENTER}"),
+                        );
+                        r.labelled_by(l.id);
+                    });
+                    ui.checkbox(&mut d.at_obfuscate, "Obfuscate using the clipboard");
+                    let mut remove_assoc: Option<usize> = None;
+                    for (i, a) in d.at_associations.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            let l = ui.label(format!("Window {i}:"));
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut a.window).hint_text("* - Notepad"),
+                            );
+                            r.labelled_by(l.id);
+                            let l = ui.label(format!("Sequence {i}:"));
+                            let r = ui.text_edit_singleline(&mut a.sequence);
+                            r.labelled_by(l.id);
+                            if ui.button(format!("Remove association {i}")).clicked() {
+                                remove_assoc = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove_assoc {
+                        d.at_associations.remove(i);
+                    }
+                    if ui.button("Add window association").clicked() {
+                        d.at_associations.push(AssociationRow {
+                            window: String::new(),
+                            sequence: String::new(),
+                        });
+                    }
+
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -595,17 +773,24 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let mut open = true;
             let mut confirmed = false;
             let mut cancelled = false;
+            // Word the confirmation like KeePassXC does.
+            let to_recycle = app.deletes_to_recycle_bin_entry(id);
             egui::Window::new("Delete Entry")
                 .open(&mut open)
                 .collapsible(false)
                 .show(ctx, |ui| {
-                    ui.label("Delete this entry? This cannot be undone.");
+                    if to_recycle {
+                        ui.label("Move this entry to the Recycle Bin?");
+                        ui.weak("Entries in the Recycle Bin can be restored or deleted permanently later.");
+                    } else {
+                        ui.label("Permanently delete this entry? This cannot be undone.");
+                    }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Delete").clicked() {
+                        if ui.button(if to_recycle { "Move to Recycle Bin" } else { "Delete" }).clicked() {
                             confirmed = true;
                         }
                     });
@@ -639,6 +824,112 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 app.delete_group(id);
             } else if !cancelled && open {
                 app.dialog = Dialog::ConfirmDeleteGroup(id);
+            }
+        }
+        Dialog::History(id) => {
+            // Immutable snapshot of the history list for rendering.
+            let history: Vec<(usize, String, String, String)> = app
+                .db
+                .as_ref()
+                .and_then(|db| db.entry(id))
+                .map(|e| {
+                    let mut out = Vec::new();
+                    if let Some(h) = &e.history {
+                        for (i, item) in h.get_entries().iter().enumerate() {
+                            let modified = item
+                                .times
+                                .last_modification
+                                .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+                                .unwrap_or_else(|| "(unknown date)".into());
+                            let get = |k: &str| {
+                                item.fields
+                                    .get(k)
+                                    .map(|v| v.get().clone())
+                                    .unwrap_or_default()
+                            };
+                            out.push((i, modified, get("Title"), get("UserName")));
+                        }
+                    }
+                    out
+                })
+                .unwrap_or_default();
+
+            let mut open = true;
+            let mut cancelled = false;
+            let mut restore: Option<usize> = None;
+            egui::Window::new("Entry History")
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    if history.is_empty() {
+                        ui.label("This entry has no recorded history.");
+                    } else {
+                        egui::Grid::new("history-grid")
+                            .num_columns(5)
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.strong("#");
+                                ui.strong("Modified");
+                                ui.strong("Title");
+                                ui.strong("UserName");
+                                ui.strong("");
+                                ui.end_row();
+                                for (i, modified, title, username) in &history {
+                                    ui.label(i.to_string());
+                                    ui.label(modified);
+                                    ui.label(title);
+                                    ui.label(username);
+                                    if ui.button(format!("Restore revision {i}")).clicked() {
+                                        restore = Some(*i);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                        ui.add_space(4.0);
+                        ui.weak("Restoring copies all fields of the revision into the current entry; the change is itself recorded in the history.");
+                    }
+                    ui.add_space(6.0);
+                    if ui.button("Close").clicked() {
+                        cancelled = true;
+                    }
+                });
+            if let Some(index) = restore {
+                app.restore_history_entry(id, index);
+            } else if !cancelled && open {
+                app.dialog = Dialog::History(id);
+            }
+        }
+        Dialog::ConfirmEmptyRecycleBin => {
+            let count = app
+                .db
+                .as_ref()
+                .and_then(|db| db.recycle_bin())
+                .map(|bin| bin.entries().count() + bin.groups().count())
+                .unwrap_or(0);
+
+            let mut open = true;
+            let mut confirmed = false;
+            let mut cancelled = false;
+            egui::Window::new("Empty the Recycle Bin?")
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("Permanently remove all {count} objects from the Recycle Bin?"));
+                    ui.weak("This cannot be undone.");
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                        if ui.button("Empty Recycle Bin").clicked() {
+                            confirmed = true;
+                        }
+                    });
+                });
+            if confirmed {
+                app.empty_recycle_bin();
+            } else if !cancelled && open {
+                app.dialog = Dialog::ConfirmEmptyRecycleBin;
             }
         }
     }

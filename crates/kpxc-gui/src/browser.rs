@@ -175,6 +175,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     let new_dialog: Option<crate::dialogs::Dialog> = None;
     let mut rename_dialog: Option<crate::dialogs::Dialog> = None;
     let mut delete_target: Option<GroupId> = None;
+    let mut empty_bin_clicked = false;
 
     let mut row_ui = |ui: &mut egui::Ui, row: &GroupRow, is_root: bool| {
         let selected = if is_root {
@@ -233,6 +234,29 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 
+    // Recycle bin management: shown when the database has a recycle bin.
+    let bin_id = app
+        .db
+        .as_ref()
+        .and_then(|db| db.recycle_bin())
+        .map(|b| b.id());
+    if bin_id.is_some() {
+        let bin_selected = selected_group == bin_id;
+        if ui
+            .add_enabled(bin_selected, egui::Button::new("Empty Recycle Bin…"))
+            .on_disabled_hover_text("Select the Recycle Bin group first")
+            .clicked()
+        {
+            empty_bin_clicked = true;
+        }
+        if bin_selected {
+            weak_label(
+                ui,
+                "This group is the Recycle Bin: deleting from here is permanent.",
+            );
+        }
+    }
+
     // Apply pending mutations now that the immutable borrows are over.
     app.selected_group = selected_group;
     if let Some(d) = new_dialog {
@@ -243,6 +267,9 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     }
     if let Some(id) = delete_target {
         app.dialog = crate::dialogs::Dialog::ConfirmDeleteGroup(id);
+    }
+    if empty_bin_clicked {
+        app.dialog = crate::dialogs::Dialog::ConfirmEmptyRecycleBin;
     }
 }
 
@@ -402,6 +429,22 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             url: e.get(fields::URL).unwrap_or_default().to_owned(),
             notes: e.get(fields::NOTES).unwrap_or_default().to_owned(),
             tags: e.tags.join(", "),
+            attributes: e
+                .fields
+                .iter()
+                .filter(|(k, _)| !fields::KNOWN_FIELDS.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.get().clone(), v.is_protected()))
+                .collect(),
+            autotype: e.autotype.as_ref().map(|a| AutoTypeSummary {
+                enabled: a.enabled,
+                default_sequence: a.default_sequence.clone().unwrap_or_default(),
+                associations: a
+                    .associations
+                    .iter()
+                    .map(|assoc| (assoc.window.clone(), assoc.sequence.clone()))
+                    .collect(),
+            }),
+            history_count: e.history.as_ref().map(|h| h.get_entries().len()).unwrap_or(0),
             attachments: e
                 .attachments_named()
                 .map(|(name, a)| (name.to_owned(), a.data.get().len()))
@@ -413,6 +456,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     let mut copy: Option<String> = None;
     let mut edit_clicked = false;
     let mut delete_clicked = false;
+    let mut history_clicked = false;
     let mut export: Option<(String, Vec<u8>)> = None;
 
     ui.horizontal(|ui| {
@@ -420,6 +464,13 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         ui.separator();
         if ui.button("Edit…").clicked() {
             edit_clicked = true;
+        }
+        if ui
+            .add_enabled(d.history_count > 0, egui::Button::new("History…"))
+            .on_disabled_hover_text("This entry has no recorded history")
+            .clicked()
+        {
+            history_clicked = true;
         }
         if ui.button("Delete…").clicked() {
             delete_clicked = true;
@@ -453,6 +504,42 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             ui.end_row();
         });
 
+    // Custom attributes (like KeePassXC's details view).
+    if !d.attributes.is_empty() {
+        ui.separator();
+        ui.label("Attributes:");
+        egui::Grid::new("details-attributes")
+            .num_columns(2)
+            .show(ui, |ui| {
+                for (key, value, protected) in &d.attributes {
+                    ui.label(format!("{key}{}", if *protected { " (protected)" } else { "" }));
+                    if *protected && !app.show_passwords {
+                        weak_label(ui, "••••••••");
+                    } else {
+                        weak_label(ui, value);
+                    }
+                    ui.end_row();
+                }
+            });
+    }
+
+    // Auto-Type summary.
+    if let Some(at) = &d.autotype {
+        ui.separator();
+        ui.label(format!(
+            "Auto-Type: {}{}",
+            if at.enabled { "enabled" } else { "disabled" },
+            if !at.default_sequence.is_empty() {
+                format!(" — default sequence: {}", at.default_sequence)
+            } else {
+                String::new()
+            }
+        ));
+        for (window, sequence) in &at.associations {
+            weak_label(ui, format!("  {window} -> {}", if sequence.is_empty() { "(default)" } else { sequence }));
+        }
+    }
+
     if !d.attachments.is_empty() {
         ui.separator();
         ui.label("Attachments:");
@@ -483,6 +570,9 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     if edit_clicked {
         app.edit_entry_dialog(id);
     }
+    if history_clicked {
+        app.dialog = crate::dialogs::Dialog::History(id);
+    }
     if delete_clicked {
         app.dialog = crate::dialogs::Dialog::ConfirmDeleteEntry(id);
     }
@@ -503,5 +593,14 @@ struct EntryDetailsData {
     url: String,
     notes: String,
     tags: String,
+    attributes: Vec<(String, String, bool)>,
+    autotype: Option<AutoTypeSummary>,
+    history_count: usize,
     attachments: Vec<(String, usize)>,
+}
+
+struct AutoTypeSummary {
+    enabled: bool,
+    default_sequence: String,
+    associations: Vec<(String, String)>,
 }
