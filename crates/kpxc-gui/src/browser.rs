@@ -19,6 +19,7 @@ pub struct GroupRow {
     pub depth: usize,
     pub name: String,
     pub entries: usize,
+    pub icon: crate::icons::IconSpec,
 }
 
 fn flatten_groups(db: &Database) -> Vec<GroupRow> {
@@ -32,6 +33,7 @@ fn flatten_groups(db: &Database) -> Vec<GroupRow> {
                     depth,
                     name: c.name.clone(),
                     entries: c.entries().count(),
+                    icon: crate::icons::icon_spec(db, c.icon(), crate::icons::DEFAULT_GROUP_ICON),
                 })
                 .collect();
             children.sort_by(|a, b| a.name.cmp(&b.name));
@@ -52,6 +54,7 @@ pub struct EntryRow {
     pub id: EntryId,
     /// Set when showing search results across groups.
     pub group: Option<String>,
+    pub icon: crate::icons::IconSpec,
     pub title: String,
     pub username: String,
     pub password: String,
@@ -66,6 +69,7 @@ fn entry_row(db: &Database, id: EntryId, with_group: bool) -> EntryRow {
     EntryRow {
         id,
         group,
+        icon: crate::icons::icon_spec(db, entry.icon(), crate::icons::DEFAULT_ENTRY_ICON),
         title: entry.get(fields::TITLE).unwrap_or_default().to_owned(),
         username: entry.get(fields::USERNAME).unwrap_or_default().to_owned(),
         password: entry.get(fields::PASSWORD).unwrap_or_default().to_owned(),
@@ -171,11 +175,24 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     ui.heading("Groups");
     ui.separator();
 
+    // Precompute everything the row renderer needs from the immutable db.
+    let root_entries = app.db.as_ref().map(|db| db.num_entries()).unwrap_or(0);
+    let root_icon = app
+        .db
+        .as_ref()
+        .map(|db| {
+            crate::icons::icon_spec(db, db.root().icon(), crate::icons::DEFAULT_GROUP_ICON)
+        })
+        .unwrap_or(crate::icons::IconSpec::Standard(crate::icons::DEFAULT_GROUP_ICON));
+
     let mut selected_group: Option<GroupId> = app.selected_group;
     let new_dialog: Option<crate::dialogs::Dialog> = None;
     let mut rename_dialog: Option<crate::dialogs::Dialog> = None;
     let mut delete_target: Option<GroupId> = None;
     let mut empty_bin_clicked = false;
+
+    // Split borrows: the icon cache is mutated while rendering rows.
+    let cache = &mut app.icon_cache;
 
     let mut row_ui = |ui: &mut egui::Ui, row: &GroupRow, is_root: bool| {
         let selected = if is_root {
@@ -187,8 +204,9 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
             for _ in 0..row.depth.saturating_sub(1) {
                 ui.label("  ");
             }
+            crate::icons::draw_icon(ui, cache, Some(&row.icon));
             let label = if is_root {
-                format!("{root_name} ({})", app.db.as_ref().map(|db| db.num_entries()).unwrap_or(0))
+                format!("{root_name} ({root_entries})")
             } else {
                 format!("{} ({})", row.name, row.entries)
             };
@@ -198,7 +216,17 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         });
     };
 
-    row_ui(ui, &GroupRow { id: None, depth: 0, name: root_name.clone(), entries: 0 }, true);
+    row_ui(
+        ui,
+        &GroupRow {
+            id: None,
+            depth: 0,
+            name: root_name.clone(),
+            entries: 0,
+            icon: root_icon,
+        },
+        true,
+    );
     for row in &rows {
         row_ui(ui, row, false);
     }
@@ -358,16 +386,34 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
                         });
                     }
                     row.col(|ui| {
-                        let title_resp = ui
-                            .add(egui::Button::new(&row_data.title).frame(false))
-                            .on_hover_text("click to select, double-click to edit");
-                        if title_resp.clicked() {
-                            select = Some(row_data.id);
-                        }
-                        if title_resp.double_clicked() {
-                            select = Some(row_data.id);
-                            edit = Some(row_data.id);
-                        }
+                        ui.horizontal(|ui| {
+                            crate::icons::draw_icon(ui, &mut app.icon_cache, Some(&row_data.icon));
+                            let in_set = app.selected_entries.contains(&row_data.id);
+                            let is_selected = app.selected_entry == Some(row_data.id);
+                            let title_resp = ui
+                                .add(
+                                    egui::Button::new(&row_data.title)
+                                        .frame(false)
+                                        .selected(in_set || is_selected),
+                                )
+                                .on_hover_text("click to select, double-click to edit; Cmd/Ctrl-click for multi-selection");
+                            let multi = ui.ctx().input(|i| i.modifiers.command);
+                            if title_resp.clicked() {
+                                if multi {
+                                    if !app.selected_entries.remove(&row_data.id) {
+                                        app.selected_entries.insert(row_data.id);
+                                    }
+                                } else {
+                                    app.selected_entries.clear();
+                                    app.selected_entries.insert(row_data.id);
+                                }
+                                select = Some(row_data.id);
+                            }
+                            if title_resp.double_clicked() {
+                                select = Some(row_data.id);
+                                edit = Some(row_data.id);
+                            }
+                        });
                     });
                     row.col(|ui| {
                         weak_label(ui, &row_data.username);
@@ -420,20 +466,27 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
 pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>) {
     let Some(id) = selected else { return };
 
-    // Immutable snapshot for rendering.
+    // Immutable snapshot for rendering (resolving {REF:…} field references
+    // like KeePassXC does when displaying an entry).
     let data: Option<EntryDetailsData> = app.db.as_ref().and_then(|db| {
         db.entry(id).map(|e| EntryDetailsData {
-            title: e.get(fields::TITLE).unwrap_or_default().to_owned(),
-            username: e.get(fields::USERNAME).unwrap_or_default().to_owned(),
-            password: e.get(fields::PASSWORD).unwrap_or_default().to_owned(),
-            url: e.get(fields::URL).unwrap_or_default().to_owned(),
-            notes: e.get(fields::NOTES).unwrap_or_default().to_owned(),
+            title: crate::refs::resolve_references(db, e.get(fields::TITLE).unwrap_or_default()),
+            username: crate::refs::resolve_references(db, e.get(fields::USERNAME).unwrap_or_default()),
+            password: crate::refs::resolve_references(db, e.get(fields::PASSWORD).unwrap_or_default()),
+            url: crate::refs::resolve_references(db, e.get(fields::URL).unwrap_or_default()),
+            notes: crate::refs::resolve_references(db, e.get(fields::NOTES).unwrap_or_default()),
             tags: e.tags.join(", "),
             attributes: e
                 .fields
                 .iter()
                 .filter(|(k, _)| !fields::KNOWN_FIELDS.contains(&k.as_str()))
-                .map(|(k, v)| (k.clone(), v.get().clone(), v.is_protected()))
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        crate::refs::resolve_references(db, v.get()),
+                        v.is_protected(),
+                    )
+                })
                 .collect(),
             autotype: e.autotype.as_ref().map(|a| AutoTypeSummary {
                 enabled: a.enabled,

@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 use crate::browser;
 use crate::dialogs::{self, Dialog};
+use crate::icons::IconCache;
+use keepass::db::EntryId;
 
 /// Column to sort the entry list by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,11 +56,15 @@ pub struct App {
     pub search: String,
     pub selected_group: Option<GroupId>, // None = root
     pub selected_entry: Option<keepass::db::EntryId>,
+    /// Multi-selection (Ctrl/Cmd-click) for batch operations.
+    pub selected_entries: std::collections::HashSet<EntryId>,
     pub sort_column: SortColumn,
     pub sort_desc: bool,
     pub show_passwords: bool,
     pub status: String,
     pub dialog: Dialog,
+    /// Lazily-uploaded icon textures (standard + custom icons).
+    pub icon_cache: IconCache,
 }
 
 impl Default for App {
@@ -75,11 +81,13 @@ impl Default for App {
             search: String::new(),
             selected_group: None,
             selected_entry: None,
+            selected_entries: std::collections::HashSet::new(),
             sort_column: SortColumn::Title,
             sort_desc: false,
             show_passwords: false,
             status: String::new(),
             dialog: Dialog::None,
+            icon_cache: IconCache::default(),
         }
     }
 }
@@ -228,14 +236,39 @@ impl App {
         let parent = group
             .or(self.selected_group)
             .unwrap_or_else(|| self.db.as_ref().map(|db| db.root().id()).expect("db open"));
-        self.dialog = Dialog::EntryEdit(Box::new(dialogs::EntryEdit::new(parent)));
+        let targets = self
+            .db
+            .as_ref()
+            .map(|db| crate::refs::ref_targets(db, None))
+            .unwrap_or_default();
+        let custom_icons = self.custom_icon_snapshot();
+        self.dialog = Dialog::EntryEdit(Box::new(dialogs::EntryEdit::new(parent, targets, custom_icons)));
     }
 
     /// Open the entry editor for an existing entry (loads its fields).
     pub fn edit_entry_dialog(&mut self, id: keepass::db::EntryId) {
         let Some(db) = self.db.as_ref() else { return };
         let Some(entry) = db.entry(id) else { return };
-        self.dialog = Dialog::EntryEdit(Box::new(dialogs::EntryEdit::from_entry(id, &entry)));
+        let targets = crate::refs::ref_targets(db, Some(id));
+        let custom_icons = self.custom_icon_snapshot();
+        self.dialog = Dialog::EntryEdit(Box::new(dialogs::EntryEdit::from_entry(
+            id,
+            &entry,
+            targets,
+            custom_icons,
+        )));
+    }
+
+    /// Snapshot of the database custom icon pool (for editor pickers).
+    fn custom_icon_snapshot(&self) -> Vec<(keepass::db::CustomIconId, Vec<u8>)> {
+        self.db
+            .as_ref()
+            .map(|db| {
+                db.iter_all_custom_icons()
+                    .map(|ci| (ci.id(), ci.data.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Delete an entry (after confirmation), mirroring KeePassXC's behavior:
@@ -311,6 +344,67 @@ impl App {
                 Err(e) => self.status = format!("cannot delete group: {e}"),
             }
         }
+    }
+
+    /// Move a batch of entries to a group (batch operation on the
+    /// multi-selection).
+    pub fn move_entries_to(&mut self, ids: &[EntryId], target: GroupId) {
+        let mut moved = 0;
+        if let Some(db) = self.db.as_mut() {
+            for id in ids {
+                if let Some(mut entry) = db.entry_mut(*id) {
+                    if entry.track_changes().move_to(target).is_ok() {
+                        moved += 1;
+                    }
+                }
+            }
+        }
+        if moved > 0 {
+            self.dirty = true;
+            let target_name = self
+                .db
+                .as_ref()
+                .and_then(|db| db.group(target))
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            self.status = format!("Moved {moved} entries to {target_name}");
+        }
+        self.selected_entries.clear();
+        self.selected_entry = None;
+    }
+
+    /// Recycle a batch of entries (multi-selection delete).
+    pub fn recycle_entries(&mut self, ids: Vec<EntryId>) {
+        let n = ids.len();
+        for id in ids {
+            self.delete_entry(id);
+        }
+        self.status = format!("Moved {n} entries to the Recycle Bin");
+        self.selected_entries.clear();
+        self.selected_entry = None;
+    }
+
+    /// Snapshot of all groups (for the batch-move dialog), with paths.
+    pub fn group_snapshot(&self) -> Vec<(GroupId, String)> {
+        let Some(db) = self.db.as_ref() else { return Vec::new() };
+        let mut out = vec![(db.root().id(), "(root)".into())];
+        fn walk(db: &keepass::db::Database, id: GroupId, prefix: &str, out: &mut Vec<(GroupId, String)>) {
+            if let Some(g) = db.group(id) {
+                let mut children: Vec<(GroupId, String)> = g
+                    .groups()
+                    .map(|c| (c.id(), c.name.clone()))
+                    .collect();
+                children.sort_by(|a, b| a.1.cmp(&b.1));
+                for (cid, name) in children {
+                    let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+                    out.push((cid, path.clone()));
+                    walk(db, cid, &path, out);
+                }
+            }
+        }
+        let root = db.root().id();
+        walk(db, root, "", &mut out);
+        out
     }
 
     /// Permanently remove everything inside the recycle bin.
@@ -530,7 +624,7 @@ impl App {
         // Toolbar ---------------------------------------------------------
         egui::Panel::top("toolbar")
             .resizable(false)
-            .exact_size(42.0)
+            .default_size(42.0)
             .show(root, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -573,14 +667,39 @@ impl App {
                     if ui.button("Save As…").clicked() {
                         self.dialog = Dialog::SaveAs(self.db_path.clone());
                     }
-                    ui.separator();
-                    ui.checkbox(&mut self.show_passwords, "Show passwords");
-                    if ui.button("Lock").clicked() {
-                        self.lock();
+                ui.separator();
+                ui.checkbox(&mut self.show_passwords, "Show passwords");
+                if ui.button("Lock").clicked() {
+                    self.lock();
+                }
+            });
+
+            // Batch operations on the multi-selection get their own row so
+            // the toolbar never overflows the window width.
+            let n = self.selected_entries.len();
+            if n >= 2 {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label(format!("{n} entries selected:"));
+                    if ui.button(format!("Move {n} to group…")).clicked() {
+                        let ids: Vec<EntryId> = self.selected_entries.iter().copied().collect();
+                        let groups = self.group_snapshot();
+                        self.dialog = Dialog::BatchMove(Box::new(dialogs::BatchMove {
+                            entries: ids,
+                            groups,
+                            target: None,
+                        }));
+                    }
+                    if ui.button(format!("Recycle {n} entries…")).clicked() {
+                        let ids: Vec<EntryId> = self.selected_entries.iter().copied().collect();
+                        self.recycle_entries(ids);
                     }
                 });
+                ui.add_space(2.0);
+            } else {
                 ui.add_space(4.0);
-            });
+            }
+        });
 
         // Status bar ------------------------------------------------------
         egui::Panel::bottom("statusbar")

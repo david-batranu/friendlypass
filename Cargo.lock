@@ -2041,6 +2041,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2264,11 +2266,13 @@ dependencies = [
  "eframe",
  "egui_extras",
  "egui_kittest",
+ "image",
  "keepass",
  "kpxc",
  "rfd",
  "rust-argon2",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]

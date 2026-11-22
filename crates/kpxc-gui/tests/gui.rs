@@ -82,7 +82,7 @@ fn browse_groups_entries_and_details() {
     let path_str = path.display().to_string();
     let mut harness =
         Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
-    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
     // Group tree: root + the two groups created by keepassxc-cli.
@@ -130,7 +130,7 @@ fn add_entry_via_ui_save_with_upgrade_and_reopen() {
     let mut harness = Harness::new_eframe(move |_cc| {
         kpxc_gui::App::with_open_database(&path_str, key)
     });
-    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
     // --- open the "New Entry" dialog ---------------------------------
@@ -219,7 +219,7 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
     let path_str = path.display().to_string();
     let mut harness =
         Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
-    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
     // Deleting an entry outside the bin asks to move it to the Recycle Bin.
@@ -315,7 +315,7 @@ fn entry_history_browser_and_restore() {
     let path_str = path.display().to_string();
     let mut harness =
         Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
-    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
     let history_len = |h: &Harness<kpxc_gui::App>| {
@@ -400,7 +400,7 @@ fn custom_attributes_and_autotype_edit_and_persist() {
     let path_str = path.display().to_string();
     let mut harness =
         Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
-    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
     // Open the entry editor for "Sample Entry".
@@ -475,6 +475,261 @@ fn custom_attributes_and_autotype_edit_and_persist() {
     assert_eq!(at.associations[0].window, "* - Notepad");
 }
 
+// ---------------------------------------------------------------------------
+// icons: standard picker, custom icons, rendering, persistence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn icon_picker_standard_and_custom_icons() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
+    harness.run();
+
+    // The standard icon strip is present in the editor (a sample button).
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    harness.get_by_label("Icon 12");
+
+    // Pick standard icon 12.
+    harness.get_by_label("Icon 12").click();
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+
+    let state = harness.state();
+    let entry = state
+        .db
+        .as_ref()
+        .unwrap()
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap();
+    assert!(
+        matches!(entry.icon(), Some(keepass::db::Icon::BuiltIn(12))),
+        "standard icon set"
+    );
+
+    // Add a custom icon from an image file (one of our rasterized KeePass icons).
+    let icon_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("icons/42.png");
+    // ("Sample Entry" is still selected from the edit above; the details
+    // panel is showing it, so "Sample Entry" now matches two nodes — open
+    // the editor through the details panel instead.)
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    replace_text(&mut harness, "Custom icon image path:", icon_file.display().to_string().as_str());
+    harness.get_by_label("Use image…").click();
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+
+    let state = harness.state();
+    let db = state.db.as_ref().unwrap();
+    assert_eq!(db.num_custom_icons(), 1, "custom icon added to the pool");
+    let entry = db
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap();
+    assert!(matches!(entry.icon(), Some(keepass::db::Icon::Custom(_))), "custom icon set");
+
+    // Save (upgrade) and verify both icons persist on disk.
+    harness.get_by_label("Save").click();
+    harness.run();
+    harness.get_by_label("Upgrade and Save").click();
+    harness.run();
+
+    let mut file = std::fs::File::open(&path).unwrap();
+    let db2 = keepass::Database::open(
+        &mut file,
+        DatabaseKey::new().with_password("testpassword"),
+    )
+    .unwrap();
+    assert_eq!(db2.num_custom_icons(), 1, "custom icon pool persisted");
+    let expected_len = std::fs::read(&icon_file).unwrap().len();
+    assert_eq!(db2.iter_all_custom_icons().next().unwrap().data.len(), expected_len);
+    let entry = db2
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap();
+    assert!(matches!(entry.icon(), Some(keepass::db::Icon::Custom(_))));
+    stabilize(&mut harness);
+    harness.snapshot("gui_icon_picker");
+}
+
+// ---------------------------------------------------------------------------
+// multi-selection with batch operations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn multi_selection_batch_move_and_recycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
+    harness.run();
+
+    // Cmd/Ctrl-click both entries to build a multi-selection.
+    harness
+        .get_by_label("Sample Entry")
+        .click_modifiers(egui::Modifiers::COMMAND);
+    harness.run();
+    harness
+        .get_by_label("Web Login")
+        .click_modifiers(egui::Modifiers::COMMAND);
+    harness.run();
+    assert_eq!(harness.state().selected_entries.len(), 2);
+
+    // Batch move to the "Web" group via the toolbar action.
+    harness.get_by_label("Move 2 to group…").click();
+    harness.run();
+    harness.get_by_label("Group: Web").click();
+    harness.run();
+    harness.get_by_label("Move entries").click();
+    harness.run();
+
+    let state = harness.state();
+    let db = state.db.as_ref().unwrap();
+    let web_id = db
+        .iter_all_groups()
+        .find(|g| g.name == "Web")
+        .unwrap()
+        .id();
+    for title in ["Sample Entry", "Web Login"] {
+        let e = db
+            .iter_all_entries()
+            .find(|e| e.get("Title") == Some(title))
+            .unwrap();
+        assert_eq!(e.parent().id(), web_id, "{title} moved to Web");
+    }
+    assert!(state.status.contains("Moved 2"), "status: {:?}", state.status);
+    let _ = state;
+
+    // Navigate to the Web group and batch-recycle both entries.
+    harness.get_by_label("Web (2)").click();
+    harness.run();
+    harness
+        .get_by_label("Sample Entry")
+        .click_modifiers(egui::Modifiers::COMMAND);
+    harness.run();
+    harness
+        .get_by_label("Web Login")
+        .click_modifiers(egui::Modifiers::COMMAND);
+    harness.run();
+    assert_eq!(harness.state().selected_entries.len(), 2);
+
+    harness.get_by_label("Recycle 2 entries…").click();
+    harness.run();
+
+    let state = harness.state();
+    let db = state.db.as_ref().unwrap();
+    let bin = db.recycle_bin().expect("recycle bin exists");
+    assert_eq!(bin.entries().count(), 2, "both entries recycled");
+    assert!(
+        state.status.contains("Moved 2 entries to the Recycle Bin"),
+        "status: {:?}",
+        state.status
+    );
+}
+
+// ---------------------------------------------------------------------------
+// entry references ({REF:…}) — insertion and resolution
+// ---------------------------------------------------------------------------
+
+#[test]
+fn entry_reference_insert_and_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
+    harness.run();
+
+    // Open the editor for "Web Login" and choose "Sample Entry" as the
+    // reference target (the combobox selection itself is set directly).
+    harness.get_by_label("Web Login").click();
+    harness.run();
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    if let kpxc_gui::dialogs::Dialog::EntryEdit(d) = &mut harness.state_mut().dialog {
+        d.ref_target = d.ref_targets.iter().position(|t| t.title == "Sample Entry");
+        assert!(d.ref_target.is_some(), "Sample Entry is a reference target");
+    }
+    harness.run();
+    harness.get_by_label("Insert reference").click();
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+
+    // The reference landed in Web Login's Notes (the default insert target).
+    let state = harness.state();
+    let db = state.db.as_ref().unwrap();
+    let sample_uuid = db
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap()
+        .id()
+        .uuid();
+    let web_login = db
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Web Login"))
+        .unwrap();
+    let notes = web_login.get("Notes").unwrap();
+    let expected = format!(
+        "{{REF:P@I:{}}}",
+        sample_uuid.simple().encode_lower(&mut uuid::Uuid::encode_buffer())
+    );
+    assert_eq!(
+        notes, format!("web note{expected}"),
+        "reference appended to the existing Notes"
+    );
+
+    // The details panel (already showing Web Login) resolves the reference
+    // to Sample Entry's password.
+    let sample_password = db
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap()
+        .get("Password")
+        .unwrap()
+        .to_owned();
+    harness.run();
+    let resolved_nodes = harness.query_all_by_label_contains(sample_password.as_str()).count();
+    assert!(resolved_nodes > 0, "details show the resolved referenced password");
+    harness.snapshot("gui_reference_resolved");
+
+    // Save and verify the raw reference persists on disk.
+    harness.get_by_label("Save").click();
+    harness.run();
+    harness.get_by_label("Upgrade and Save").click();
+    harness.run();
+
+    let mut file = std::fs::File::open(&path).unwrap();
+    let db2 = keepass::Database::open(
+        &mut file,
+        DatabaseKey::new().with_password("testpassword"),
+    )
+    .unwrap();
+    let web_login = db2
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Web Login"))
+        .unwrap();
+    assert_eq!(
+        web_login.get("Notes").unwrap(),
+        format!("web note{expected}"),
+        "reference persisted"
+    );
+}
 
 #[test]
 #[ignore]
@@ -498,7 +753,7 @@ fn write_database_for_external_verification() {
         }));
         app
     });
-    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
     // Create the database through the dialog.
@@ -509,8 +764,34 @@ fn write_database_for_external_verification() {
     assert!(state.db.is_some(), "database created");
     assert!(state.db.as_ref().unwrap().num_entries() == 0);
 
-    // Add an entry through the GUI — with a protected custom attribute and
-    // an auto-type configuration.
+    // Add "Temp Entry" first (with a generated password — we read it back so
+    // the reference cross-check can grep for it).
+    harness.get_by_label("New Entry").click();
+    harness.run();
+    harness.get_by_label("Title:").click();
+    harness.run();
+    harness.event(egui::Event::Text("Temp Entry".into()));
+    harness.run();
+    harness.get_by_label("Generate").click();
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+
+    let temp_password = harness
+        .state()
+        .db
+        .as_ref()
+        .unwrap()
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Temp Entry"))
+        .unwrap()
+        .get("Password")
+        .unwrap()
+        .to_owned();
+    assert!(!temp_password.is_empty());
+
+    // Add "GUI Only Entry" — with a protected custom attribute, an auto-type
+    // configuration, a standard icon, and a password reference to Temp Entry.
     harness.get_by_label("New Entry").click();
     harness.run();
     harness.get_by_label("Title:").click();
@@ -524,22 +805,24 @@ fn write_database_for_external_verification() {
     harness.get_by_label("Protected 0").click();
     harness.run();
     replace_text(&mut harness, "Default sequence:", "{USERNAME}{TAB}{PASSWORD}{ENTER}");
+    if let kpxc_gui::dialogs::Dialog::EntryEdit(d) = &mut harness.state_mut().dialog {
+        d.ref_target = d.ref_targets.iter().position(|t| t.title == "Temp Entry");
+    }
+    harness.run();
+    harness.get_by_label("Insert reference").click();
+    harness.run();
+    harness.get_by_label("Icon 5").click();
+    harness.run();
     harness.get_by_label("Generate").click();
     harness.run();
     harness.get_by_label("OK").click();
     harness.run();
 
-    // Add a second entry and delete it -> lands in the Recycle Bin.
-    harness.get_by_label("New Entry").click();
+    // Delete "Temp Entry" -> lands in the Recycle Bin.
+    // ("GUI Only Entry" is selected in the details panel, so we first select
+    // the other entry through the entry table.)
+    harness.get_by_label("Temp Entry").click();
     harness.run();
-    harness.get_by_label("Title:").click();
-    harness.run();
-    harness.event(egui::Event::Text("Temp Entry".into()));
-    harness.run();
-    harness.get_by_label("OK").click();
-    harness.run();
-    // The newly added entry is selected automatically -> the details panel
-    // shows "Temp Entry"; delete via the details panel.
     harness.get_by_label("Delete…").click();
     harness.run();
     harness.get_by_label("Move to Recycle Bin").click();
@@ -572,8 +855,29 @@ fn write_database_for_external_verification() {
     assert_eq!(entry.fields.get("API Key").unwrap().get(), "sk-12345");
     assert!(entry.fields.get("API Key").unwrap().is_protected());
     assert!(entry.autotype.as_ref().unwrap().default_sequence.is_some());
+    assert!(matches!(entry.icon(), Some(keepass::db::Icon::BuiltIn(5))), "icon persisted");
+    let notes = entry.get("Notes").unwrap();
+    assert!(notes.contains("{REF:P@I:"), "reference persisted: {notes}");
+    let temp_uuid = db
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Temp Entry"))
+        .unwrap()
+        .id()
+        .uuid();
+    let expected_ref = format!(
+        "{{REF:P@I:{}}}",
+        temp_uuid.simple().encode_lower(&mut uuid::Uuid::encode_buffer())
+    );
+    assert_eq!(notes, expected_ref, "reference format matches the target uuid");
     assert!(db.recycle_bin().is_some(), "recycle bin group persisted");
     assert_eq!(db.recycle_bin().unwrap().entries().count(), 1);
+
+    // Write the resolved-reference expectation for the external check.
+    std::fs::write(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/gui-temp-password.txt"),
+        &temp_password,
+    )
+    .unwrap();
 }
 
 // ---------------------------------------------------------------------------

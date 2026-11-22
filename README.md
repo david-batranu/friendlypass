@@ -110,14 +110,23 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 
 * **Unlock screen** — database file, password (Enter to unlock), optional
   key file, friendly error reporting for bad credentials
-* **Group tree** — navigate, add / rename / delete groups
+* **Group tree** — navigate, add / rename / delete groups, with icons rendered
 * **Recycle bin** — deleting entries/groups moves them to the Recycle Bin
   (created lazily and registered in the database metadata, exactly like
   KeePassXC); deleting from inside the bin is permanent; "Empty Recycle
   Bin…" action
 * **Entry table** — sortable columns (Title / UserName / Password / URL /
   Notes / Tags), password masking with a global reveal toggle,
-  double-click to edit, search across all groups
+  double-click to edit, search across all groups, KeePass standard icons
+  and database custom icons rendered per entry
+* **Multi-selection** — Cmd/Ctrl-click rows for batch operations: move to
+  group, recycle
+* **Entry references** — insert `{REF:…}` references to other entries'
+  fields through the editor; the details panel resolves them (and the
+  original KeePassXC resolves references written by this GUI)
+* **Icons** — all 69 KeePass standard icons (rasterized from the original
+  KeePassXC SVG assets) plus database custom icons; pick per entry, add
+  custom images from files, rendered in the group tree and entry table
 * **Entry details** — copy username / password / URL to the clipboard,
   custom attributes, auto-type summary, attachments with export, edit,
   delete
@@ -154,7 +163,7 @@ attribute in clear text, and reports "Recycle bin is enabled"
 Migrated and verified: the headless core (database open/save, all cipher and
 KDF variants, entries/groups/attachments/protected fields, CLI commands
 above) and the GUI workflow described above — verified against KeePassXC
-2.8.0 in both directions (`./verify.sh`: 26/26 checks, 13+8 tests).
+2.8.0 in both directions (`./verify.sh`: 27/27 checks, 13+11 tests).
 
 ### Feature matrix (GUI)
 
@@ -164,18 +173,18 @@ above) and the GUI workflow described above — verified against KeePassXC
 | Group tree: add / rename / delete         | ✅ tested |
 | Recycle bin (create-on-demand, move-to-bin, permanent delete, empty bin) | ✅ tested + C++ cross-checked |
 | Entry table: sort, search, masked passwords | ✅ tested |
+| Icons: 69 standard icons + custom icon pool, rendered in tree/table, per-entry picker | ✅ tested (standard + custom persisted; rendered from the original KeePassXC assets) |
+| Multi-selection & batch operations (move to group, recycle) | ✅ tested (Cmd/Ctrl-click) |
 | Entry details + clipboard copy + attachment export | ✅ tested |
 | Entry editor (all fields, tags, password generator) | ✅ tested |
 | Custom attributes with protection toggles | ✅ tested + C++ cross-checked |
-| Auto-type editor (default sequence, obfuscation, window associations) | ✅ tested + C++ cross-checked |
+| Auto-type editor (default sequence, obfuscation, window associations, placeholder preview) | ✅ tested + C++ cross-checked |
+| Entry references ({REF:…}) — insertion, resolution, persistence | ✅ tested + C++ cross-checked (keepassxc-cli resolves GUI-written references) |
 | Entry history browser with restore        | ✅ tested |
 | Password generator dialog                 | ✅ tested |
 | Save / Save As / KDBX 3→4.1 upgrade       | ✅ tested + C++ cross-checked |
 | New database (Argon2id, generated keyfile) | ✅ tested + C++ cross-checked |
 | Database info / lock                     | ✅ tested |
-| Icon picker / custom icons                | ❌ not yet |
-| Multi-selection & batch operations        | ❌ not yet |
-| Drag & drop (entries, groups)             | ❌ not yet |
-| Entry references / referencing            | ❌ not yet |
-| Auto-type execution (simulating keystrokes) | ❌ not yet (editor only) |
+| Drag & drop (entries, groups)             | ❌ not yet (batch move covers the same operations) |
+| Auto-type execution (simulating keystrokes) | ❌ not yet (editor + preview only; execution needs OS accessibility permissions) |
 | Browser integration, SSH agent, KeeShare, YubiKey challenge-response | ❌ out of scope (requires browser/USB integrations) |

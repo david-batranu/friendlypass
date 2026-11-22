@@ -4,8 +4,10 @@
 use eframe::egui;
 use keepass::config::{CompressionConfig, DatabaseVersion, InnerCipherConfig, KdfConfig, OuterCipherConfig};
 use keepass::db::{fields, EntryId, GroupId};
+use keepass::db::CustomIconId;
 
 use crate::app::App;
+use crate::refs::{self, RefTarget};
 
 /// Which modal window (if any) is currently open.
 pub enum Dialog {
@@ -27,6 +29,112 @@ pub enum Dialog {
     History(EntryId),
     /// Permanently remove everything inside the recycle bin.
     ConfirmEmptyRecycleBin,
+    /// Move a multi-selection of entries to a group.
+    BatchMove(Box<BatchMove>),
+}
+
+/// State of the batch-move dialog.
+pub struct BatchMove {
+    pub entries: Vec<EntryId>,
+    pub groups: Vec<(GroupId, String)>,
+    /// Selected destination (persisted across frames, unlike a render local).
+    pub target: Option<GroupId>,
+}
+
+/// The icon selection of the entry/group editor.
+#[derive(Clone)]
+pub enum IconChoice {
+    None,
+    Standard(usize),
+    Custom(CustomIconId),
+    /// A new image file to store as a database custom icon on apply.
+    NewCustom(Vec<u8>),
+}
+
+impl std::fmt::Display for IconChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IconChoice::None => write!(f, "no icon"),
+            IconChoice::Standard(n) => write!(f, "standard icon {n}"),
+            IconChoice::Custom(id) => write!(f, "custom icon {id}"),
+            IconChoice::NewCustom(_) => write!(f, "new custom icon from file"),
+        }
+    }
+}
+
+/// Reusable icon picker: the 69 KeePass standard icons, the database's custom
+/// icon pool, and loading a new custom image from a file path.
+fn icon_picker(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    choice: &mut IconChoice,
+    custom_pool: &[(CustomIconId, Vec<u8>)],
+    icon_path: &mut String,
+) {
+    let ctx = ui.ctx().clone();
+    ui.label(format!("Current icon: {choice}"));
+    ui.horizontal_wrapped(|ui| {
+        for (n, _) in crate::icons::STANDARD_ICONS {
+            if let Some(tex) = app.icon_cache.standard(&ctx, *n) {
+                let selected = matches!(choice, IconChoice::Standard(k) if *k == *n);
+                let btn = egui::Button::image((tex.id(), egui::Vec2::splat(18.0))).selected(selected);
+                if ui.add(btn).on_hover_text(format!("Icon {n}")).clicked() {
+                    *choice = IconChoice::Standard(*n);
+                }
+            }
+        }
+    });
+    if ui.button("No icon").clicked() {
+        *choice = IconChoice::None;
+    }
+    if !custom_pool.is_empty() {
+        ui.separator();
+        ui.label("Database custom icons:");
+        ui.horizontal_wrapped(|ui| {
+            for (id, bytes) in custom_pool {
+                if let Some(tex) = app.icon_cache.texture(&ctx, &format!("custom-{id}"), bytes) {
+                    let selected = matches!(choice, IconChoice::Custom(c) if *c == *id);
+                    let btn =
+                        egui::Button::image((tex.id(), egui::Vec2::splat(18.0))).selected(selected);
+                    if ui.add(btn).on_hover_text(format!("Custom icon {id}")).clicked() {
+                        *choice = IconChoice::Custom(*id);
+                    }
+                }
+            }
+        });
+    }
+    ui.separator();
+    let l = ui.label("Custom icon image path:");
+    let r = ui.add(egui::TextEdit::singleline(icon_path).hint_text("/path/to/icon.png"));
+    r.labelled_by(l.id);
+    if ui.button("Use image…").clicked() {
+        match std::fs::read(icon_path.trim()) {
+            Ok(bytes) => *choice = IconChoice::NewCustom(bytes),
+            Err(e) => app.status = format!("unable to read icon file: {e}"),
+        }
+    }
+    if ui.button("Browse…").clicked() {
+        if let Some(p) = rfd::FileDialog::new()
+            .add_filter("Image", &["png", "jpg", "jpeg"])
+            .pick_file()
+        {
+            *icon_path = p.display().to_string();
+        }
+    }
+}
+
+/// Apply an icon choice to an entry (works for both new and existing entries).
+fn apply_entry_icon(entry: &mut keepass::db::EntryMut<'_>, choice: &IconChoice) {
+    match choice {
+        IconChoice::None => entry.set_icon_none(),
+        IconChoice::Standard(n) => entry.set_icon_builtin(*n),
+        IconChoice::Custom(id) => {
+            let _ = entry.set_icon_custom(*id);
+        }
+        IconChoice::NewCustom(bytes) => {
+            entry.set_icon_custom_new(bytes.clone());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -65,10 +173,24 @@ pub struct EntryEdit {
     pub at_default_sequence: String,
     pub at_obfuscate: bool,
     pub at_associations: Vec<AssociationRow>,
+    /// Icon selection.
+    pub icon: IconChoice,
+    pub icon_path: String,
+    /// Custom icon pool snapshot (for the picker strip).
+    pub custom_icons: Vec<(CustomIconId, Vec<u8>)>,
+    /// Entry-reference insertion state.
+    pub ref_targets: Vec<RefTarget>,
+    pub ref_target: Option<usize>,
+    pub ref_field: char,
+    pub ref_into: char,
 }
 
 impl EntryEdit {
-    pub fn new(group: GroupId) -> Self {
+    pub fn new(
+        group: GroupId,
+        ref_targets: Vec<RefTarget>,
+        custom_icons: Vec<(CustomIconId, Vec<u8>)>,
+    ) -> Self {
         EntryEdit {
             entry_id: None,
             group,
@@ -84,10 +206,22 @@ impl EntryEdit {
             at_default_sequence: String::new(),
             at_obfuscate: false,
             at_associations: Vec::new(),
+            icon: IconChoice::Standard(crate::icons::DEFAULT_ENTRY_ICON),
+            icon_path: String::new(),
+            custom_icons,
+            ref_targets,
+            ref_target: None,
+            ref_field: refs::CODE_PASSWORD,
+            ref_into: refs::CODE_NOTES,
         }
     }
 
-    pub fn from_entry(id: EntryId, entry: &keepass::db::EntryRef<'_>) -> Self {
+    pub fn from_entry(
+        id: EntryId,
+        entry: &keepass::db::EntryRef<'_>,
+        ref_targets: Vec<RefTarget>,
+        custom_icons: Vec<(CustomIconId, Vec<u8>)>,
+    ) -> Self {
         let mut attributes: Vec<AttributeRow> = entry
             .fields
             .iter()
@@ -99,6 +233,12 @@ impl EntryEdit {
             })
             .collect();
         attributes.sort_by(|a, b| a.key.cmp(&b.key));
+
+        let icon = match entry.icon() {
+            Some(keepass::db::Icon::BuiltIn(n)) => IconChoice::Standard(*n),
+            Some(keepass::db::Icon::Custom(id)) => IconChoice::Custom(*id),
+            None => IconChoice::None,
+        };
 
         let autotype = entry.autotype.as_ref();
         EntryEdit {
@@ -132,6 +272,13 @@ impl EntryEdit {
                         .collect()
                 })
                 .unwrap_or_default(),
+            icon,
+            icon_path: String::new(),
+            custom_icons,
+            ref_targets,
+            ref_target: None,
+            ref_field: refs::CODE_PASSWORD,
+            ref_into: refs::CODE_NOTES,
         }
     }
 
@@ -190,27 +337,33 @@ impl EntryEdit {
             .filter(|t| !t.is_empty())
             .collect();
 
-        let fill = |entry: &mut keepass::db::Entry| {
-            entry.fields = new_fields;
-            entry.autotype = Some(autotype);
-            entry.tags = tags;
-        };
-
         match self.entry_id {
             Some(id) => {
+                // Tracked edit of fields (records a history item on drop)…
                 if let Some(mut entry) = db.entry_mut(id) {
-                    // track_changes() records a history item on drop.
                     entry.track_changes().edit(|e| {
-                        fill(e);
+                        e.fields = new_fields;
+                        e.autotype = Some(autotype);
+                        e.tags = tags;
                     });
-                    app.dirty = true;
-                    app.status = format!("Updated entry '{}'", self.title);
                 }
+                // …then the icon (history already captured the old icon).
+                if let Some(mut entry) = db.entry_mut(id) {
+                    apply_entry_icon(&mut entry, &self.icon);
+                }
+                app.dirty = true;
+                app.status = format!("Updated entry '{}'", self.title);
             }
             None => {
                 if let Some(mut group) = db.group_mut(self.group) {
                     let mut entry = group.add_entry();
-                    fill(&mut entry);
+                    {
+                        let e: &mut keepass::db::Entry = &mut entry;
+                        e.fields = new_fields;
+                        e.autotype = Some(autotype);
+                        e.tags = tags;
+                    }
+                    apply_entry_icon(&mut entry, &self.icon);
                     let id = entry.id();
                     app.dirty = true;
                     app.status = format!("Added entry '{}'", self.title);
@@ -462,6 +615,85 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             sequence: String::new(),
                         });
                     }
+
+                    // Auto-type sequence preview (placeholder resolution).
+                    if !d.at_default_sequence.is_empty() {
+                        let preview = d
+                            .entry_id
+                            .and_then(|id| app.db.as_ref().map(|db| (db, id)))
+                            .map(|(db, id)| {
+                                refs::resolve_auto_type_sequence(db, id, &d.at_default_sequence)
+                            });
+                        if let Some(mut preview) = preview {
+                            ui.add_space(4.0);
+                            let l = ui.label("Sequence preview:");
+                            let r = ui.add(egui::TextEdit::singleline(&mut preview).interactive(false));
+                            r.labelled_by(l.id);
+                        }
+                    }
+
+                    // --- entry references -------------------------------------
+                    ui.separator();
+                    ui.strong("References");
+                    ui.label("Insert a field reference to another entry ({REF:…}) into one of this entry's fields.");
+                    ui.horizontal(|ui| {
+                        let selected_text = d
+                            .ref_target
+                            .and_then(|i| d.ref_targets.get(i))
+                            .map(|t| t.title.clone())
+                            .unwrap_or_else(|| "(select entry)".into());
+                        egui::ComboBox::new("ref-target", "Referenced entry")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for (i, t) in d.ref_targets.iter().enumerate() {
+                                    ui.selectable_value(&mut d.ref_target, Some(i), &t.title);
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        let selected_text = refs::REFERENCEABLE
+                            .iter()
+                            .find(|(code, _, _)| *code == d.ref_field)
+                            .map(|(_, name, _)| *name)
+                            .unwrap_or("Password");
+                        egui::ComboBox::new("ref-field", "Referenced field")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for (code, name, _) in refs::REFERENCEABLE {
+                                    ui.selectable_value(&mut d.ref_field, code, name);
+                                }
+                            });
+                        let selected_text = refs::REFERENCEABLE
+                            .iter()
+                            .find(|(code, _, _)| *code == d.ref_into)
+                            .map(|(_, name, _)| *name)
+                            .unwrap_or("Notes");
+                        egui::ComboBox::new("ref-into", "Insert into")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for (code, name, _) in refs::REFERENCEABLE {
+                                    ui.selectable_value(&mut d.ref_into, code, name);
+                                }
+                            });
+                    });
+                    if ui.button("Insert reference").clicked() {
+                        if let Some(target) = d.ref_target.and_then(|i| d.ref_targets.get(i)) {
+                            let reference = refs::make_reference(d.ref_field, &target.uuid);
+                            match d.ref_into {
+                                refs::CODE_TITLE => d.title.push_str(&reference),
+                                refs::CODE_USERNAME => d.username.push_str(&reference),
+                                refs::CODE_PASSWORD => d.password.push_str(&reference),
+                                refs::CODE_URL => d.url.push_str(&reference),
+                                refs::CODE_NOTES => d.notes.push_str(&reference),
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    // --- icon picker ---------------------------------------------
+                    ui.separator();
+                    ui.strong("Icon");
+                    icon_picker(ui, app, &mut d.icon, &d.custom_icons, &mut d.icon_path);
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -930,6 +1162,41 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 app.empty_recycle_bin();
             } else if !cancelled && open {
                 app.dialog = Dialog::ConfirmEmptyRecycleBin;
+            }
+        }
+        Dialog::BatchMove(mut bm) => {
+            let mut open = true;
+            let mut cancelled = false;
+            let mut move_clicked = false;
+            egui::Window::new(format!("Move {} Entries to Group", bm.entries.len()))
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label("Choose the destination group:");
+                    egui::ScrollArea::vertical()
+                        .max_height(220.0)
+                        .show(ui, |ui| {
+                            for (gid, path) in &bm.groups {
+                                ui.radio_value(&mut bm.target, Some(*gid), format!("Group: {path}"));
+                            }
+                        });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                        let ok = ui.add_enabled(bm.target.is_some(), egui::Button::new("Move entries"));
+                        if ok.clicked() {
+                            move_clicked = true;
+                        }
+                    });
+                });
+            if move_clicked {
+                if let Some(gid) = bm.target {
+                    app.move_entries_to(&bm.entries, gid);
+                }
+            } else if !cancelled && open {
+                app.dialog = Dialog::BatchMove(bm);
             }
         }
     }
