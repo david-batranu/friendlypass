@@ -132,6 +132,19 @@ check "keepassxc-cli resolves the GUI-created {REF:...} entry reference (Notes s
     env sh -c "printf 'gui-pass-123\n' | '$CLI' show '$GUIOUT' 'GUI Only Entry' | grep -qF -f '$ROOT/target/gui-temp-password.txt'"
 
 echo
+echo "== 8. SSH agent (kpxc-ssh-agent): real OpenSSH tooling cross-checks =="
+check "cargo test -p kpxc-ssh-agent (10 unit + 4 real-tool e2e tests)" \
+    cargo test --release -p kpxc-ssh-agent --manifest-path "$ROOT/Cargo.toml"
+check "real ssh-keygen output is parsed by our OpenSSH key reader" \
+    env sh -c "timeout 60 cargo test --release -p kpxc-ssh-agent --manifest-path '$ROOT/Cargo.toml' --test e2e real_ssh_keygen_key_is_parsed_by_us"
+check "real ssh-keygen accepts keys written by our OpenSSH key writer" \
+    env sh -c "timeout 60 cargo test --release -p kpxc-ssh-agent --manifest-path '$ROOT/Cargo.toml' --test e2e real_ssh_keygen_accepts_our_written_key"
+check "real ssh-add lists keys served by the kpxc-ssh-agent CLI from a database" \
+    env sh -c "timeout 60 cargo test --release -p kpxc-ssh-agent --manifest-path '$ROOT/Cargo.toml' --test e2e real_ssh_add_lists_keys_served_from_a_database"
+check "GUI SSH Agent window serves keys listed by real ssh-add (kittest test)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test ssh_agent"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

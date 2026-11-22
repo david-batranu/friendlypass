@@ -65,6 +65,11 @@ pub struct App {
     pub dialog: Dialog,
     /// Lazily-uploaded icon textures (standard + custom icons).
     pub icon_cache: IconCache,
+    /// The running SSH agent server (KeePassXC's SSH agent integration).
+    pub ssh_handle: Option<kpxc_ssh_agent::server::AgentHandle>,
+    pub ssh_pool: Option<kpxc_ssh_agent::server::IdentityPool>,
+    /// Socket path for the SSH agent (editable before starting).
+    pub ssh_socket: String,
 }
 
 impl Default for App {
@@ -88,6 +93,9 @@ impl Default for App {
             status: String::new(),
             dialog: Dialog::None,
             icon_cache: IconCache::default(),
+            ssh_handle: None,
+            ssh_pool: None,
+            ssh_socket: kpxc_ssh_agent::default_socket_path().display().to_string(),
         }
     }
 }
@@ -743,6 +751,9 @@ impl App {
                     }
                     if ui.button("Database Info…").clicked() {
                         self.dialog = Dialog::DbInfo;
+                    }
+                    if ui.button("SSH Agent…").clicked() {
+                        self.dialog = Dialog::SshAgent;
                     }
                     ui.separator();
                     let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));

@@ -31,6 +31,8 @@ pub enum Dialog {
     ConfirmEmptyRecycleBin,
     /// Move a multi-selection of entries to a group.
     BatchMove(Box<BatchMove>),
+    /// SSH agent integration: serve the database's SSH keys.
+    SshAgent,
 }
 
 /// State of the batch-move dialog.
@@ -1197,6 +1199,108 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
             } else if !cancelled && open {
                 app.dialog = Dialog::BatchMove(bm);
+            }
+        }
+        Dialog::SshAgent => {
+            let mut open = true;
+            let mut close_clicked = false;
+            let mut start_clicked = false;
+            let mut stop_clicked = false;
+            egui::Window::new("SSH Agent")
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    // Detect SSH keys in entry attachments (live, so new
+                    // attachments appear without reopening the window).
+                    let (identities, skipped) = app
+                        .db
+                        .as_ref()
+                        .map(kpxc_ssh_agent::openssh::collect_identities)
+                        .unwrap_or_default();
+
+                    ui.label(
+                        "SSH keys attached to entries are served over the ssh-agent protocol, \
+                         like KeePassXC's SSH agent integration.",
+                    );
+                    ui.separator();
+
+                    if identities.is_empty() {
+                        ui.label("No SSH keys found in entry attachments.");
+                        ui.weak(
+                            "Attach an OpenSSH private key (e.g. id_ed25519) to an entry to serve it. \
+                             Supported: unencrypted ssh-ed25519.",
+                        );
+                    } else {
+                        ui.label(format!("{} SSH key(s) available:", identities.len()));
+                        egui::Grid::new("ssh-keys").num_columns(2).striped(true).show(ui, |ui| {
+                            for identity in &identities {
+                                ui.strong(&identity.comment);
+                                ui.weak(format!(
+                                    "ssh-ed25519 SHA256:{}",
+                                    identity.fingerprint_sha256()
+                                ));
+                                ui.end_row();
+                            }
+                        });
+                    }
+                    for note in &skipped {
+                        ui.colored_label(egui::Color32::RED, format!("skipped: {note}"));
+                    }
+
+                    ui.separator();
+                    if app.ssh_handle.is_some() {
+                        ui.label(format!("Serving on: {}", app.ssh_socket));
+                        ui.weak(format!("Use: export SSH_AUTH_SOCK={}", app.ssh_socket));
+                        // Refresh the served identities from the live database.
+                        if let Some(pool) = app.ssh_pool.clone() {
+                            let _ = pool.lock().map(|mut p| *p = identities);
+                        }
+                        if ui.button("Stop serving").clicked() {
+                            stop_clicked = true;
+                        }
+                    } else {
+                        let l = ui.label("Socket path:");
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut app.ssh_socket)
+                                .hint_text("/tmp/kpxc-ssh-agent.sock"),
+                        );
+                        r.labelled_by(l.id);
+                        let start = ui.add_enabled(!identities.is_empty(), egui::Button::new("Start serving"));
+                        if start.clicked() {
+                            start_clicked = true;
+                        }
+                    }
+                    ui.add_space(6.0);
+                    if ui.button("Close").clicked() {
+                        close_clicked = true;
+                    }
+                });
+
+            if start_clicked {
+                let (pool, _skipped) = app
+                    .db
+                    .as_ref()
+                    .map(kpxc_ssh_agent::pool_from_database)
+                    .unwrap();
+                let path = std::path::PathBuf::from(&app.ssh_socket);
+                match kpxc_ssh_agent::start(&path, pool.clone()) {
+                    Ok(handle) => {
+                        app.ssh_handle = Some(handle);
+                        app.ssh_pool = Some(pool);
+                        app.status = format!("SSH agent serving on {}", app.ssh_socket);
+                    }
+                    Err(e) => app.status = format!("cannot start SSH agent: {e:#}"),
+                }
+            }
+            if stop_clicked {
+                if let Some(handle) = app.ssh_handle.take() {
+                    handle.stop();
+                    app.ssh_pool = None;
+                    app.status = "SSH agent stopped".into();
+                }
+            }
+            if !close_clicked && open {
+                app.dialog = Dialog::SshAgent;
             }
         }
     }

@@ -171,7 +171,9 @@ attribute in clear text, and reports "Recycle bin is enabled"
 Migrated and verified: the headless core (database open/save, all cipher and
 KDF variants, entries/groups/attachments/protected fields, CLI commands
 above) and the GUI workflow described above — verified against KeePassXC
-2.8.0 in both directions (`./verify.sh`: 27/27 checks, 13+13 tests).
+2.8.0 in both directions, and the SSH agent is verified against the real
+`ssh-keygen`/`ssh-add` binaries (`./verify.sh`: 31 checks, 13+14 GUI +
+14 ssh-agent tests).
 
 ### Feature matrix (GUI)
 
@@ -196,7 +198,6 @@ above) and the GUI workflow described above — verified against KeePassXC
 | Database info / lock                     | ✅ tested |
 | Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
 | Auto-type execution (keystroke injection via `enigo`) | ✅ implemented + pipeline unit-tested with a recording injector; end-to-end injection requires the user to grant the macOS Accessibility permission (manual step) |
-| Browser integration (KeepassXC-Browser protocol) | ❌ not implemented — a browser extension counterpart is required to exercise it end-to-end |
-| SSH agent (key serving) | ❌ not implemented — a large standalone subsystem (ssh-agent socket protocol) |
-| KeeShare (signed share containers) | ❌ not implemented — depends on the sharing/container subsystem |
+| SSH agent (key serving) | ✅ implemented + tested against the REAL ssh tooling: our parser reads `ssh-keygen` output; `ssh-keygen -y/-lf` accepts our written keys; `ssh-add -l` lists keys served from database attachments via the `kpxc-ssh-agent` binary, the library server, AND the GUI's SSH Agent window; signatures verify. Subset: unencrypted `ssh-ed25519` (RSA/ECDSA + passphrase-encrypted documented as unsupported) |
+| KeeShare (signed share containers) | ❌ not implemented — next in feasibility order after the browser protocol |
 | YubiKey challenge-response keys | ❌ not implemented — requires physical YubiKey hardware to verify |
