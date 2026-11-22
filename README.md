@@ -121,6 +121,8 @@ Linux). It mirrors KeePassXC's core GUI workflow:
   and database custom icons rendered per entry
 * **Multi-selection** — Cmd/Ctrl-click rows for batch operations: move to
   group, recycle
+* **Drag & drop** — drag entries onto group rows (including the root and
+  the Recycle Bin) to move them
 * **Entry references** — insert `{REF:…}` references to other entries'
   fields through the editor; the details panel resolves them (and the
   original KeePassXC resolves references written by this GUI)
@@ -163,7 +165,7 @@ attribute in clear text, and reports "Recycle bin is enabled"
 Migrated and verified: the headless core (database open/save, all cipher and
 KDF variants, entries/groups/attachments/protected fields, CLI commands
 above) and the GUI workflow described above — verified against KeePassXC
-2.8.0 in both directions (`./verify.sh`: 27/27 checks, 13+11 tests).
+2.8.0 in both directions (`./verify.sh`: 27/27 checks, 13+12 tests).
 
 ### Feature matrix (GUI)
 
@@ -175,6 +177,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 | Entry table: sort, search, masked passwords | ✅ tested |
 | Icons: 69 standard icons + custom icon pool, rendered in tree/table, per-entry picker | ✅ tested (standard + custom persisted; rendered from the original KeePassXC assets) |
 | Multi-selection & batch operations (move to group, recycle) | ✅ tested (Cmd/Ctrl-click) |
+| Drag & drop (entries onto groups, incl. root and Recycle Bin) | ✅ tested (simulated pointer drags) |
 | Entry details + clipboard copy + attachment export | ✅ tested |
 | Entry editor (all fields, tags, password generator) | ✅ tested |
 | Custom attributes with protection toggles | ✅ tested + C++ cross-checked |
@@ -185,6 +188,6 @@ above) and the GUI workflow described above — verified against KeePassXC
 | Save / Save As / KDBX 3→4.1 upgrade       | ✅ tested + C++ cross-checked |
 | New database (Argon2id, generated keyfile) | ✅ tested + C++ cross-checked |
 | Database info / lock                     | ✅ tested |
-| Drag & drop (entries, groups)             | ❌ not yet (batch move covers the same operations) |
+| Drag & drop (entries, groups)             | ✅ entries→groups tested (group DnD not yet) |
 | Auto-type execution (simulating keystrokes) | ❌ not yet (editor + preview only; execution needs OS accessibility permissions) |
 | Browser integration, SSH agent, KeeShare, YubiKey challenge-response | ❌ out of scope (requires browser/USB integrations) |

@@ -367,7 +367,8 @@ impl App {
                 .and_then(|db| db.group(target))
                 .map(|g| g.name.clone())
                 .unwrap_or_default();
-            self.status = format!("Moved {moved} entries to {target_name}");
+            let plural = if moved == 1 { "entry" } else { "entries" };
+            self.status = format!("Moved {moved} {plural} to {target_name}");
         }
         self.selected_entries.clear();
         self.selected_entry = None;

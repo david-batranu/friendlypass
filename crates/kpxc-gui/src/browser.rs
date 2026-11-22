@@ -177,6 +177,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
 
     // Precompute everything the row renderer needs from the immutable db.
     let root_entries = app.db.as_ref().map(|db| db.num_entries()).unwrap_or(0);
+    let root_id = app.db.as_ref().map(|db| db.root().id());
     let root_icon = app
         .db
         .as_ref()
@@ -190,6 +191,8 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     let mut rename_dialog: Option<crate::dialogs::Dialog> = None;
     let mut delete_target: Option<GroupId> = None;
     let mut empty_bin_clicked = false;
+    // Entry dropped from the entry table onto a group row: (entry, target).
+    let mut dropped: Option<(EntryId, Option<GroupId>)> = None;
 
     // Split borrows: the icon cache is mutated while rendering rows.
     let cache = &mut app.icon_cache;
@@ -200,20 +203,27 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         } else {
             selected_group == row.id
         };
-        ui.horizontal(|ui| {
-            for _ in 0..row.depth.saturating_sub(1) {
-                ui.label("  ");
-            }
-            crate::icons::draw_icon(ui, cache, Some(&row.icon));
-            let label = if is_root {
-                format!("{root_name} ({root_entries})")
-            } else {
-                format!("{} ({})", row.name, row.entries)
-            };
-            if ui.selectable_label(selected, label).clicked() {
-                selected_group = if is_root { None } else { row.id };
-            }
+        // Drop zone: dropping an entry here moves it into this group.
+        let (_inner, payload) = ui.dnd_drop_zone(egui::Frame::default(), |ui| {
+            ui.horizontal(|ui| {
+                for _ in 0..row.depth.saturating_sub(1) {
+                    ui.label("  ");
+                }
+                crate::icons::draw_icon(ui, cache, Some(&row.icon));
+                let label = if is_root {
+                    format!("{root_name} ({root_entries})")
+                } else {
+                    format!("{} ({})", row.name, row.entries)
+                };
+                if ui.selectable_label(selected, label).clicked() {
+                    selected_group = if is_root { None } else { row.id };
+                }
+            });
         });
+        if let Some(entry_id) = payload {
+            // `None` means the root row was the drop target.
+            dropped = Some((*entry_id, row.id));
+        }
     };
 
     row_ui(
@@ -287,6 +297,13 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
 
     // Apply pending mutations now that the immutable borrows are over.
     app.selected_group = selected_group;
+    if let Some((entry_id, target)) = dropped {
+        // Dropping onto the root row moves the entry to the root group.
+        let gid = target.or(root_id);
+        if let Some(gid) = gid {
+            app.move_entries_to(&[entry_id], gid);
+        }
+    }
     if let Some(d) = new_dialog {
         app.dialog = d;
     }
@@ -388,15 +405,22 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
                     row.col(|ui| {
                         ui.horizontal(|ui| {
                             crate::icons::draw_icon(ui, &mut app.icon_cache, Some(&row_data.icon));
+                            // Draggable source: drag an entry onto a group in
+                            // the tree to move it (KeePassXC parity). The
+                            // title is both clickable and draggable.
                             let in_set = app.selected_entries.contains(&row_data.id);
                             let is_selected = app.selected_entry == Some(row_data.id);
                             let title_resp = ui
                                 .add(
                                     egui::Button::new(&row_data.title)
                                         .frame(false)
-                                        .selected(in_set || is_selected),
+                                        .selected(in_set || is_selected)
+                                        .sense(egui::Sense::click_and_drag()),
                                 )
-                                .on_hover_text("click to select, double-click to edit; Cmd/Ctrl-click for multi-selection");
+                                .on_hover_text("click to select, double-click to edit, drag onto a group to move; Cmd/Ctrl-click for multi-selection");
+                            if title_resp.dragged() {
+                                egui::DragAndDrop::set_payload(ui.ctx(), row_data.id);
+                            }
                             let multi = ui.ctx().input(|i| i.modifiers.command);
                             if title_resp.clicked() {
                                 if multi {

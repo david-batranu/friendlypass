@@ -115,7 +115,7 @@ check "keepassxc-cli opens it with the kpxc-generated keyfile" \
 
 echo
 echo "== 7. GUI (kpxc-gui): headless UI tests + C++ opens a GUI-written database =="
-check "cargo test -p kpxc-gui (11 headless UI tests: browse, edit, recycle bin, history, attributes/auto-type, icons, multi-selection, references)" \
+check "cargo test -p kpxc-gui (12 headless UI tests: browse, edit, recycle bin, history, attributes/auto-type, icons, multi-selection, references, drag&drop)" \
     cargo test --release -p kpxc-gui --manifest-path "$ROOT/Cargo.toml"
 check "GUI test run writes a database purely through the GUI dialogs" \
     cargo test --release -p kpxc-gui --manifest-path "$ROOT/Cargo.toml" --test gui write_database_for_external_verification -- --ignored
@@ -129,7 +129,7 @@ check "keepassxc-cli reads the GUI-created protected custom attribute" \
 check "keepassxc-cli reports the recycle bin as enabled (metadata round-trip)" \
     env sh -c "printf 'gui-pass-123\n' | '$CLI' db-info '$GUIOUT' 2>/dev/null | grep -q 'Recycle bin is enabled'"
 check "keepassxc-cli resolves the GUI-created {REF:...} entry reference (Notes shows the referenced password)" \
-    env sh -c "printf 'gui-pass-123\n' | '$CLI' show '$GUIOUT' 'GUI Only Entry' | grep -qF \"\$(cat '$ROOT/target/gui-temp-password.txt')\""
+    env sh -c "printf 'gui-pass-123\n' | '$CLI' show '$GUIOUT' 'GUI Only Entry' | grep -qF -f '$ROOT/target/gui-temp-password.txt'"
 
 echo
 echo "================================"
