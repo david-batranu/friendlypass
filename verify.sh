@@ -247,6 +247,13 @@ check "details pane is in the rightmost column, aligned with the list (1Password
     env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui details_panel_is_in_the_right_column"
 
 echo
+echo "== 19. Inline editing + passkeys =="
+check "Edit… opens the editor in the right column and applies changes (kittest)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui edit_opens_inline_in_the_right_column"
+check "passkey attributes show as a Passkey chip and are hidden as raw fields (kittest)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui passkey_fields_show_a_passkey_label_only"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

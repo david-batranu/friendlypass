@@ -63,6 +63,8 @@ pub struct App {
     pub remember_unlock: bool,
     /// A saved secret for the current database exists and was used on startup.
     pub auto_unlock: bool,
+    /// Inline entry editor shown in the right column (replaces details).
+    pub inline_edit: Option<Box<dialogs::EntryEdit>>,
     /// The OS login item is installed (read by the Settings dialog).
     pub launch_at_login: bool,
     /// Where auto-unlock secrets live (the OS keychain in production).
@@ -121,6 +123,7 @@ impl Default for App {
             unlock_error: String::new(),
             remember_unlock: false,
             auto_unlock: false,
+            inline_edit: None,
             launch_at_login: false,
             secret_store: Arc::new(startup::KeychainStore),
             db: None,
@@ -437,6 +440,7 @@ impl App {
         self.selected_group = None;
         self.search.clear();
         self.dialog = Dialog::None;
+        self.inline_edit = None;
         self.status = "Database locked".into();
         self.password.clear();
     }
@@ -631,12 +635,18 @@ impl App {
         let Some(entry) = db.entry(id) else { return };
         let targets = crate::refs::ref_targets(db, Some(id));
         let custom_icons = self.custom_icon_snapshot();
-        self.dialog = Dialog::EntryEdit(Box::new(dialogs::EntryEdit::from_entry(
+        self.inline_edit = Some(Box::new(dialogs::EntryEdit::from_entry(
             id,
             &entry,
             targets,
             custom_icons,
         )));
+        // Inline editing lives in the right-hand details column.
+        if !self.prefs.list_view {
+            self.prefs.list_view = true;
+            self.save_preferences();
+        }
+        self.dialog = Dialog::None;
     }
 
     /// Snapshot of the database custom icon pool (for editor pickers).
@@ -1464,13 +1474,39 @@ impl App {
                 )
                 .show(root, |ui| {
                     let width = ui.available_width().min(820.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("details-scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.set_max_width((width - 14.0).max(220.0));
-                            browser::entry_details(ui, self, self.selected_entry);
+                    if let Some(mut d) = self.inline_edit.take() {
+                        let (mut apply, mut cancel) =
+                            dialogs::entry_edit_inline_header(ui);
+                        apply |= ui.ctx().input_mut(|i| {
+                            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
                         });
+                        cancel |= ui.ctx().input_mut(|i| {
+                            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                        });
+                        if apply {
+                            d.apply(self);
+                            self.inline_edit = None;
+                        } else if cancel {
+                            self.inline_edit = None;
+                        } else {
+                            egui::ScrollArea::vertical()
+                                .id_salt("inline-edit-scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_max_width((width - 14.0).max(220.0));
+                                    dialogs::entry_edit_body(ui, self, &mut d);
+                                });
+                            self.inline_edit = Some(d);
+                        }
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .id_salt("details-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_max_width((width - 14.0).max(220.0));
+                                browser::entry_details(ui, self, self.selected_entry);
+                            });
+                    }
                 });
         } else {
             // The table needs the whole width (six configurable columns).

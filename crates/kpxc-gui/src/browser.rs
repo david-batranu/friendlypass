@@ -363,7 +363,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     }
 
     ui.separator();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let has_selection = selected_group.is_some();
         if ui
             .add_enabled(has_selection, egui::Button::new("Rename group…"))
@@ -901,6 +901,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             notes: crate::refs::resolve_references(db, e.get(fields::NOTES).unwrap_or_default()),
             tags: e.tags.join(", "),
             otp: crate::totp::current_code(&e),
+            has_passkey: e.fields.keys().any(|k| is_passkey_field(k)),
             group: {
                 let path = group_path(db, e.parent().id());
                 if path.is_empty() { "All Items".into() } else { path }
@@ -910,7 +911,9 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             attributes: e
                 .fields
                 .iter()
-                .filter(|(k, _)| !fields::KNOWN_FIELDS.contains(&k.as_str()))
+                .filter(|(k, _)| {
+                    !fields::KNOWN_FIELDS.contains(&k.as_str()) && !is_passkey_field(k)
+                })
                 .map(|(k, v)| {
                     (
                         k.clone(),
@@ -979,6 +982,20 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     .size(13.0)
                     .color(crate::theme::MUTED),
             );
+            if d.has_passkey {
+                ui.add_space(4.0);
+                egui::Frame::new()
+                    .fill(crate::theme::BG)
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("Passkey")
+                                .size(12.0)
+                                .color(crate::theme::MUTED),
+                        );
+                    });
+            }
             if !d.tags.is_empty() {
                 ui.add_space(3.0);
                 ui.horizontal_wrapped(|ui| {
@@ -1384,7 +1401,13 @@ fn spaced_code(code: &str) -> String {
     out
 }
 
+/// KeePassXC stores passkeys in KPEX_PASSKEY*/KPXC_PASSKEY* attributes.
+fn is_passkey_field(key: &str) -> bool {
+    key.starts_with("KPEX_PASSKEY") || key.starts_with("KPXC_PASSKEY")
+}
+
 struct EntryDetailsData {
+    has_passkey: bool,
     title: String,
     username: String,
     password: String,

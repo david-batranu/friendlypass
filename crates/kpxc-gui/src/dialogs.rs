@@ -570,6 +570,258 @@ impl EntryEdit {
     }
 }
 
+/// The entry editor form, shared by the New Entry modal and the inline
+/// right-column editor. Buttons are supplied by the caller.
+pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
+                    let field_width = (ui.available_width() - 200.0).max(120.0);
+                    form_row(ui, "Title:", |ui, id| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.title).desired_width(field_width));
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "UserName:", |ui, id| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.username).desired_width(field_width));
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Password:", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.password)
+                                .password(!d.show_password)
+                                .hint_text("password")
+                                .desired_width((field_width - 170.0).max(100.0)),
+                        );
+                        r.labelled_by(id);
+                        if ui.button("Generate").clicked() {
+                            d.password = kpxc::commands::generate_password_opts(24, true, true, true, true);
+                        }
+                        if ui
+                            .button(if d.show_password { "Hide" } else { "Show" })
+                            .on_hover_text("Show or hide the password")
+                            .clicked()
+                        {
+                            d.show_password = !d.show_password;
+                        }
+                    });
+                    form_row(ui, "URL:", |ui, id| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.url).desired_width(field_width));
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Tags:", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.tags)
+                                .hint_text("comma,separated")
+                                .desired_width(field_width),
+                        );
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Notes:", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::multiline(&mut d.notes)
+                                .desired_rows(5)
+                                .desired_width(field_width),
+                        );
+                        r.labelled_by(id);
+                    });
+
+                    // --- custom attributes -----------------------------------
+                    ui.separator();
+                    ui.strong("Custom attributes");
+                    let mut remove_attr: Option<usize> = None;
+                    for (i, a) in d.attributes.iter_mut().enumerate() {
+                        egui::Frame::new()
+                            .fill(crate::theme::BG)
+                            .corner_radius(8)
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                let l = ui.label(format!("Attribute {i} key:"));
+                                let width = ui.available_width();
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(&mut a.key)
+                                        .desired_width(width),
+                                );
+                                r.labelled_by(l.id);
+                                let l = ui.label(format!("Attribute {i} value:"));
+                                let width = ui.available_width();
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(&mut a.value)
+                                        .password(a.protected)
+                                        .desired_width(width),
+                                );
+                                r.labelled_by(l.id);
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut a.protected, format!("Protected {i}"));
+                                    if ui.button(format!("Remove attribute {i}")).clicked() {
+                                        remove_attr = Some(i);
+                                    }
+                                });
+                            });
+                    }
+                    if let Some(i) = remove_attr {
+                        d.attributes.remove(i);
+                    }
+                    if ui.button("Add attribute").clicked() {
+                        d.attributes.push(AttributeRow {
+                            key: String::new(),
+                            value: String::new(),
+                            protected: false,
+                        });
+                    }
+
+                    // --- auto-type --------------------------------------------
+                    ui.separator();
+                    ui.strong("Auto-Type");
+                    ui.checkbox(&mut d.at_enabled, "Auto-Type enabled");
+                    ui.horizontal(|ui| {
+                        let l = ui.label("Default sequence:");
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.at_default_sequence)
+                                .hint_text("{USERNAME}{TAB}{PASSWORD}{ENTER}")
+                                .desired_width(field_width),
+                        );
+                        r.labelled_by(l.id);
+                    });
+                    ui.checkbox(&mut d.at_obfuscate, "Obfuscate using the clipboard");
+                    let mut remove_assoc: Option<usize> = None;
+                    for (i, a) in d.at_associations.iter_mut().enumerate() {
+                        egui::Frame::new()
+                            .fill(crate::theme::BG)
+                            .corner_radius(8)
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                let l = ui.label(format!("Window {i}:"));
+                                let width = ui.available_width();
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(&mut a.window)
+                                        .hint_text("* - Notepad")
+                                        .desired_width(width),
+                                );
+                                r.labelled_by(l.id);
+                                let l = ui.label(format!("Sequence {i}:"));
+                                let width = ui.available_width();
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(&mut a.sequence)
+                                        .desired_width(width),
+                                );
+                                r.labelled_by(l.id);
+                                if ui.button(format!("Remove association {i}")).clicked() {
+                                    remove_assoc = Some(i);
+                                }
+                            });
+                    }
+                    if let Some(i) = remove_assoc {
+                        d.at_associations.remove(i);
+                    }
+                    if ui.button("Add window association").clicked() {
+                        d.at_associations.push(AssociationRow {
+                            window: String::new(),
+                            sequence: String::new(),
+                        });
+                    }
+
+                    // Auto-type sequence preview (placeholder resolution).
+                    if !d.at_default_sequence.is_empty() {
+                        let preview = d
+                            .entry_id
+                            .and_then(|id| app.db.as_ref().map(|db| (db, id)))
+                            .map(|(db, id)| {
+                                refs::resolve_auto_type_sequence(db, id, &d.at_default_sequence)
+                            });
+                        if let Some(mut preview) = preview {
+                            ui.add_space(4.0);
+                            let l = ui.label("Sequence preview:");
+                            let r = ui.add(egui::TextEdit::singleline(&mut preview).interactive(false));
+                            r.labelled_by(l.id);
+                        }
+                    }
+
+                    // --- entry references -------------------------------------
+                    ui.separator();
+                    ui.strong("References");
+                    ui.label("Insert a field reference to another entry ({REF:…}) into one of this entry's fields.");
+                    ui.horizontal(|ui| {
+                        let selected_text = d
+                            .ref_target
+                            .and_then(|i| d.ref_targets.get(i))
+                            .map(|t| t.title.clone())
+                            .unwrap_or_else(|| "(select entry)".into());
+                        egui::ComboBox::new("ref-target", "Referenced entry")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for (i, t) in d.ref_targets.iter().enumerate() {
+                                    ui.selectable_value(&mut d.ref_target, Some(i), &t.title);
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        let selected_text = refs::REFERENCEABLE
+                            .iter()
+                            .find(|(code, _, _)| *code == d.ref_field)
+                            .map(|(_, name, _)| *name)
+                            .unwrap_or("Password");
+                        egui::ComboBox::new("ref-field", "Referenced field")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for (code, name, _) in refs::REFERENCEABLE {
+                                    ui.selectable_value(&mut d.ref_field, code, name);
+                                }
+                            });
+                        let selected_text = refs::REFERENCEABLE
+                            .iter()
+                            .find(|(code, _, _)| *code == d.ref_into)
+                            .map(|(_, name, _)| *name)
+                            .unwrap_or("Notes");
+                        egui::ComboBox::new("ref-into", "Insert into")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for (code, name, _) in refs::REFERENCEABLE {
+                                    ui.selectable_value(&mut d.ref_into, code, name);
+                                }
+                            });
+                    });
+                    if ui.button("Insert reference").clicked() {
+                        if let Some(target) = d.ref_target.and_then(|i| d.ref_targets.get(i)) {
+                            let reference = refs::make_reference(d.ref_field, &target.uuid);
+                            match d.ref_into {
+                                refs::CODE_TITLE => d.title.push_str(&reference),
+                                refs::CODE_USERNAME => d.username.push_str(&reference),
+                                refs::CODE_PASSWORD => d.password.push_str(&reference),
+                                refs::CODE_URL => d.url.push_str(&reference),
+                                refs::CODE_NOTES => d.notes.push_str(&reference),
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    // --- icon picker ---------------------------------------------
+                    ui.separator();
+                    ui.strong("Icon");
+                    icon_picker(ui, app, &mut d.icon, &d.custom_icons, &mut d.icon_path);
+
+}
+
+/// The fixed header of the inline entry editor (title + OK/Cancel).
+/// The body is rendered separately inside a scroll area.
+pub fn entry_edit_inline_header(ui: &mut egui::Ui) -> (bool, bool) {
+    let mut apply = false;
+    let mut cancelled = false;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Edit Item")
+                .size(24.0)
+                .strong()
+                .color(crate::theme::TEXT),
+        );
+        ui.add_space(10.0);
+        if ui.add(crate::theme::primary_button("OK")).clicked() {
+            apply = true;
+        }
+        if ui.add(crate::theme::subtle_button("Cancel")).clicked() {
+            cancelled = true;
+        }
+    });
+    ui.add(egui::Separator::default().spacing(8.0));
+    (apply, cancelled)
+}
+
 // ---------------------------------------------------------------------------
 // group editor
 // ---------------------------------------------------------------------------
@@ -770,203 +1022,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .collapsible(false)
                 .default_width(880.0)
                 .show(ctx, |ui| {
-                    form_row(ui, "Title:", |ui, id| {
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.title).desired_width(600.0));
-                        r.labelled_by(id);
-                    });
-                    form_row(ui, "UserName:", |ui, id| {
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.username).desired_width(600.0));
-                        r.labelled_by(id);
-                    });
-                    form_row(ui, "Password:", |ui, id| {
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut d.password)
-                                .password(!d.show_password)
-                                .hint_text("password")
-                                .desired_width(600.0),
-                        );
-                        r.labelled_by(id);
-                        if ui.button("Generate").clicked() {
-                            d.password = kpxc::commands::generate_password_opts(24, true, true, true, true);
-                        }
-                        if ui
-                            .button(if d.show_password { "Hide" } else { "Show" })
-                            .on_hover_text("Show or hide the password")
-                            .clicked()
-                        {
-                            d.show_password = !d.show_password;
-                        }
-                    });
-                    form_row(ui, "URL:", |ui, id| {
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.url).desired_width(600.0));
-                        r.labelled_by(id);
-                    });
-                    form_row(ui, "Tags:", |ui, id| {
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut d.tags)
-                                .hint_text("comma,separated")
-                                .desired_width(600.0),
-                        );
-                        r.labelled_by(id);
-                    });
-                    form_row(ui, "Notes:", |ui, id| {
-                        let r = ui.add(
-                            egui::TextEdit::multiline(&mut d.notes)
-                                .desired_rows(5)
-                                .desired_width(600.0),
-                        );
-                        r.labelled_by(id);
-                    });
-
-                    // --- custom attributes -----------------------------------
-                    ui.separator();
-                    ui.strong("Custom attributes");
-                    let mut remove_attr: Option<usize> = None;
-                    for (i, a) in d.attributes.iter_mut().enumerate() {
-                        ui.horizontal(|ui| {
-                            let l = ui.label(format!("Attribute {i} key:"));
-                            let r = ui.text_edit_singleline(&mut a.key);
-                            r.labelled_by(l.id);
-                            let l = ui.label(format!("Attribute {i} value:"));
-                            let r = ui.add(
-                                egui::TextEdit::singleline(&mut a.value).password(a.protected).desired_width(300.0),
-                            );
-                            r.labelled_by(l.id);
-                            ui.checkbox(&mut a.protected, format!("Protected {i}"));
-                            if ui.button(format!("Remove attribute {i}")).clicked() {
-                                remove_attr = Some(i);
-                            }
-                        });
-                    }
-                    if let Some(i) = remove_attr {
-                        d.attributes.remove(i);
-                    }
-                    if ui.button("Add attribute").clicked() {
-                        d.attributes.push(AttributeRow {
-                            key: String::new(),
-                            value: String::new(),
-                            protected: false,
-                        });
-                    }
-
-                    // --- auto-type --------------------------------------------
-                    ui.separator();
-                    ui.strong("Auto-Type");
-                    ui.checkbox(&mut d.at_enabled, "Auto-Type enabled");
-                    ui.horizontal(|ui| {
-                        let l = ui.label("Default sequence:");
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut d.at_default_sequence)
-                                .hint_text("{USERNAME}{TAB}{PASSWORD}{ENTER}"),
-                        );
-                        r.labelled_by(l.id);
-                    });
-                    ui.checkbox(&mut d.at_obfuscate, "Obfuscate using the clipboard");
-                    let mut remove_assoc: Option<usize> = None;
-                    for (i, a) in d.at_associations.iter_mut().enumerate() {
-                        ui.horizontal(|ui| {
-                            let l = ui.label(format!("Window {i}:"));
-                            let r = ui.add(
-                                egui::TextEdit::singleline(&mut a.window).hint_text("* - Notepad"),
-                            );
-                            r.labelled_by(l.id);
-                            let l = ui.label(format!("Sequence {i}:"));
-                            let r = ui.text_edit_singleline(&mut a.sequence);
-                            r.labelled_by(l.id);
-                            if ui.button(format!("Remove association {i}")).clicked() {
-                                remove_assoc = Some(i);
-                            }
-                        });
-                    }
-                    if let Some(i) = remove_assoc {
-                        d.at_associations.remove(i);
-                    }
-                    if ui.button("Add window association").clicked() {
-                        d.at_associations.push(AssociationRow {
-                            window: String::new(),
-                            sequence: String::new(),
-                        });
-                    }
-
-                    // Auto-type sequence preview (placeholder resolution).
-                    if !d.at_default_sequence.is_empty() {
-                        let preview = d
-                            .entry_id
-                            .and_then(|id| app.db.as_ref().map(|db| (db, id)))
-                            .map(|(db, id)| {
-                                refs::resolve_auto_type_sequence(db, id, &d.at_default_sequence)
-                            });
-                        if let Some(mut preview) = preview {
-                            ui.add_space(4.0);
-                            let l = ui.label("Sequence preview:");
-                            let r = ui.add(egui::TextEdit::singleline(&mut preview).interactive(false));
-                            r.labelled_by(l.id);
-                        }
-                    }
-
-                    // --- entry references -------------------------------------
-                    ui.separator();
-                    ui.strong("References");
-                    ui.label("Insert a field reference to another entry ({REF:…}) into one of this entry's fields.");
-                    ui.horizontal(|ui| {
-                        let selected_text = d
-                            .ref_target
-                            .and_then(|i| d.ref_targets.get(i))
-                            .map(|t| t.title.clone())
-                            .unwrap_or_else(|| "(select entry)".into());
-                        egui::ComboBox::new("ref-target", "Referenced entry")
-                            .selected_text(selected_text)
-                            .show_ui(ui, |ui| {
-                                for (i, t) in d.ref_targets.iter().enumerate() {
-                                    ui.selectable_value(&mut d.ref_target, Some(i), &t.title);
-                                }
-                            });
-                    });
-                    ui.horizontal(|ui| {
-                        let selected_text = refs::REFERENCEABLE
-                            .iter()
-                            .find(|(code, _, _)| *code == d.ref_field)
-                            .map(|(_, name, _)| *name)
-                            .unwrap_or("Password");
-                        egui::ComboBox::new("ref-field", "Referenced field")
-                            .selected_text(selected_text)
-                            .show_ui(ui, |ui| {
-                                for (code, name, _) in refs::REFERENCEABLE {
-                                    ui.selectable_value(&mut d.ref_field, code, name);
-                                }
-                            });
-                        let selected_text = refs::REFERENCEABLE
-                            .iter()
-                            .find(|(code, _, _)| *code == d.ref_into)
-                            .map(|(_, name, _)| *name)
-                            .unwrap_or("Notes");
-                        egui::ComboBox::new("ref-into", "Insert into")
-                            .selected_text(selected_text)
-                            .show_ui(ui, |ui| {
-                                for (code, name, _) in refs::REFERENCEABLE {
-                                    ui.selectable_value(&mut d.ref_into, code, name);
-                                }
-                            });
-                    });
-                    if ui.button("Insert reference").clicked() {
-                        if let Some(target) = d.ref_target.and_then(|i| d.ref_targets.get(i)) {
-                            let reference = refs::make_reference(d.ref_field, &target.uuid);
-                            match d.ref_into {
-                                refs::CODE_TITLE => d.title.push_str(&reference),
-                                refs::CODE_USERNAME => d.username.push_str(&reference),
-                                refs::CODE_PASSWORD => d.password.push_str(&reference),
-                                refs::CODE_URL => d.url.push_str(&reference),
-                                refs::CODE_NOTES => d.notes.push_str(&reference),
-                                _ => {}
-                            }
-                        }
-                    }
-
-                    // --- icon picker ---------------------------------------------
-                    ui.separator();
-                    ui.strong("Icon");
-                    icon_picker(ui, app, &mut d.icon, &d.custom_icons, &mut d.icon_path);
-
+                    entry_edit_body(ui, app, &mut d);
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {

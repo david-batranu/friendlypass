@@ -108,7 +108,7 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **68/68 checks, all workspace tests green.**
+Current result: **70/70 checks, all workspace tests green.**
 
 ## Layout
 
@@ -279,6 +279,13 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 * **Per-group export** — right-click a group in the tree and choose
   *Export as KeePass 2 XML… / CSV… / HTML…*; only that group and its
   descendants are written (the group becomes the XML root / CSV path root)
+* **Inline editing** — **Edit…** opens the full editor in the right column
+  (replacing the details view), with the same fields, attributes, auto-type,
+  references and icon picker as the New Entry modal; OK/Cancel stay pinned
+  at the top while the form scrolls
+* **Passkeys** — entries with `KPEX_PASSKEY*` / `KPXC_PASSKEY*` attributes
+  show a single **Passkey** chip; the raw credential/private-key fields are
+  hidden from the generic attribute list
 * **Entry details** — copy username / password / URL to the clipboard,
   **live TOTP codes** for OTP entries (RFC 6238, refreshed every second,
   copy button), custom attributes, auto-type summary, attachments with
@@ -319,7 +326,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 68 checks; GUI kittest, import/export, startup/auto-unlock, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 70 checks; GUI kittest, import/export, startup/auto-unlock, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)
@@ -338,6 +345,8 @@ CLI test suites all green).
 | 1Password-inspired light UI | ✅ three columns (library sidebar, card list, details), light palette with blue accents, rounded cards, large entry details header, inline field cards, website/security/notes/attachments sections, last-edited footer, List/Table switch — kittest snapshots |
 | Entry details layout | ✅ details live in the rightmost column, not under the groups/list; the group/list dividers never cross it — kittest geometry check |
 | Entry details + clipboard copy + attachment export | ✅ tested (light card layout with username/password/TOTP, website, security fields, notes, attachments, last edited) |
+| Inline entry editing (right column) | ✅ **Edit…** replaces the details view with the editor; OK/Cancel pinned at the top while the form scrolls; kittest verifies the editor is in the right column and changes persist |
+| Passkeys | ✅ `KPEX_PASSKEY*` / `KPXC_PASSKEY*` entries show a **Passkey** chip; raw fields are hidden from the attribute list — kittest |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |
 | Run at startup | ✅ **Settings → Launch at login**: macOS LaunchAgent (LaunchServices, no Terminal), Windows `Run` registry key, Linux autostart entry; `--enable/--disable-launch-at-login` CLI flags — tested (plist generation) and enabled on this Mac |

@@ -320,6 +320,10 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
 
 /// Focus the widget, select all, and replace its text.
 fn replace_text(harness: &mut Harness<kpxc_gui::App>, label: &str, text: &str) {
+    // Scroll the field into view first: in the inline editor (and other
+    // scroll areas) an off-screen control cannot be clicked.
+    harness.get_by_label(label).scroll_to_me();
+    harness.run();
     harness.get_by_label(label).click();
     harness.run();
     harness.key_combination_modifiers(egui::Modifiers::COMMAND, &[egui::Key::A]);
@@ -342,6 +346,8 @@ fn switch_to_table(harness: &mut Harness<kpxc_gui::App>) {
 
 /// Focus a text field, select all and delete its contents.
 fn clear_text(harness: &mut Harness<kpxc_gui::App>, label: &str) {
+    harness.get_by_label(label).scroll_to_me();
+    harness.run();
     harness.get_by_label(label).click();
     harness.run();
     harness.key_combination_modifiers(egui::Modifiers::COMMAND, &[egui::Key::A]);
@@ -704,7 +710,7 @@ fn entry_reference_insert_and_resolve() {
     harness.run();
     harness.get_by_label("Edit…").click();
     harness.run();
-    if let kpxc_gui::dialogs::Dialog::EntryEdit(d) = &mut harness.state_mut().dialog {
+    if let Some(d) = harness.state_mut().inline_edit.as_mut() {
         d.ref_target = d.ref_targets.iter().position(|t| t.title == "Sample Entry");
         assert!(d.ref_target.is_some(), "Sample Entry is a reference target");
     }
@@ -1429,13 +1435,13 @@ fn keyboard_shortcuts_and_dialog_keys() {
     // Cmd+E opens the editor for the selection; Cmd+Enter applies it.
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
     harness.run();
-    match &harness.state().dialog {
-        Dialog::EntryEdit(d) => assert_eq!(d.title, "Sample Entry"),
-        _other => panic!("expected the entry editor"),
+    match &harness.state().inline_edit {
+        Some(d) => assert_eq!(d.title, "Sample Entry"),
+        None => panic!("expected the inline entry editor"),
     }
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
     harness.run();
-    assert!(matches!(harness.state().dialog, Dialog::None));
+    assert!(harness.state().inline_edit.is_none());
     assert!(
         harness.state().status.contains("Updated entry"),
         "Cmd+Enter applied the edit: {:?}",
@@ -1933,6 +1939,99 @@ fn auto_unlock_failure_falls_back_to_the_unlock_screen() {
     assert!(!app.try_auto_unlock());
     assert!(app.db.is_none());
     assert!(app.unlock_error.contains("Auto-unlock failed"));
+}
+
+// ---------------------------------------------------------------------------
+// inline editing and passkeys
+// ---------------------------------------------------------------------------
+
+#[test]
+fn edit_opens_inline_in_the_right_column() {
+    use kpxc_gui::dialogs::Dialog;
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1300.0, 900.0));
+    harness.run();
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    assert!(
+        matches!(harness.state().dialog, Dialog::None),
+        "no modal editor"
+    );
+    assert!(harness.state().inline_edit.is_some(), "inline editor active");
+    // The editor is in the right column, not a floating window.
+    let title_field = harness.get_by_label("Title:").rect();
+    let list_title = harness.get_by_label("Sample Entry").rect();
+    assert!(
+        title_field.left() > list_title.right(),
+        "editor fields are in the right column"
+    );
+    replace_text(&mut harness, "Title:", "Inline Renamed");
+    harness.get_by_label("OK").click();
+    harness.run();
+    let state = harness.state();
+    assert!(state.inline_edit.is_none());
+    let id = state.selected_entry.expect("entry selected");
+    let title = state
+        .db
+        .as_ref()
+        .unwrap()
+        .entry(id)
+        .unwrap()
+        .get("Title")
+        .unwrap()
+        .to_owned();
+    assert_eq!(title, "Inline Renamed");
+    assert!(state.dirty);
+}
+
+#[test]
+fn passkey_fields_show_a_passkey_label_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1300.0, 900.0));
+    harness.run();
+
+    {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        let id = db
+            .iter_all_entries()
+            .find(|e| e.get("Title") == Some("Sample Entry"))
+            .map(|e| e.id())
+            .unwrap();
+        if let Some(mut entry) = db.entry_mut(id) {
+            entry.set_unprotected("KPEX_PASSKEY_CREDENTIAL_ID", "cred-123");
+            entry.set_unprotected("KPEX_PASSKEY_RELYING_PARTY", "example.com");
+        }
+    }
+    harness.run();
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+
+    harness.get_by_label("Passkey");
+    assert_eq!(
+        harness
+            .query_all_by_label("KPEX_PASSKEY_CREDENTIAL_ID")
+            .count(),
+        0,
+        "raw passkey fields are not listed as generic attributes"
+    );
+    assert_eq!(
+        harness.query_all_by_label("KPEX_PASSKEY_RELYING_PARTY").count(),
+        0
+    );
 }
 
 // ---------------------------------------------------------------------------
