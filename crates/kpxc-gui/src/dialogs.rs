@@ -37,6 +37,8 @@ pub enum Dialog {
     Browser,
     /// KeeShare: share a group via a container file.
     ShareGroup(Box<ShareDialog>),
+    /// Keyboard shortcut reference.
+    Shortcuts,
 }
 
 /// State of the KeeShare dialog.
@@ -559,6 +561,75 @@ impl NewDb {
 
 /// Render whatever dialog is currently open.
 pub fn show(app: &mut App, ctx: &egui::Context) {
+    // Universal dialog keys: Escape cancels, Enter confirms single-line
+    // dialogs (the entry editor uses Cmd+Enter because of its multiline
+    // notes field).
+    let dialog_open = !matches!(app.dialog, Dialog::None);
+    let escape_key = dialog_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    // Enter confirms these dialogs. It is deliberately not consumed in
+    // dialogs that don't use it (the entry editor needs Enter in its
+    // multiline notes field; it uses Cmd+Enter to apply instead).
+    let enter_applies = matches!(
+        app.dialog,
+        Dialog::ConfirmUpgrade
+            | Dialog::ConfirmDeleteEntry(_)
+            | Dialog::ConfirmDeleteGroup(_)
+            | Dialog::ConfirmEmptyRecycleBin
+            | Dialog::DbInfo
+            | Dialog::Shortcuts
+            | Dialog::SshAgent
+            | Dialog::Browser
+            | Dialog::GroupNew(_)
+            | Dialog::GroupRename(_)
+            | Dialog::NewDb(_)
+            | Dialog::SaveAs(_)
+            | Dialog::BatchMove(_)
+            | Dialog::ShareGroup(_)
+    );
+    let enter_key = dialog_open && enter_applies && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let cmd_enter_key = matches!(app.dialog, Dialog::EntryEdit(_))
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
+
+    if dialog_open && escape_key {
+        app.dialog = Dialog::None;
+        app.status = "Cancelled".into();
+        return;
+    }
+
+    // Confirmation dialogs: Enter confirms immediately.
+    if dialog_open && enter_key {
+        match &app.dialog {
+            Dialog::ConfirmUpgrade => {
+                app.dialog = Dialog::None;
+                app.upgrade_confirmed = true;
+                app.perform_save(None);
+                return;
+            }
+            Dialog::ConfirmDeleteEntry(id) => {
+                let id = *id;
+                app.dialog = Dialog::None;
+                app.delete_entry(id);
+                return;
+            }
+            Dialog::ConfirmDeleteGroup(id) => {
+                let id = *id;
+                app.dialog = Dialog::None;
+                app.delete_group(id);
+                return;
+            }
+            Dialog::ConfirmEmptyRecycleBin => {
+                app.dialog = Dialog::None;
+                app.empty_recycle_bin();
+                return;
+            }
+            Dialog::DbInfo | Dialog::Shortcuts | Dialog::SshAgent | Dialog::Browser => {
+                app.dialog = Dialog::None;
+                return;
+            }
+            _ => {}
+        }
+    }
+
     // Swap the dialog out so the rest of `app` can be mutated freely while
     // the dialog state is being rendered.
     let dialog = std::mem::replace(&mut app.dialog, Dialog::None);
@@ -780,6 +851,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 });
+            if cmd_enter_key {
+                apply = true;
+            }
             if apply {
                 d.apply(app);
             } else if !cancelled && open {
@@ -807,6 +881,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 });
+            if enter_key {
+                apply = true;
+            }
             if apply && !d.name.trim().is_empty() {
                 if let Some(db) = app.db.as_mut() {
                     if let Some(mut parent) = db.group_mut(d.parent) {
@@ -843,6 +920,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 });
+            if enter_key {
+                apply = true;
+            }
             if apply && !d.name.trim().is_empty() {
                 if let Some(db) = app.db.as_mut() {
                     if let Some(mut group) = db.group_mut(d.id.unwrap()) {
@@ -970,6 +1050,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 });
+            if enter_key && !path.trim().is_empty() {
+                save = true;
+            }
             if save {
                 app.perform_save(Some(path.clone()));
             }
@@ -1054,6 +1137,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             }
                         }
                     });
+                    if enter_key {
+                        match d.validate() {
+                            Ok(()) => create = true,
+                            Err(e) => d.error = e,
+                        }
+                    }
                 });
             if create {
                 create_new_database(app, &d);
@@ -1279,6 +1368,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 });
+            if enter_key && bm.target.is_some() {
+                move_clicked = true;
+            }
             if move_clicked {
                 if let Some(gid) = bm.target {
                     app.move_entries_to(&bm.entries, gid);
@@ -1635,6 +1727,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                 }
             }
+            if enter_key && !d.path.trim().is_empty() && !d.password.is_empty() {
+                saved = true;
+            }
             if saved {
                 if let Some(db) = app.db.as_mut() {
                     let reference = {
@@ -1650,8 +1745,59 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 app.dialog = Dialog::ShareGroup(d);
             }
         }
+        Dialog::Shortcuts => {
+            let mut open = true;
+            let mut close_clicked = false;
+            egui::Window::new("Keyboard Shortcuts")
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(560.0)
+                .show(ctx, |ui| {
+                    egui::Grid::new("shortcuts-grid")
+                        .num_columns(2)
+                        .striped(true)
+                        .spacing([24.0, 4.0])
+                        .show(ui, |ui| {
+                            for (keys, action) in SHORTCUTS {
+                                ui.strong(*keys);
+                                ui.label(*action);
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(6.0);
+                    ui.weak("Shortcuts are ignored while a text field has focus. Cmd is Ctrl on Windows/Linux.");
+                    ui.add_space(6.0);
+                    if ui.button("Close").clicked() {
+                        close_clicked = true;
+                    }
+                });
+            if !close_clicked && open {
+                app.dialog = Dialog::Shortcuts;
+            }
+        }
     }
 }
+
+/// The keyboard shortcut reference shown in the GUI.
+pub const SHORTCUTS: &[(&str, &str)] = &[
+    ("Cmd/Ctrl+C", "Copy password of the selected entry"),
+    ("Cmd/Ctrl+B", "Copy username"),
+    ("Cmd/Ctrl+U", "Copy URL"),
+    ("Cmd/Ctrl+T", "Copy TOTP code"),
+    ("Cmd/Ctrl+F", "Focus the search box"),
+    ("Cmd/Ctrl+N", "New entry"),
+    ("Cmd/Ctrl+Shift+N", "New group"),
+    ("Cmd/Ctrl+E or Enter", "Edit the selected entry"),
+    ("Cmd/Ctrl+H", "Entry history"),
+    ("Cmd/Ctrl+G", "Password generator"),
+    ("Delete / Backspace", "Recycle the selected entry"),
+    ("Cmd/Ctrl+S", "Save the database"),
+    ("Cmd/Ctrl+Shift+S", "Save as…"),
+    ("Cmd/Ctrl+L", "Lock the database"),
+    ("F1", "Show this shortcut reference"),
+    ("Escape", "Close a dialog / clear the search"),
+    ("Enter", "Confirm a dialog (Cmd+Enter in the entry editor)"),
+];
 
 /// Create (and open) a new database from the dialog state.
 fn create_new_database(app: &mut App, d: &NewDb) {

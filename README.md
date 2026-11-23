@@ -54,6 +54,32 @@ layers; this project is the behavior/compatibility layer on top:
   small platform shim; only the software `LocalChallenge` component is used
   (no USB transport), so behavior is unchanged.
 
+## Keyboard shortcuts
+
+| Keys | Action |
+| --- | --- |
+| `Cmd/Ctrl+C` | Copy password of the selected entry |
+| `Cmd/Ctrl+B` | Copy username |
+| `Cmd/Ctrl+U` | Copy URL |
+| `Cmd/Ctrl+T` | Copy TOTP code |
+| `Cmd/Ctrl+F` | Focus the search box |
+| `Cmd/Ctrl+N` | New entry |
+| `Cmd/Ctrl+Shift+N` | New group |
+| `Cmd/Ctrl+E` / `Enter` | Edit the selected entry |
+| `Cmd/Ctrl+H` | Entry history |
+| `Cmd/Ctrl+G` | Password generator |
+| `Delete` / `Backspace` | Recycle the selected entry (with confirmation) |
+| `Cmd/Ctrl+S` | Save |
+| `Cmd/Ctrl+Shift+S` | Save as… |
+| `Cmd/Ctrl+L` | Lock the database |
+| `F1` | Shortcut reference |
+| `Escape` | Close a dialog / clear the search |
+| `Enter` | Confirm a dialog (`Cmd+Enter` applies the entry editor) |
+
+The same map is available in the app via **Shortcuts…** in the toolbar or `F1`.
+Shortcuts that edit entries are inactive while a text field has focus, so
+normal typing (and `Cmd+C` inside the search box) keeps working.
+
 ## Compatibility, verified
 
 `./verify.sh` runs the full cross-check against the **real KeePassXC
@@ -69,7 +95,7 @@ layers; this project is the behavior/compatibility layer on top:
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **51/51 checks, all workspace tests green.**
+Current result: **53/53 checks, all workspace tests green.**
 
 ## Layout
 
@@ -181,7 +207,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 51 checks; GUI kittest, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 53 checks; GUI kittest, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)
@@ -198,6 +224,7 @@ CLI test suites all green).
 | Entry details + clipboard copy + attachment export | ✅ tested |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |
+| Keyboard shortcuts (KeePassXC-style: Cmd/Ctrl+C/B/U/T copy password/username/URL/TOTP, Cmd+F search, Cmd+N new entry, Cmd+Shift+N new group, Cmd+E/Enter edit, Cmd+H history, Cmd+G generator, Cmd+S save, Cmd+Shift+S save as, Cmd+L lock, Delete recycle, F1 shortcut reference; dialogs: Enter confirm, Escape cancel, Cmd+Enter apply editor) | ✅ implemented + tested (kittest key events exercise the real bindings) |
 | Custom attributes with protection toggles | ✅ tested + C++ cross-checked |
 | Auto-type editor (default sequence, obfuscation, window associations, placeholder preview) | ✅ tested + C++ cross-checked |
 | Entry references ({REF:…}) — insertion, resolution, persistence | ✅ tested + C++ cross-checked (keepassxc-cli resolves GUI-written references) |

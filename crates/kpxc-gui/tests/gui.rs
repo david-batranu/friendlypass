@@ -1339,7 +1339,125 @@ fn details_show_current_totp_code() {
     // (No image snapshot here: the code and its countdown change over time.)
 }
 
+// ---------------------------------------------------------------------------
+// keyboard shortcuts
+// ---------------------------------------------------------------------------
 
+#[test]
+fn keyboard_shortcuts_and_dialog_keys() {
+    use kpxc_gui::dialogs::Dialog;
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1400.0, 1000.0));
+    harness.run();
+
+    // Select an entry in the table.
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+
+    // Cmd+N opens the new-entry dialog; Escape cancels it.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+    harness.run();
+    assert!(matches!(harness.state().dialog, Dialog::EntryEdit(_)));
+    harness.get_by_label("Title:");
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(
+        matches!(harness.state().dialog, Dialog::None),
+        "Escape closes the dialog"
+    );
+
+    // Cmd+E opens the editor for the selection; Cmd+Enter applies it.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
+    harness.run();
+    match &harness.state().dialog {
+        Dialog::EntryEdit(d) => assert_eq!(d.title, "Sample Entry"),
+        _other => panic!("expected the entry editor"),
+    }
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    harness.run();
+    assert!(matches!(harness.state().dialog, Dialog::None));
+    assert!(
+        harness.state().status.contains("Updated entry"),
+        "Cmd+Enter applied the edit: {:?}",
+        harness.state().status
+    );
+
+    // Cmd+B copies the username (status reports it).
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    harness.run();
+    assert!(
+        harness.state().status.contains("Copied username"),
+        "Cmd+B copies the username: {:?}",
+        harness.state().status
+    );
+
+    // F1 opens the shortcut reference; Escape closes it.
+    harness.key_press(egui::Key::F1);
+    harness.run();
+    assert!(matches!(harness.state().dialog, Dialog::Shortcuts));
+    harness.get_by_label("Keyboard Shortcuts");
+    harness.get_by_label("Cmd/Ctrl+C");
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(matches!(harness.state().dialog, Dialog::None));
+
+    // Cmd+G opens the password generator; Escape closes it.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::G);
+    harness.run();
+    assert!(matches!(harness.state().dialog, Dialog::Generator(_)));
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(matches!(harness.state().dialog, Dialog::None));
+
+    // Delete asks for confirmation; Enter confirms and recycles the entry.
+    harness.key_press(egui::Key::Delete);
+    harness.run();
+    assert!(matches!(
+        harness.state().dialog,
+        Dialog::ConfirmDeleteEntry(_)
+    ));
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    let state = harness.state();
+    assert!(matches!(state.dialog, Dialog::None));
+    let bin = state
+        .db
+        .as_ref()
+        .unwrap()
+        .recycle_bin()
+        .expect("recycle bin created");
+    assert_eq!(bin.entries().count(), 1, "Delete + Enter recycled the entry");
+
+    // Cmd+L locks the database.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::L);
+    harness.run();
+    assert!(harness.state().db.is_none(), "Cmd+L locks");
+    harness.get_by_label("Unlock");
+
+    // Cmd+F focuses the search field (fresh harness, nothing selected).
+    let mut search_harness = {
+        let path = path.display().to_string();
+        let key = DatabaseKey::new().with_password("testpassword");
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path, key))
+    };
+    search_harness.set_size(egui::Vec2::new(1400.0, 1000.0));
+    search_harness.run();
+    search_harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    search_harness.run();
+    assert!(
+        search_harness.get_by_label("Search:").is_focused(),
+        "Cmd+F focuses the search box"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// unit tests for the pure logic helpers
+// ---------------------------------------------------------------------------
 
 #[test]
 fn generator_options_produce_expected_classes() {

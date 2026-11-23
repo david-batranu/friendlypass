@@ -12,6 +12,15 @@ use crate::dialogs::{self, Dialog};
 use crate::icons::IconCache;
 use keepass::db::EntryId;
 
+/// Which entry field a keyboard shortcut copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyField {
+    Password,
+    Username,
+    Url,
+    Totp,
+}
+
 /// Column to sort the entry list by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
@@ -57,6 +66,8 @@ pub struct App {
 
     // -- browsing state --------------------------------------------------
     pub search: String,
+    /// Set to focus the search box on the next frame (Cmd/Ctrl+F).
+    pub focus_search: bool,
     pub selected_group: Option<GroupId>, // None = root
     pub selected_entry: Option<keepass::db::EntryId>,
     /// Multi-selection (Ctrl/Cmd-click) for batch operations.
@@ -91,6 +102,7 @@ impl Default for App {
             dirty: false,
             upgrade_confirmed: false,
             search: String::new(),
+            focus_search: false,
             selected_group: None,
             selected_entry: None,
             selected_entries: std::collections::HashSet::new(),
@@ -255,6 +267,124 @@ impl App {
         match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
             Ok(()) => self.status = "Copied to clipboard".into(),
             Err(e) => self.status = format!("clipboard unavailable: {e}"),
+        }
+    }
+
+    /// Copy a field of the selected entry (keyboard shortcuts).
+    pub fn copy_selected(&mut self, field: CopyField) {
+        let Some(id) = self.selected_entry else {
+            self.status = "No entry selected".into();
+            return;
+        };
+        let Some(db) = self.db.as_ref() else { return };
+        let Some(entry) = db.entry(id) else { return };
+        let (label, value) = match field {
+            CopyField::Password => ("password", entry.get("Password").unwrap_or_default().to_owned()),
+            CopyField::Username => ("username", entry.get("UserName").unwrap_or_default().to_owned()),
+            CopyField::Url => ("URL", entry.get("URL").unwrap_or_default().to_owned()),
+            CopyField::Totp => ("TOTP", match crate::totp::current_code(&entry) {
+                Some((code, _)) => code,
+                None => {
+                    self.status = "This entry has no TOTP".into();
+                    return;
+                }
+            }),
+        };
+        if value.is_empty() {
+            self.status = format!("This entry has no {label}");
+            return;
+        }
+        self.copy_to_clipboard(value);
+        self.status = format!("Copied {label} to clipboard");
+    }
+
+    /// Handle global keyboard shortcuts on the database screen.
+    /// Returns true if a shortcut consumed a key this frame.
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        // Shortcuts are ignored while a dialog is open (dialogs handle their
+        // own keys, see `dialogs::show`).
+        if !matches!(self.dialog, Dialog::None) {
+            return;
+        }
+        let cmd = Modifiers::COMMAND;
+        let shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        // True while a text field (e.g. the search box) has focus. Typing
+        // keys then belong to the field; global commands still work.
+        let typing = ctx.egui_wants_keyboard_input();
+
+        // Global commands: available even while typing.
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::S)) {
+            self.request_save();
+        }
+        if ctx.input_mut(|i| i.consume_key(shift, Key::S)) {
+            self.dialog = Dialog::SaveAs(self.db_path.clone());
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::L)) {
+            self.lock();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::F)) {
+            self.focus_search = true;
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::G)) {
+            self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::N)) {
+            self.new_entry_dialog(self.selected_group);
+        }
+        if ctx.input_mut(|i| i.consume_key(shift, Key::N)) {
+            let parent = self
+                .selected_group
+                .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
+            self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
+            self.dialog = Dialog::Shortcuts;
+        }
+        if typing {
+            return;
+        }
+        // Entry commands: only when no text field is focused, so Cmd+C in
+        // the search box still copies text and Delete edits the query.
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::C)) {
+            self.copy_selected(CopyField::Password);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::B)) {
+            self.copy_selected(CopyField::Username);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::U)) {
+            self.copy_selected(CopyField::Url);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::T)) {
+            self.copy_selected(CopyField::Totp);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::E)) {
+            if let Some(id) = self.selected_entry {
+                self.edit_entry_dialog(id);
+            }
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::H)) {
+            if let Some(id) = self.selected_entry {
+                self.dialog = Dialog::History(id);
+            }
+        }
+        // Delete key (macOS Backspace) recycles the selected entry.
+        let delete = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete))
+            || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
+        if delete {
+            if let Some(id) = self.selected_entry {
+                self.dialog = Dialog::ConfirmDeleteEntry(id);
+            }
+        }
+        // Enter opens the selected entry for editing.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+            if let Some(id) = self.selected_entry {
+                self.edit_entry_dialog(id);
+            }
+        }
+        // Escape clears an active search.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) && !self.search.is_empty() {
+            self.search.clear();
         }
     }
 
@@ -754,9 +884,11 @@ impl App {
     fn database_screen(&mut self, root: &mut Ui) {
         let ctx = root.ctx().clone();
 
-        // Cmd/Ctrl+S saves.
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
-            self.request_save();
+        // Global keyboard shortcuts (skipped while dialogs or text fields
+        // have focus).
+        self.handle_shortcuts(&ctx);
+        if self.db.is_none() {
+            return; // e.g. Cmd+L locked the database this frame
         }
 
         // Toolbar ---------------------------------------------------------
@@ -775,7 +907,11 @@ impl App {
 
                     let search_label = ui.label("Search:");
                     let search_resp =
-                        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("search all entries…"));
+                        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("search all entries… (Cmd+F)"));
+                    if self.focus_search {
+                        search_resp.request_focus();
+                        self.focus_search = false;
+                    }
                     search_resp.labelled_by(search_label.id);
                     if !self.search.is_empty() && ui.button("Clear search").clicked() {
                         self.search.clear();
@@ -796,6 +932,9 @@ impl App {
                     }
                     if ui.button("Database Info…").clicked() {
                         self.dialog = Dialog::DbInfo;
+                    }
+                    if ui.button("Shortcuts…").clicked() {
+                        self.dialog = Dialog::Shortcuts;
                     }
                     if ui.button("SSH Agent…").clicked() {
                         self.dialog = Dialog::SshAgent;

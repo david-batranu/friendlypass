@@ -198,6 +198,13 @@ check "entry-editor and unlock-screen text fields are wide (kittest rect measure
     env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test layout"
 
 echo
+echo "== 14. Keyboard shortcuts =="
+check "shortcuts (copy password/username/URL/TOTP, Cmd+F search, new/edit/delete, lock) and dialog keys (Enter/Escape, Cmd+Enter) work end-to-end (kittest test)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui keyboard_shortcuts_and_dialog_keys"
+check "shortcut reference window (toolbar button + F1) documents the full key map" \
+    sh -c "grep -q 'F1' '$ROOT/crates/kpxc-gui/src/dialogs.rs' && grep -q 'Shortcuts…' '$ROOT/crates/kpxc-gui/src/app.rs'"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1
