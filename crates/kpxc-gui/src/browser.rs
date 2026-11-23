@@ -13,6 +13,30 @@ fn weak_label(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
     ui.add(egui::Label::new(egui::RichText::new(text.into()).weak()))
 }
 
+/// Allocate a full-width sidebar row and paint its hover/selection
+/// background. Callers draw the row content and then call `ui.interact` with
+/// the returned rect — registering the interaction *after* the content, so
+/// the labels do not swallow clicks (same pattern as the entry list).
+fn sidebar_row_background(ui: &mut egui::Ui, selected: bool, height: f32) -> egui::Rect {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let hovered = ui.rect_contains_pointer(rect);
+    let fill = if selected {
+        crate::theme::SIDEBAR_SELECTED
+    } else if hovered {
+        crate::theme::HOVER
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if fill != egui::Color32::TRANSPARENT {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(8), fill);
+    }
+    rect
+}
+
 /// One row in the group tree.
 pub struct GroupRow {
     /// `None` is the root group.
@@ -292,6 +316,14 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         })
         .unwrap_or_default();
 
+    // If the selected tag disappeared (for example its last entry was deleted
+    // or retagged), drop the filter instead of showing an empty list.
+    if let Some(tag) = &selected_tag {
+        if !all_tags.iter().any(|t| t == tag) {
+            selected_tag = None;
+        }
+    }
+
     // Split borrows: the icon cache is mutated while rendering rows.
     let mut row_clicked: Option<Option<GroupId>> = None;
     let mut fav_toggled = false;
@@ -306,81 +338,74 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 selected_group == row.id
             };
-        let row_bg = if selected {
-            crate::theme::SIDEBAR_SELECTED
+        // A full-width row: clicking anywhere on it selects the group, which
+        // also makes dragging and the context menu reliable.
+        let rect = sidebar_row_background(ui, selected, 28.0);
+        let mut content = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(egui::vec2(8.0, 3.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        content.add_space(row.depth.saturating_sub(1) as f32 * 14.0);
+        crate::icons::draw_icon(&mut content, cache, Some(&row.icon));
+        let label = if is_root {
+            format!("All Items ({root_entries})")
         } else {
-            egui::Color32::TRANSPARENT
+            format!("{} ({})", row.name, row.entries)
         };
-        egui::Frame::new()
-            .fill(row_bg)
-            .corner_radius(8)
-            .inner_margin(egui::Margin::symmetric(8, 4))
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    for _ in 0..row.depth.saturating_sub(1) {
-                        ui.label("  ");
-                    }
-                    crate::icons::draw_icon(ui, cache, Some(&row.icon));
-                    let label = if is_root {
-                        format!("All Items ({root_entries})")
-                    } else {
-                        format!("{} ({})", row.name, row.entries)
-                    };
-                    let mut text = egui::RichText::new(label)
-                        .size(14.0)
-                        .color(crate::theme::TEXT);
-                    if selected {
-                        text = text.strong();
-                    }
-                    // The row is clickable (select), draggable (move groups), and a
-                    // drop zone for both entries and other groups.
-                    let resp = ui.add(
-                        egui::Button::selectable(selected, text)
-                            .frame(false)
-                            .sense(egui::Sense::click_and_drag()),
-                    );
-                    if resp.clicked() {
-                        row_clicked = Some(if is_root { None } else { row.id });
-                    }
-                    resp.context_menu(|ui| {
-                        ui.label(if is_root { "Database export" } else { "Group export" });
-                        for (label, format) in [
-                            ("Export as KeePass 2 XML…", "XML"),
-                            ("Export as CSV…", "CSV"),
-                            ("Export as HTML…", "HTML"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                export_request = Some((row.id, format));
-                                ui.close();
-                            }
-                        }
-                    });
-                    // Drag source: non-root groups can be dragged.
-                    if let Some(gid) = row.id {
-                        resp.dnd_set_drag_payload(gid);
-                    }
-                    // Drop zone: entries dropped onto this group move into it.
-                    if resp.dnd_hover_payload::<GroupId>().is_some() {
-                        if let Some(group_id) = resp.dnd_release_payload::<GroupId>() {
-                            if row.id != Some(*group_id) {
-                                dropped_group = Some((*group_id, row.id));
-                            }
-                        }
-                    } else if let Some(entry_id) = resp.dnd_release_payload::<EntryId>() {
-                        dropped = Some((*entry_id, row.id));
-                    }
-                    if egui::DragAndDrop::has_any_payload(ui.ctx()) && resp.contains_pointer() {
-                        let rect = resp.rect;
-                        ui.painter().rect_stroke(
-                            rect.expand(2.0),
-                            4.0,
-                            ui.visuals().selection.stroke,
-                            egui::StrokeKind::Middle,
-                        );
-                    }
-                });
-            });
+        let mut text = egui::RichText::new(label)
+            .size(14.0)
+            .color(crate::theme::TEXT);
+        if selected {
+            text = text.strong();
+        }
+        content.label(text);
+        let resp = ui
+            .interact(
+                rect,
+                ui.id().with(("group-row", row.id)),
+                egui::Sense::click_and_drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        if resp.clicked() {
+            row_clicked = Some(if is_root { None } else { row.id });
+        }
+        resp.context_menu(|ui| {
+            ui.label(if is_root { "Database export" } else { "Group export" });
+            for (label, format) in [
+                ("Export as KeePass 2 XML…", "XML"),
+                ("Export as CSV…", "CSV"),
+                ("Export as HTML…", "HTML"),
+            ] {
+                if ui.button(label).clicked() {
+                    export_request = Some((row.id, format));
+                    ui.close();
+                }
+            }
+        });
+        // Drag source: non-root groups can be dragged.
+        if let Some(gid) = row.id {
+            resp.dnd_set_drag_payload(gid);
+        }
+        // Drop zone: entries dropped onto this group move into it.
+        if resp.dnd_hover_payload::<GroupId>().is_some() {
+            if let Some(group_id) = resp.dnd_release_payload::<GroupId>() {
+                if row.id != Some(*group_id) {
+                    dropped_group = Some((*group_id, row.id));
+                }
+            }
+        } else if let Some(entry_id) = resp.dnd_release_payload::<EntryId>() {
+            dropped = Some((*entry_id, row.id));
+        }
+        if egui::DragAndDrop::has_any_payload(ui.ctx()) && resp.contains_pointer() {
+            ui.painter().rect_stroke(
+                rect.expand(1.0),
+                8.0,
+                ui.visuals().selection.stroke,
+                egui::StrokeKind::Middle,
+            );
+        }
     };
 
     row_ui(
@@ -398,35 +423,32 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     // Favorites shortcut row (like 1Password).
     {
         let fav_selected = filter_favorites;
-        let row_bg = if fav_selected {
-            crate::theme::SIDEBAR_SELECTED
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        egui::Frame::new()
-            .fill(row_bg)
-            .corner_radius(8)
-            .inner_margin(egui::Margin::symmetric(8, 4))
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let (star_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                    crate::theme::draw_star_badge(ui.painter(), star_rect.center(), 7.5);
-                    let mut text = egui::RichText::new("Favorites")
-                        .size(14.0)
-                        .color(crate::theme::TEXT);
-                    if fav_selected {
-                        text = text.strong();
-                    }
-                    if ui
-                        .add(egui::Button::selectable(fav_selected, text).frame(false))
-                        .clicked()
-                    {
-                        fav_toggled = true;
-                    }
-                });
-            });
+        let rect = sidebar_row_background(ui, fav_selected, 28.0);
+        let mut content = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(egui::vec2(8.0, 3.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let (star_rect, _) =
+            content.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+        crate::theme::draw_star_badge(content.painter(), star_rect.center(), 7.5);
+        let mut text = egui::RichText::new("Favorites")
+            .size(14.0)
+            .color(crate::theme::TEXT);
+        if fav_selected {
+            text = text.strong();
+        }
+        content.label(text);
+        let resp = ui
+            .interact(
+                rect,
+                ui.id().with("favorites-row"),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            fav_toggled = true;
+        }
     }
 
     ui.add_space(12.0);
@@ -494,38 +516,35 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         ui.add_space(2.0);
         for tag in &all_tags {
             let is_sel = selected_tag.as_deref() == Some(tag.as_str());
-            let row_bg = if is_sel {
-                crate::theme::SIDEBAR_SELECTED
-            } else {
-                egui::Color32::TRANSPARENT
-            };
-            egui::Frame::new()
-                .fill(row_bg)
-                .corner_radius(8)
-                .inner_margin(egui::Margin::symmetric(8, 3))
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        crate::theme::draw_tag_pill(ui, crate::theme::TAG_GREEN);
-                        let mut text = egui::RichText::new(tag)
-                            .size(13.5)
-                            .color(crate::theme::TEXT);
-                        if is_sel {
-                            text = text.strong();
-                        }
-                        if ui
-                            .add(egui::Button::selectable(is_sel, text).frame(false))
-                            .clicked()
-                        {
-                            if is_sel {
-                                selected_tag = None;
-                            } else {
-                                selected_tag = Some(tag.clone());
-                                filter_favorites = false;
-                            }
-                        }
-                    });
-                });
+            let rect = sidebar_row_background(ui, is_sel, 26.0);
+            let mut content = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect.shrink2(egui::vec2(8.0, 3.0)))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            crate::theme::draw_tag_pill(&mut content, crate::theme::TAG_GREEN);
+            let mut text = egui::RichText::new(tag)
+                .size(13.5)
+                .color(crate::theme::TEXT);
+            if is_sel {
+                text = text.strong();
+            }
+            content.label(text);
+            let resp = ui
+                .interact(
+                    rect,
+                    ui.id().with(("tag-row", tag)),
+                    egui::Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.clicked() {
+                if is_sel {
+                    selected_tag = None;
+                } else {
+                    selected_tag = Some(tag.clone());
+                    filter_favorites = false;
+                }
+            }
         }
     }
 
@@ -675,6 +694,23 @@ pub fn entry_view(ui: &mut egui::Ui, app: &mut App) {
                 .color(crate::theme::TEXT),
         );
         crate::theme::draw_chevron_down(ui, crate::theme::MUTED);
+        if app.selected_tag.is_some() || app.filter_favorites {
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("×")
+                            .size(15.0)
+                            .color(crate::theme::MUTED),
+                    )
+                    .frame(false),
+                )
+                .on_hover_text("Clear the filter")
+                .clicked()
+            {
+                app.selected_tag = None;
+                app.filter_favorites = false;
+            }
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let table = !app.prefs.list_view;
             if ui.selectable_label(table, "Table").clicked() {

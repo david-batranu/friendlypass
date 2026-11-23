@@ -332,6 +332,20 @@ fn replace_text(harness: &mut Harness<kpxc_gui::App>, label: &str, text: &str) {
     harness.run();
 }
 
+/// Click at an arbitrary position (used to verify whole-row hit areas).
+fn click_at(harness: &mut Harness<kpxc_gui::App>, pos: egui::Pos2) {
+    harness.hover_at(pos);
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    harness.run();
+}
+
 /// Open the toolbar's "More…" menu (secondary actions live there now).
 fn open_more(harness: &mut Harness<kpxc_gui::App>) {
     harness.get_by_label("More…").click();
@@ -1939,6 +1953,91 @@ fn auto_unlock_failure_falls_back_to_the_unlock_screen() {
     assert!(!app.try_auto_unlock());
     assert!(app.db.is_none());
     assert!(app.unlock_error.contains("Auto-unlock failed"));
+}
+
+// ---------------------------------------------------------------------------
+// sidebar tag filter
+// ---------------------------------------------------------------------------
+
+#[test]
+fn selecting_a_tag_filters_the_entry_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1300.0, 900.0));
+    harness.run();
+
+    // Tag the two fixture entries differently.
+    {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        for (title, tag) in [("Sample Entry", "finance"), ("Web Login", "social")] {
+            let id = db
+                .iter_all_entries()
+                .find(|e| e.get("Title") == Some(title))
+                .map(|e| e.id())
+                .unwrap();
+            if let Some(mut entry) = db.entry_mut(id) {
+                entry.tags = vec![tag.to_owned()];
+            }
+        }
+    }
+    harness.run();
+
+    // Both tags appear in the sidebar.
+    harness.get_by_label("TAGS");
+    harness.get_by_label("finance");
+    harness.get_by_label("social");
+
+    // Clicking anywhere on the tag row (here: the empty space to the right of
+    // the label, not the text itself) filters the middle list.
+    let tag_rect = harness.get_by_label("finance").rect();
+    click_at(&mut harness, egui::pos2(tag_rect.right() + 60.0, tag_rect.center().y));
+    assert_eq!(harness.state().selected_tag.as_deref(), Some("finance"));
+    assert!(harness.state().filter_favorites == false);
+    harness.get_by_label("Tag: finance");
+    harness.get_by_label("Sample Entry");
+    assert_eq!(
+        harness.query_all_by_label("Web Login").count(),
+        0,
+        "untagged entry is filtered out"
+    );
+    // Move the pointer out of the sidebar so the snapshot is deterministic
+    // (the simulated cursor is rendered into the image).
+    harness.hover_at(egui::pos2(1280.0, 880.0));
+    stabilize(&mut harness);
+    harness.snapshot("gui_tag_filter");
+
+    // Selecting the other tag switches the filter.
+    harness.get_by_label("social").click();
+    harness.run();
+    assert_eq!(harness.state().selected_tag.as_deref(), Some("social"));
+    harness.get_by_label("Web Login");
+    assert_eq!(
+        harness.query_all_by_label("Sample Entry").count(),
+        0,
+        "the previous tag's entries are gone"
+    );
+
+    // Clicking the active tag again clears the filter.
+    harness.get_by_label("social").click();
+    harness.run();
+    assert!(harness.state().selected_tag.is_none());
+    harness.get_by_label("All Categories");
+    harness.get_by_label("Sample Entry");
+    harness.get_by_label("Web Login");
+
+    // Selecting a group clears the tag filter.
+    harness.get_by_label("finance").click();
+    harness.run();
+    assert_eq!(harness.state().selected_tag.as_deref(), Some("finance"));
+    harness.get_by_label("Web (0)").click();
+    harness.run();
+    assert!(harness.state().selected_tag.is_none(), "group click clears tag");
+    harness.get_by_label("Web (0)");
 }
 
 // ---------------------------------------------------------------------------

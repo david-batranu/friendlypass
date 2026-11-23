@@ -254,6 +254,11 @@ check "passkey attributes show as a Passkey chip and are hidden as raw fields (k
     env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui passkey_fields_show_a_passkey_label_only"
 
 echo
+echo "== 20. Sidebar tag filter =="
+check "selecting a sidebar tag shows only the entries with that tag (kittest)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui selecting_a_tag_filters_the_entry_list"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1
