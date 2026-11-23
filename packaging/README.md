@@ -6,9 +6,12 @@ as a GUI instead of opening a terminal.
 ## macOS
 
 ```sh
-./packaging/macos/package.sh          # or: ./packaging/macos/package.sh debug
-open target/release/KeePassXC-RS.app  # double-click works too
+./packaging/macos/install.sh          # build + install to /Applications
+open -b org.keepassxc.rs              # or open it from Finder/Launchpad
 ```
+
+`package.sh` builds only `target/release/KeePassXC-RS.app` (or
+`./packaging/macos/package.sh debug`) if you prefer to copy it yourself.
 
 `package.sh` builds `kpxc-gui`, copies it into `KeePassXC-RS.app/Contents/MacOS`,
 installs `Info.plist` (bundle id `org.keepassxc.rs`) and the icon, and ad-hoc

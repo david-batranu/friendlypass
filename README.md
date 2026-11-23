@@ -181,9 +181,12 @@ A bare Unix executable is opened *through Terminal* when double-clicked in
 Finder. The GUI therefore ships a macOS app-bundle script:
 
 ```console
-$ ./packaging/macos/package.sh          # builds target/release/KeePassXC-RS.app
-$ open target/release/KeePassXC-RS.app  # or double-click it in Finder
+$ ./packaging/macos/install.sh          # builds + installs to /Applications
+$ open -b org.keepassxc.rs              # or open it from Finder/Launchpad
 ```
+
+`packaging/macos/package.sh` only builds the bundle under `target/release/`
+if you do not want to install it.
 
 The app is launched by LaunchServices (parent process `launchd`, not
 Terminal), has an `Info.plist` with bundle id `org.keepassxc.rs`, an icon and
