@@ -6,10 +6,12 @@ use eframe::egui::Ui;
 use keepass::db::{Database, GroupId};
 use keepass::DatabaseKey;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::browser;
 use crate::config::{self, ColumnId, Preferences};
 use crate::dialogs::{self, Dialog};
+use crate::startup::{self, SecretStore, StoredSecret};
 use crate::icons::IconCache;
 use keepass::db::EntryId;
 
@@ -56,6 +58,15 @@ pub struct App {
     /// equivalent of a YubiKey HMAC-SHA1 response.
     pub challenge_response: String,
     pub unlock_error: String,
+    /// Store the unlock key in the OS keychain and auto-unlock this database
+    /// on startup.
+    pub remember_unlock: bool,
+    /// A saved secret for the current database exists and was used on startup.
+    pub auto_unlock: bool,
+    /// The OS login item is installed (read by the Settings dialog).
+    pub launch_at_login: bool,
+    /// Where auto-unlock secrets live (the OS keychain in production).
+    pub secret_store: Arc<dyn SecretStore>,
 
     // -- open database state --------------------------------------------
     pub db: Option<Database>,
@@ -108,6 +119,10 @@ impl Default for App {
             key_file: String::new(),
             challenge_response: String::new(),
             unlock_error: String::new(),
+            remember_unlock: false,
+            auto_unlock: false,
+            launch_at_login: false,
+            secret_store: Arc::new(startup::KeychainStore),
             db: None,
             db_key: None,
             dirty: false,
@@ -147,7 +162,20 @@ impl App {
         if let Some(path) = initial_db {
             app.db_path = path;
         }
+        // If the last database has an enrolled key, unlock it before the
+        // first frame. Failures fall back to the normal unlock screen.
+        if !app.db_path.is_empty() && app.has_saved_secret(&app.db_path) {
+            app.auto_unlock = true;
+            app.remember_unlock = true;
+            app.try_auto_unlock();
+        }
         app
+    }
+
+    /// Replace the secret store (tests use an in-memory store).
+    pub fn with_secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
+        self.secret_store = store;
+        self
     }
 
     /// Load preferences from an explicit config file (used by tests and by
@@ -155,6 +183,7 @@ impl App {
     pub fn with_config_path(path: PathBuf) -> Self {
         let mut app = App::default();
         app.prefs = Preferences::load(&path);
+        app.secret_store = startup::platform_store(app.prefs.windows_dpapi_fallback);
         app.config_path = Some(path);
         if app.db_path.is_empty() {
             if let Some(last) = &app.prefs.last_db {
@@ -162,6 +191,78 @@ impl App {
             }
         }
         app
+    }
+
+    /// Whether an auto-unlock secret is enrolled for `path`.
+    pub fn has_saved_secret(&self, path: &str) -> bool {
+        let account = startup::account_key(path);
+        self.secret_store
+            .get(&account)
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Rebuild the database key from the stored secret and open the
+    /// database. Returns false (and leaves the unlock screen usable) on
+    /// failure.
+    pub fn try_auto_unlock(&mut self) -> bool {
+        let path = self.db_path.trim().to_owned();
+        if path.is_empty() {
+            return false;
+        }
+        let account = startup::account_key(&path);
+        let secret = match self.secret_store.get(&account) {
+            Ok(Some(secret)) => secret,
+            Ok(None) => return false,
+            Err(e) => {
+                self.unlock_error = format!("Auto-unlock unavailable: {e:#}");
+                return false;
+            }
+        };
+
+        let mut key = DatabaseKey::new();
+        if !secret.password.is_empty() {
+            key = key.with_password(&secret.password);
+        }
+        if let Some(bytes) = &secret.keyfile {
+            match key.with_keyfile(&mut std::io::Cursor::new(bytes)) {
+                Ok(k) => key = k,
+                Err(e) => {
+                    self.unlock_error = format!("Auto-unlock key file invalid: {e}");
+                    return false;
+                }
+            }
+        }
+        if !secret.challenge_response.is_empty() {
+            match kpxc::key::with_challenge_response(key, &secret.challenge_response) {
+                Ok(k) => key = k,
+                Err(e) => {
+                    self.unlock_error = format!("Auto-unlock challenge-response invalid: {e:#}");
+                    return false;
+                }
+            }
+        }
+
+        match open_database(&path, &key) {
+            Ok(db) => {
+                self.db = Some(db);
+                self.db_key = Some(key);
+                self.dirty = false;
+                self.upgrade_confirmed = false;
+                self.search.clear();
+                self.selected_group = None;
+                self.selected_entry = None;
+                self.auto_unlock = true;
+                self.remember_unlock = true;
+                self.status = format!("Unlocked {path} automatically");
+                true
+            }
+            Err(e) => {
+                self.unlock_error = format!("Auto-unlock failed: {e}");
+                false
+            }
+        }
     }
 
     /// Persist the current preferences (no-op when no config path is set).
@@ -256,7 +357,6 @@ impl App {
             Ok(db) => {
                 self.db = Some(db);
                 self.db_key = Some(key);
-                self.password.clear();
                 self.dirty = false;
                 self.upgrade_confirmed = false;
                 self.search.clear();
@@ -265,9 +365,64 @@ impl App {
                 self.status = format!("Opened {}", self.db_path);
                 let opened = self.db_path.clone();
                 self.record_recent_database(&opened);
+                self.update_saved_secret(&opened);
+                self.password.clear();
             }
             Err(e) => {
                 self.unlock_error = format!("{e:#}");
+            }
+        }
+    }
+
+    /// Enroll or remove the auto-unlock secret after a successful unlock.
+    fn update_saved_secret(&mut self, path: &str) {
+        let account = startup::account_key(path);
+        if self.remember_unlock {
+            let keyfile = if self.key_file.trim().is_empty() {
+                None
+            } else {
+                std::fs::read(self.key_file.trim()).ok()
+            };
+            let secret = StoredSecret {
+                password: self.password.clone(),
+                keyfile,
+                keyfile_name: std::path::Path::new(self.key_file.trim())
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned()),
+                challenge_response: self.challenge_response.clone(),
+            };
+            match self.secret_store.set(&account, &secret) {
+                Ok(()) => {
+                    self.auto_unlock = true;
+                    self.status = format!("{} (auto-unlock enabled)", self.status);
+                }
+                Err(e) => {
+                    self.auto_unlock = false;
+                    self.status = format!("{} (auto-unlock not saved: {e:#})", self.status);
+                }
+            }
+        } else if self.auto_unlock {
+            if let Err(e) = self.secret_store.delete(&account) {
+                self.status = format!("{} (auto-unlock key not removed: {e:#})", self.status);
+            }
+            self.auto_unlock = false;
+        }
+    }
+
+    /// Remove the stored auto-unlock secret for the current database.
+    pub fn forget_saved_secret(&mut self) -> bool {
+        let path = self.db_path.clone();
+        let account = startup::account_key(&path);
+        match self.secret_store.delete(&account) {
+            Ok(()) => {
+                self.auto_unlock = false;
+                self.remember_unlock = false;
+                self.status = "Saved auto-unlock key removed".into();
+                true
+            }
+            Err(e) => {
+                self.status = format!("Unable to remove the saved key: {e:#}");
+                false
             }
         }
     }
@@ -978,6 +1133,30 @@ impl App {
                 cr_resp.labelled_by(id);
             });
 
+            ui.add_space(8.0);
+            let mut remember = self.remember_unlock;
+            if ui
+                .checkbox(
+                    &mut remember,
+                    "Remember unlock key and auto-unlock at startup",
+                )
+                .on_hover_text(
+                    "The password/key file/challenge-response secret is stored in the operating \
+                     system's keychain (macOS Keychain, Windows Credential Manager or the Linux \
+                     Secret Service). Anyone who can use your logged-in account can then open \
+                     the database.",
+                )
+                .changed()
+            {
+                self.remember_unlock = remember;
+            }
+            if self.auto_unlock {
+                ui.label(
+                    egui::RichText::new("An auto-unlock key is saved for this database.")
+                        .weak(),
+                );
+            }
+
             ui.add_space(16.0);
             ui.vertical_centered(|ui| {
                 if ui.button("Unlock").clicked() {
@@ -1059,6 +1238,10 @@ impl App {
                             &self.db_path,
                             "XML",
                         )));
+                    }
+                    if ui.button("Settings…").clicked() {
+                        self.launch_at_login = startup::launch_at_login_enabled();
+                        self.dialog = Dialog::Settings;
                     }
                     if ui.button("Shortcuts…").clicked() {
                         self.dialog = Dialog::Shortcuts;

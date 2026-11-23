@@ -108,7 +108,7 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **63/63 checks, all workspace tests green.**
+Current result: **66/66 checks, all workspace tests green.**
 
 ## Layout
 
@@ -198,6 +198,42 @@ open a console; debug builds keep it for logs. On **Linux**, install
 `packaging/linux/kpxc-gui.desktop` (`Terminal=false`) so the desktop launcher
 starts the GUI directly.
 
+## Startup and automatic unlock
+
+**Run at login.** Open **Settings…** in the main window and tick *Launch at
+login* (also available as `kpxc-gui --enable-launch-at-login` /
+`--disable-launch-at-login` from the app bundle's executable). This writes:
+
+* macOS: a `~/Library/LaunchAgents/org.keepassxc.rs.plist` LaunchAgent that
+  opens the `.app` through LaunchServices (`launchctl bootstrap`, no Terminal)
+* Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+* Linux: `~/.config/autostart/org.keepassxc.rs.desktop`
+
+**Automatic unlock.** On the unlock screen tick *Remember unlock key and
+auto-unlock at startup* and unlock once. The app stores the password, key-file
+bytes and challenge-response secret in the operating system credential store
+— macOS **Keychain**, Windows **Credential Manager**, Linux **Secret
+Service** (via the `keyring` crate). Nothing is written unencrypted by the
+app. On the next launch `App::new` finds the secret for the last database,
+rebuilds the KeePass key and opens it before the first frame; if anything
+fails (wrong secret, missing keychain access), it falls back to the normal
+unlock screen with an explanatory error.
+
+*Settings → Forget saved unlock key* deletes the keychain item and turns
+auto-unlock off.
+
+**Windows accounts without a login password:** Credential Manager may be
+unavailable there. Enable *Use a DPAPI-protected file instead of Credential
+Manager* in Settings; the secret is then encrypted with Windows DPAPI in
+`%APPDATA%\kpxc-gui\auto-unlock.dpapi`. This is intentionally an explicit,
+weaker option: any program running as that Windows user can ask DPAPI to
+decrypt it. The Windows DPAPI path is type-checked against the real
+`windows-sys` 0.61 bindings; its runtime behavior needs Windows to verify.
+
+Security note: auto-unlock is only as strong as your logged-in OS session.
+Anyone who can use your unlocked account can start the app and open the
+database; leave the option off on shared machines.
+
 ## GUI (`kpxc-gui`)
 
 `cargo run --release -p kpxc-gui -- [database.kdbx]` launches the
@@ -277,7 +313,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 63 checks; GUI kittest, import/export, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 66 checks; GUI kittest, import/export, startup/auto-unlock, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)
@@ -295,6 +331,8 @@ CLI test suites all green).
 | Entry details + clipboard copy + attachment export | ✅ tested |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |
+| Run at startup | ✅ **Settings → Launch at login**: macOS LaunchAgent (LaunchServices, no Terminal), Windows `Run` registry key, Linux autostart entry; `--enable/--disable-launch-at-login` CLI flags — tested (plist generation) and enabled on this Mac |
+| Automatic unlock on startup | ✅ opt-in on the unlock screen: password + key-file bytes + challenge-response secret stored in the OS keychain (macOS Keychain / Windows Credential Manager / Linux Secret Service), rebuilt on startup; Windows no-login-password option uses a DPAPI-protected file; tested with an in-memory store (password+keyfile, failure fallback) and the enroll/Settings flow. The Windows DPAPI implementation is cross-type-checked against `windows-sys` 0.61 (runtime verification needs Windows) |
 | Keyboard shortcuts (KeePassXC-style: Cmd/Ctrl+C/B/U/T copy password/username/URL/TOTP, Cmd+F search, Cmd+N new entry, Cmd+Shift+N new group, Cmd+E/Enter edit, Cmd+H history, Cmd+G generator, Cmd+S save, Cmd+Shift+S save as, Cmd+L lock, Delete recycle, F1 shortcut reference; dialogs: Enter confirm, Escape cancel, Cmd+Enter apply editor) | ✅ implemented + tested (kittest key events exercise the real bindings) |
 | Customizable entry columns | ✅ **Columns…** dialog: show/hide each column (Title, UserName, Password, URL, Notes, Tags), reorder with Up/Down, set starting width, reset to defaults; layout is persisted in the GUI config and restored on the next launch (`egui_extras` table widths additionally persisted by eframe) — tested |
 | Remember previously opened databases | ✅ recent list (last 10, deduplicated, most recent first) on the welcome screen with click-to-select and "Clear recent list"; the last successfully opened/created/saved-as database is prefilled on the next launch; persisted as JSON — tested across two simulated launches |

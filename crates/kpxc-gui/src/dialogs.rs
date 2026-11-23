@@ -45,6 +45,8 @@ pub enum Dialog {
     Import(Box<ImportDialog>),
     /// Export the open database to XML/CSV/HTML.
     Export(Box<ExportDialog>),
+    /// Startup settings: launch at login and auto-unlock.
+    Settings,
 }
 
 /// State of the import dialog.
@@ -708,6 +710,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             | Dialog::Columns
             | Dialog::Import(_)
             | Dialog::Export(_)
+            | Dialog::Settings
     );
     let enter_key = dialog_open && enter_applies && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     let cmd_enter_key = matches!(app.dialog, Dialog::EntryEdit(_))
@@ -745,7 +748,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 app.empty_recycle_bin();
                 return;
             }
-            Dialog::DbInfo | Dialog::Shortcuts | Dialog::SshAgent | Dialog::Browser | Dialog::Columns => {
+            Dialog::DbInfo | Dialog::Shortcuts | Dialog::SshAgent | Dialog::Browser | Dialog::Columns | Dialog::Settings => {
                 app.dialog = Dialog::None;
                 return;
             }
@@ -2196,6 +2199,103 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
             } else if !cancelled && open {
                 app.dialog = Dialog::Export(d);
+            }
+        }
+        Dialog::Settings => {
+            let mut open = true;
+            let mut close_clicked = false;
+            egui::Window::new("Settings")
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(660.0)
+                .show(ctx, |ui| {
+                    ui.heading("Startup");
+                    let supported = crate::startup::launch_at_login_supported();
+                    let mut launch = app.launch_at_login;
+                    if ui
+                        .add_enabled(
+                            supported,
+                            egui::Checkbox::new(&mut launch, "Launch at login"),
+                        )
+                        .on_disabled_hover_text("Launch at login is currently implemented on macOS, Windows and Linux")
+                        .changed()
+                    {
+                        match crate::startup::set_launch_at_login(launch) {
+                            Ok(_) => {
+                                app.launch_at_login = launch;
+                                app.status = if launch {
+                                    "Launch at login enabled".into()
+                                } else {
+                                    "Launch at login disabled".into()
+                                };
+                            }
+                            Err(e) => {
+                                app.status = format!("Unable to change launch at login: {e:#}");
+                            }
+                        }
+                    }
+                    #[cfg(windows)]
+                    {
+                        ui.add_space(6.0);
+                        let mut dpapi = app.prefs.windows_dpapi_fallback;
+                        if ui
+                            .checkbox(
+                                &mut dpapi,
+                                "Use a DPAPI-protected file instead of Credential Manager",
+                            )
+                            .on_hover_text(
+                                "For Windows accounts without a login password, Credential Manager \
+                                 may be unavailable. The unlock key is then encrypted with Windows \
+                                 DPAPI in the app's config folder. This is weaker: any program \
+                                 running as this user can decrypt it.",
+                            )
+                            .changed()
+                        {
+                            app.prefs.windows_dpapi_fallback = dpapi;
+                            app.save_preferences();
+                            app.secret_store = crate::startup::platform_store(dpapi);
+                            app.auto_unlock = false;
+                            app.remember_unlock = false;
+                            app.status = "Auto-unlock backend changed; unlock once with                                           “Remember unlock key” to enroll again"
+                                .into();
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.label("Automatic unlock");
+                    let saved = !app.db_path.is_empty()
+                        && app.has_saved_secret(&app.db_path);
+                    if saved {
+                        ui.label(format!(
+                            "An unlock key for {} is stored in the operating system's keychain.",
+                            std::path::Path::new(&app.db_path)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| app.db_path.clone())
+                        ));
+                        ui.label(
+                            egui::RichText::new(
+                                "Auto-unlock is only as strong as your OS login. Disable it if \
+                                 other people can use your unlocked session.",
+                            )
+                            .weak(),
+                        );
+                        if ui.button("Forget saved unlock key").clicked() {
+                            app.forget_saved_secret();
+                        }
+                    } else {
+                        ui.label(
+                            "No key is saved. On the unlock screen, tick “Remember unlock key \
+                             and auto-unlock at startup” and unlock once.",
+                        );
+                    }
+                    ui.add_space(8.0);
+                    if ui.button("Close").clicked() {
+                        close_clicked = true;
+                    }
+                });
+            if !close_clicked && open {
+                app.dialog = Dialog::Settings;
             }
         }
     }

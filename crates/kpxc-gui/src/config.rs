@@ -91,6 +91,9 @@ pub struct Preferences {
     pub recent: Vec<String>,
     /// Last successfully opened database (used to prefill the unlock form).
     pub last_db: Option<String>,
+    /// Windows only: store the auto-unlock secret in a DPAPI-protected file
+    /// instead of Credential Manager (for accounts without a login password).
+    pub windows_dpapi_fallback: bool,
 }
 
 impl Default for Preferences {
@@ -99,6 +102,7 @@ impl Default for Preferences {
             columns: ColumnId::ALL.iter().map(|&id| ColumnConfig::new(id)).collect(),
             recent: Vec::new(),
             last_db: None,
+            windows_dpapi_fallback: false,
         }
     }
 }

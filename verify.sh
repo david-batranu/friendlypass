@@ -231,6 +231,15 @@ check "group tree right-click menu exports a single group through the Export dia
 
 
 echo
+echo "== 17. Startup and auto-unlock =="
+check "auto-unlock secret store, keychain trait, LaunchAgent plist and bundle arguments (unit tests)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --lib startup"
+check "unlock-screen Remember checkbox enrolls the key; Settings shows auto-unlock and can forget it (kittest)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui unlock_screen_remember_checkbox_and_settings_dialog"
+check "auto-unlock rebuilds password+keyfile keys from the store; failures fall back to the unlock screen (kittest)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui auto_unlock"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

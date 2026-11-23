@@ -1762,6 +1762,126 @@ fn group_context_menu_exports_only_that_group() {
 }
 
 // ---------------------------------------------------------------------------
+// auto-unlock / startup
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unlock_screen_remember_checkbox_and_settings_dialog() {
+    use kpxc_gui::startup::{MemoryStore, SecretStore};
+    use std::sync::Arc;
+
+    let store = Arc::new(MemoryStore::default());
+    let db_path = fixture("sample4.kdbx").display().to_string();
+    let mut app = kpxc_gui::App::default().with_secret_store(store.clone());
+    app.db_path = db_path.clone();
+    app.password = "testpassword".into();
+    let mut harness = Harness::new_eframe(move |_cc| app);
+    harness.set_size(egui::Vec2::new(1300.0, 1000.0));
+    harness.run();
+
+    // The opt-in checkbox on the unlock screen.
+    harness
+        .get_by_label("Remember unlock key and auto-unlock at startup")
+        .click();
+    harness.run();
+    assert!(harness.state().remember_unlock);
+    harness.get_by_label("Unlock").click();
+    harness.run();
+    assert!(harness.state().db.is_some());
+    let account = kpxc_gui::startup::account_key(&db_path);
+    assert!(
+        store.get(&account).unwrap().is_some(),
+        "remember checkbox enrolled the key"
+    );
+
+    // Settings exposes launch-at-login and the auto-unlock status.
+    harness.get_by_label("Settings…").click();
+    harness.run();
+    harness.get_by_label("Launch at login");
+    harness.get_by_label("Automatic unlock");
+    harness.get_by_label("Forget saved unlock key");
+    harness.get_by_label("Close").click();
+    harness.run();
+
+    // Forget removes it from the store and disables auto-unlock.
+    harness.get_by_label("Settings…").click();
+    harness.run();
+    harness.get_by_label("Forget saved unlock key").click();
+    harness.run();
+    assert!(store.get(&account).unwrap().is_none());
+    assert!(!harness.state().auto_unlock);
+}
+
+#[test]
+fn auto_unlock_enrolls_and_unlocks_with_password_and_keyfile() {
+    use kpxc_gui::startup::{MemoryStore, SecretStore, StoredSecret};
+    use std::sync::Arc;
+
+    let store = Arc::new(MemoryStore::default());
+    let db_path = fixture("sample4_keyfile.kdbx").display().to_string();
+    let keyfile = fixture("sample4.keyx").display().to_string();
+
+    // Unlock once with "remember" checked: the secret is enrolled.
+    let mut app = kpxc_gui::App::default().with_secret_store(store.clone());
+    app.db_path = db_path.clone();
+    app.password = "testpassword".into();
+    app.key_file = keyfile.clone();
+    app.remember_unlock = true;
+    app.try_unlock();
+    assert!(app.db.is_some(), "unlock: {:?}", app.unlock_error);
+    assert!(app.auto_unlock);
+    assert!(app.status.contains("auto-unlock enabled"));
+    let account = kpxc_gui::startup::account_key(&db_path);
+    let stored: StoredSecret = store.get(&account).unwrap().expect("secret stored");
+    assert_eq!(stored.password, "testpassword");
+    assert_eq!(stored.keyfile_name.as_deref(), Some("sample4.keyx"));
+    assert_eq!(
+        stored.keyfile.as_deref(),
+        Some(std::fs::read(&keyfile).unwrap().as_slice())
+    );
+
+    // The next launch auto-unlocks from the keychain, key-file bytes included.
+    let mut next = kpxc_gui::App::default().with_secret_store(store.clone());
+    next.db_path = db_path.clone();
+    assert!(next.try_auto_unlock(), "auto unlock: {:?}", next.unlock_error);
+    assert!(next.db.is_some());
+    assert!(next.status.contains("automatically"));
+
+    // Forgetting the key removes it and disables auto-unlock.
+    assert!(next.forget_saved_secret());
+    assert!(store.get(&account).unwrap().is_none());
+    let mut third = kpxc_gui::App::default().with_secret_store(store);
+    third.db_path = db_path;
+    assert!(!third.try_auto_unlock());
+}
+
+#[test]
+fn auto_unlock_failure_falls_back_to_the_unlock_screen() {
+    use kpxc_gui::startup::{MemoryStore, SecretStore, StoredSecret};
+    use std::sync::Arc;
+
+    let store = Arc::new(MemoryStore::default());
+    let db_path = fixture("sample4.kdbx").display().to_string();
+    let account = kpxc_gui::startup::account_key(&db_path);
+    store
+        .set(
+            &account,
+            &StoredSecret {
+                password: "wrong-password".into(),
+                keyfile: None,
+                keyfile_name: None,
+                challenge_response: String::new(),
+            },
+        )
+        .unwrap();
+    let mut app = kpxc_gui::App::default().with_secret_store(store);
+    app.db_path = db_path;
+    assert!(!app.try_auto_unlock());
+    assert!(app.db.is_none());
+    assert!(app.unlock_error.contains("Auto-unlock failed"));
+}
+
+// ---------------------------------------------------------------------------
 // unit tests for the pure logic helpers
 // ---------------------------------------------------------------------------
 

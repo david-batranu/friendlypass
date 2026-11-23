@@ -18,6 +18,7 @@ pub mod config;
 pub mod dialogs;
 pub mod icons;
 pub mod refs;
+pub mod startup;
 pub mod totp;
 
 pub use app::App;
