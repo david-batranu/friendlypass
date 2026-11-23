@@ -20,5 +20,6 @@
 
 pub mod cli;
 pub mod commands;
+pub mod keeshare;
 pub mod key;
 pub mod saveutil;

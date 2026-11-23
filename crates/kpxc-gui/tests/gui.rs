@@ -915,6 +915,83 @@ fn drag_and_drop_group_onto_group() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// KeeShare: share a group from the GUI
+// ---------------------------------------------------------------------------
+
+#[test]
+fn share_group_dialog_exports_and_persists_reference() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let share_path = dir.path().join("web-share.kdbx");
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
+    harness.run();
+
+    // Put an entry into the (empty) Web group so the share has content.
+    {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        let web_id = db.iter_all_groups().find(|g| g.name == "Web").unwrap().id();
+        let mut group = db.group_mut(web_id).unwrap();
+        let mut e = group.add_entry();
+        e.set_unprotected("Title", "Shared Login");
+        e.set_unprotected("UserName", "share-user");
+        e.set_protected("Password", "share-pass");
+    }
+    harness.run();
+
+    // Select the Web group and open the share dialog.
+    harness.get_by_label("Web (1)").click();
+    harness.run();
+    harness.get_by_label("Share group…").click();
+    harness.run();
+
+    replace_text(&mut harness, "Share container path:", share_path.display().to_string().as_str());
+    replace_text(&mut harness, "Share password:", "share-pw");
+    harness.get_by_label("Export now").click();
+    harness.run();
+
+    assert!(share_path.exists(), "share container written");
+    // The exported container is a readable KDBX with the shared entry.
+    let share = {
+        let mut f = std::fs::File::open(&share_path).unwrap();
+        keepass::Database::open(&mut f, DatabaseKey::new().with_password("share-pw")).unwrap()
+    };
+    assert_eq!(share.num_entries(), 1);
+    assert!(share
+        .iter_all_entries()
+        .any(|e| e.get("Title") == Some("Shared Login")));
+
+    // Save the settings: the reference lands in the group's custom data.
+    harness.get_by_label("Save settings").click();
+    harness.run();
+    assert!(harness.state().dirty, "share settings mark the database dirty");
+
+    // Save (upgrade) and verify the reference survives on disk.
+    harness.get_by_label("Save").click();
+    harness.run();
+    harness.get_by_label("Upgrade and Save").click();
+    harness.run();
+
+    let mut f = std::fs::File::open(&path).unwrap();
+    let reopened = keepass::Database::open(&mut f, DatabaseKey::new().with_password("testpassword")).unwrap();
+    let web_id = reopened
+        .iter_all_groups()
+        .find(|g| g.name == "Web")
+        .unwrap()
+        .id();
+    let reference = kpxc::keeshare::reference_of(&reopened, web_id).expect("share reference persisted");
+    assert_eq!(reference.path, share_path.display().to_string());
+    assert_eq!(reference.password, "share-pw");
+    assert!(reference.import && reference.export);
+}
+
+/// Produces a database entirely through the GUI (created + saved via the
+/// dialogs) for external verification by `verify.sh` with keepassxc-cli.
 #[test]
 #[ignore]
 fn write_database_for_external_verification() {

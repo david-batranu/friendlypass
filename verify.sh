@@ -154,6 +154,17 @@ check "GUI Browser window starts/stops serving the protocol (kittest test)" \
     env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test browser"
 
 echo
+echo "== 10. KeeShare (classic shares): C++ keepassxc-cli reads our share containers =="
+check "cargo test -p kpxc keeshare (reference format + export/import merge)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare"
+check "KeeShare GUI dialog exports a group and persists the reference (kittest test)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui share_group"
+check "KeeShare test writes a share container for the C++ cross-check" \
+    env sh -c "timeout 120 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare export_for_external_verification -- --ignored"
+check "keepassxc-cli reads the shared entries from our KeeShare container" \
+    env sh -c "printf 'share-pw\n' | '$CLI' ls '$ROOT/target/keeshare-share.kdbx' | grep -q 'Shared Entry'"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

@@ -190,6 +190,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     let new_dialog: Option<crate::dialogs::Dialog> = None;
     let mut rename_dialog: Option<crate::dialogs::Dialog> = None;
     let mut delete_target: Option<GroupId> = None;
+    let mut share_target: Option<GroupId> = None;
     let mut empty_bin_clicked = false;
     // Entry dropped from the entry table onto a group row: (entry, target).
     let mut dropped: Option<(EntryId, Option<GroupId>)> = None;
@@ -301,6 +302,15 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
                 delete_target = Some(id);
             }
         }
+        if ui
+            .add_enabled(has_selection, egui::Button::new("Share group…"))
+            .on_disabled_hover_text("Select a group first")
+            .clicked()
+        {
+            if let Some(id) = selected_group {
+                share_target = Some(id);
+            }
+        }
     });
 
     // Recycle bin management: shown when the database has a recycle bin.
@@ -346,6 +356,13 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     }
     if let Some(id) = delete_target {
         app.dialog = crate::dialogs::Dialog::ConfirmDeleteGroup(id);
+    }
+    if let Some(id) = share_target {
+        if let Some(db) = app.db.as_ref() {
+            app.dialog = crate::dialogs::Dialog::ShareGroup(Box::new(
+                crate::dialogs::ShareDialog::for_group(db, id),
+            ));
+        }
     }
     if empty_bin_clicked {
         app.dialog = crate::dialogs::Dialog::ConfirmEmptyRecycleBin;

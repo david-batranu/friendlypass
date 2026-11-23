@@ -35,6 +35,58 @@ pub enum Dialog {
     SshAgent,
     /// KeePassXC-Browser protocol integration.
     Browser,
+    /// KeeShare: share a group via a container file.
+    ShareGroup(Box<ShareDialog>),
+}
+
+/// State of the KeeShare dialog.
+pub struct ShareDialog {
+    pub group: keepass::db::GroupId,
+    pub group_name: String,
+    pub path: String,
+    pub password: String,
+    pub import: bool,
+    pub export: bool,
+    pub show_password: bool,
+    pub message: String,
+}
+
+impl ShareDialog {
+    /// Build the dialog for a group, prefilled from its existing reference.
+    pub fn for_group(db: &keepass::db::Database, group: keepass::db::GroupId) -> Self {
+        let group_name = db
+            .group(group)
+            .map(|g| g.name.clone())
+            .unwrap_or_default();
+        let mut dialog = ShareDialog {
+            group,
+            group_name,
+            path: String::new(),
+            password: String::new(),
+            import: true,
+            export: true,
+            show_password: false,
+            message: String::new(),
+        };
+        if let Some(reference) = kpxc::keeshare::reference_of(db, group) {
+            dialog.path = reference.path;
+            dialog.password = reference.password;
+            dialog.import = reference.import;
+            dialog.export = reference.export;
+        }
+        dialog
+    }
+
+    fn reference(&self, db: &keepass::db::Database) -> kpxc::keeshare::ShareReference {
+        kpxc::keeshare::ShareReference {
+            import: self.import,
+            export: self.export,
+            group_uuid: db.group(self.group).map(|g| g.id().uuid()),
+            path: self.path.clone(),
+            password: self.password.clone(),
+            keep_groups: false,
+        }
+    }
 }
 
 /// State of the batch-move dialog.
@@ -1385,6 +1437,150 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if !close_clicked && open {
                 app.dialog = Dialog::Browser;
+            }
+        }
+        Dialog::ShareGroup(mut d) => {
+            let mut open = true;
+            let mut cancelled = false;
+            let mut saved = false;
+            let mut export_clicked = false;
+            let mut import_clicked = false;
+            egui::Window::new(format!("Share Group “{}”", d.group_name))
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(
+                        "KeeShare (classic shares): the group subtree is exported to a KDBX \
+                         container protected by the share password, and can be imported back \
+                         (entries are matched by UUID).",
+                    );
+                    ui.separator();
+                    let l = ui.label("Share container path:");
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut d.path).hint_text("/path/to/share.kdbx"),
+                    );
+                    r.labelled_by(l.id);
+                    if ui.button("Browse…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("KeePass database", &["kdbx"])
+                            .set_file_name("share.kdbx")
+                            .save_file()
+                        {
+                            d.path = p.display().to_string();
+                        }
+                    }
+                    let l = ui.label("Share password:");
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut d.password).password(!d.show_password),
+                    );
+                    r.labelled_by(l.id);
+                    if ui.button(if d.show_password { "Hide" } else { "Show" }).clicked() {
+                        d.show_password = !d.show_password;
+                    }
+                    ui.checkbox(&mut d.import, "Import from the container");
+                    ui.checkbox(&mut d.export, "Export to the container");
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let can_run = !d.path.trim().is_empty() && !d.password.is_empty();
+                        if ui
+                            .add_enabled(can_run, egui::Button::new("Export now"))
+                            .clicked()
+                        {
+                            export_clicked = true;
+                        }
+                        if ui
+                            .add_enabled(can_run, egui::Button::new("Import now"))
+                            .clicked()
+                        {
+                            import_clicked = true;
+                        }
+                    });
+                    if !d.message.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(&d.message);
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                !d.path.trim().is_empty() && !d.password.is_empty(),
+                                egui::Button::new("Save settings"),
+                            )
+                            .clicked()
+                        {
+                            saved = true;
+                        }
+                    });
+                });
+
+            if export_clicked {
+                if let Some(db) = app.db.as_ref() {
+                    match kpxc::keeshare::export_share(
+                        db,
+                        d.group,
+                        std::path::Path::new(&d.path),
+                        &d.password,
+                    ) {
+                        Ok(info) => {
+                            d.message = format!(
+                                "Exported {} entries ({} groups) to {}",
+                                info.entries,
+                                info.groups,
+                                info.path.display()
+                            );
+                            app.status = d.message.clone();
+                            // Persist the reference with the export settings.
+                            if let Some(db) = app.db.as_mut() {
+                                let reference = kpxc::keeshare::ShareReference {
+                                    import: d.import,
+                                    export: d.export,
+                                    group_uuid: db.group(d.group).map(|g| g.id().uuid()),
+                                    path: d.path.clone(),
+                                    password: d.password.clone(),
+                                    keep_groups: false,
+                                };
+                                kpxc::keeshare::set_reference(db, d.group, &reference);
+                                app.dirty = true;
+                            }
+                        }
+                        Err(e) => d.message = format!("export failed: {e:#}"),
+                    }
+                }
+            }
+            if import_clicked {
+                if let Some(db) = app.db.as_mut() {
+                    match kpxc::keeshare::import_share(
+                        db,
+                        d.group,
+                        std::path::Path::new(&d.path),
+                        &d.password,
+                    ) {
+                        Ok(info) => {
+                            d.message =
+                                format!("Imported: {} added, {} updated", info.added, info.updated);
+                            app.status = d.message.clone();
+                            app.dirty = true;
+                        }
+                        Err(e) => d.message = format!("import failed: {e:#}"),
+                    }
+                }
+            }
+            if saved {
+                if let Some(db) = app.db.as_mut() {
+                    let reference = {
+                        let r = d.reference(db);
+                        r
+                    };
+                    kpxc::keeshare::set_reference(db, d.group, &reference);
+                    app.dirty = true;
+                    app.status = format!("Share settings saved for group '{}'", d.group_name);
+                }
+            }
+            if !cancelled && !saved && open {
+                app.dialog = Dialog::ShareGroup(d);
             }
         }
     }

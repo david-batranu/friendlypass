@@ -2503,14 +2503,17 @@ name = "kpxc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "clap",
  "getrandom 0.4.3",
  "hex",
  "keepass",
+ "quick-xml 0.42.0",
  "rpassword",
  "rust-argon2",
  "sha2 0.10.9",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]
