@@ -312,8 +312,12 @@ fn icon_picker(
 fn form_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui::Id)) {
     ui.horizontal(|ui| {
         let label_resp = ui.add_sized(
-            [190.0, ui.spacing().interact_size.y],
-            egui::Label::new(label),
+            [110.0, ui.spacing().interact_size.y],
+            egui::Label::new(
+                egui::RichText::new(label)
+                    .size(13.5)
+                    .color(crate::theme::MUTED),
+            ),
         );
         add(ui, label_resp.id);
     });
@@ -573,7 +577,7 @@ impl EntryEdit {
 /// The entry editor form, shared by the New Entry modal and the inline
 /// right-column editor. Buttons are supplied by the caller.
 pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
-                    let field_width = (ui.available_width() - 200.0).max(120.0);
+                    let field_width = (ui.available_width() - 125.0).max(160.0);
                     form_row(ui, "Title:", |ui, id| {
                         let r = ui.add(egui::TextEdit::singleline(&mut d.title).desired_width(field_width));
                         r.labelled_by(id);
@@ -1020,7 +1024,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             egui::Window::new(if d.entry_id.is_some() { "Edit Entry" } else { "New Entry" })
                 .open(&mut open)
                 .collapsible(false)
-                .default_width(880.0)
+                .default_width(740.0)
                 .show(ctx, |ui| {
                     entry_edit_body(ui, app, &mut d);
                     ui.add_space(8.0);
@@ -1028,7 +1032,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("OK").clicked() {
+                        if ui.add(crate::theme::primary_button("OK")).clicked() {
                             apply = true;
                         }
                     });

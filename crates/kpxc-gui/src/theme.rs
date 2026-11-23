@@ -7,18 +7,21 @@ use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Vec2, Visuals,
 };
 
-pub const BG: Color32 = Color32::from_rgb(0xF5, 0xF6, 0xF8);
-pub const SIDEBAR: Color32 = Color32::from_rgb(0xEC, 0xED, 0xEF);
-pub const SIDEBAR_SELECTED: Color32 = Color32::from_rgb(0xD2, 0xDC, 0xEA);
-pub const LIST_SELECTED: Color32 = Color32::from_rgb(0xEB, 0xEC, 0xEE);
+pub const BG: Color32 = Color32::from_rgb(0xF6, 0xF7, 0xF9);
+pub const SIDEBAR: Color32 = Color32::from_rgb(0xEC, 0xEE, 0xF2);
+pub const SIDEBAR_HOVER: Color32 = Color32::from_rgb(0xE1, 0xE5, 0xEC);
+pub const SIDEBAR_SELECTED: Color32 = Color32::from_rgb(0xD4, 0xE3, 0xFA);
+pub const LIST_HOVER: Color32 = Color32::from_rgb(0xF1, 0xF4, 0xF9);
+pub const LIST_SELECTED: Color32 = Color32::from_rgb(0xE4, 0xEE, 0xFD);
+pub const LIST_SELECTED_STROKE: Color32 = Color32::from_rgb(0xB8, 0xD2, 0xF8);
 pub const PANEL: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 pub const CARD: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-pub const BORDER: Color32 = Color32::from_rgb(0xE4, 0xE7, 0xEC);
-pub const TEXT: Color32 = Color32::from_rgb(0x1F, 0x23, 0x28);
-pub const MUTED: Color32 = Color32::from_rgb(0x6B, 0x72, 0x80);
+pub const BORDER: Color32 = Color32::from_rgb(0xE2, 0xE6, 0xED);
+pub const TEXT: Color32 = Color32::from_rgb(0x18, 0x1D, 0x24);
+pub const MUTED: Color32 = Color32::from_rgb(0x64, 0x6D, 0x7A);
 pub const ACCENT: Color32 = Color32::from_rgb(0x18, 0x6A, 0xDE);
 pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0xE8, 0xF0, 0xFE);
-pub const HOVER: Color32 = Color32::from_rgb(0xF3, 0xF4, 0xF6);
+pub const HOVER: Color32 = Color32::from_rgb(0xEF, 0xF2, 0xF6);
 pub const DANGER: Color32 = Color32::from_rgb(0xD9, 0x3B, 0x3B);
 pub const GOOD: Color32 = Color32::from_rgb(0x2E, 0xA8, 0x3A);
 pub const WARN: Color32 = Color32::from_rgb(0xE5, 0x93, 0x1A);

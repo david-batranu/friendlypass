@@ -1021,8 +1021,12 @@ impl eframe::App for App {
 fn unlock_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui::Id)) {
     ui.horizontal(|ui| {
         let label_resp = ui.add_sized(
-            [320.0, ui.spacing().interact_size.y],
-            egui::Label::new(label),
+            [270.0, ui.spacing().interact_size.y],
+            egui::Label::new(
+                egui::RichText::new(label)
+                    .size(13.5)
+                    .color(crate::theme::MUTED),
+            ),
         );
         add(ui, label_resp.id);
     });
@@ -1121,24 +1125,27 @@ impl App {
             }
 
             ui.vertical_centered(|ui| {
+                let card_w = (ui.available_width() - 32.0).clamp(520.0, 760.0);
                 ui.allocate_ui_with_layout(
-                    egui::vec2(900.0, 0.0),
+                    egui::vec2(card_w, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                 egui::Frame::new()
                     .fill(crate::theme::PANEL)
                     .corner_radius(16)
-                    .inner_margin(egui::Margin::symmetric(28, 22))
+                    .inner_margin(egui::Margin::symmetric(24, 22))
                     .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
                     .show(ui, |ui| {
-                        ui.set_width(844.0);
+                        let inner_w = (card_w - 48.0).max(460.0);
+                        ui.set_width(inner_w);
+                        let field_w = (inner_w - 270.0 - 92.0).max(180.0);
             // Manual rows (egui 0.37 Grid clamps TextEdit widths to the tiny
             // previous column width; see `form_row` in dialogs.rs).
             unlock_row(ui, "Database file:", |ui, id| {
                 let path_resp = ui.add(
                     egui::TextEdit::singleline(&mut self.db_path)
                         .hint_text("/path/to/database.kdbx")
-                        .desired_width(460.0),
+                        .desired_width(field_w),
                 );
                 path_resp.labelled_by(id);
                 if ui.button("Browse…").clicked() {
@@ -1157,7 +1164,7 @@ impl App {
                     egui::TextEdit::singleline(&mut self.password)
                         .password(true)
                         .hint_text("password")
-                        .desired_width(460.0),
+                        .desired_width(field_w),
                 );
                 // Enter in the password field unlocks.
                 unlock_on_enter =
@@ -1172,7 +1179,7 @@ impl App {
                 let kf_resp = ui.add(
                     egui::TextEdit::singleline(&mut self.key_file)
                         .hint_text("/path/to/keyfile.keyx")
-                        .desired_width(460.0),
+                        .desired_width(field_w),
                 );
                 kf_resp.labelled_by(id);
                 if ui.button("Browse…").clicked() {
@@ -1189,7 +1196,7 @@ impl App {
                 let cr_resp = ui.add(
                     egui::TextEdit::singleline(&mut self.challenge_response)
                         .hint_text("YubiKey-equivalent HMAC-SHA1 secret")
-                        .desired_width(460.0),
+                        .desired_width(field_w),
                 );
                 cr_resp.labelled_by(id);
             });

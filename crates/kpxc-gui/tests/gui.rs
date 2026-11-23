@@ -2113,13 +2113,32 @@ fn passkey_fields_show_a_passkey_label_only() {
         if let Some(mut entry) = db.entry_mut(id) {
             entry.set_unprotected("KPEX_PASSKEY_CREDENTIAL_ID", "cred-123");
             entry.set_unprotected("KPEX_PASSKEY_RELYING_PARTY", "example.com");
+            // Even when the entry also carries a "Passkey" tag (as KeePassXC-Browser
+            // often adds), the details view must show only a single Passkey badge,
+            // while keeping other tags visible.
+            entry.tags = vec!["Passkey".into(), "work".into()];
         }
     }
     harness.run();
     harness.get_by_label("Sample Entry").click();
     harness.run();
 
-    harness.get_by_label("Passkey");
+    assert_eq!(
+        harness
+            .query_all_by_label("Passkey")
+            .filter(|n| n.rect().left() > 400.0)
+            .count(),
+        1,
+        "details view renders a single Passkey chip (no duplicate from the Passkey tag)"
+    );
+    assert_eq!(
+        harness
+            .query_all_by_label("work")
+            .filter(|n| n.rect().left() > 400.0)
+            .count(),
+        1,
+        "non-passkey tags remain visible alongside the Passkey chip"
+    );
     assert_eq!(
         harness
             .query_all_by_label("KPEX_PASSKEY_CREDENTIAL_ID")

@@ -26,13 +26,27 @@ fn sidebar_row_background(ui: &mut egui::Ui, selected: bool, height: f32) -> egu
     let fill = if selected {
         crate::theme::SIDEBAR_SELECTED
     } else if hovered {
-        crate::theme::HOVER
+        crate::theme::SIDEBAR_HOVER
     } else {
         egui::Color32::TRANSPARENT
     };
     if fill != egui::Color32::TRANSPARENT {
         ui.painter()
             .rect_filled(rect, egui::CornerRadius::same(8), fill);
+    }
+    if selected {
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(8),
+            egui::Stroke::new(1.0, crate::theme::LIST_SELECTED_STROKE),
+            egui::StrokeKind::Inside,
+        );
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 2.5, rect.top() + 5.0),
+            egui::pos2(rect.left() + 5.5, rect.bottom() - 5.0),
+        );
+        ui.painter()
+            .rect_filled(bar, egui::CornerRadius::same(2), crate::theme::ACCENT);
     }
     rect
 }
@@ -340,10 +354,10 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
             };
         // A full-width row: clicking anywhere on it selects the group, which
         // also makes dragging and the context menu reliable.
-        let rect = sidebar_row_background(ui, selected, 28.0);
+        let rect = sidebar_row_background(ui, selected, 30.0);
         let mut content = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(rect.shrink2(egui::vec2(8.0, 3.0)))
+                .max_rect(rect.shrink2(egui::vec2(10.0, 4.0)))
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         content.add_space(row.depth.saturating_sub(1) as f32 * 14.0);
@@ -354,8 +368,12 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
             format!("{} ({})", row.name, row.entries)
         };
         let mut text = egui::RichText::new(label)
-            .size(14.0)
-            .color(crate::theme::TEXT);
+            .size(13.5)
+            .color(if selected {
+                crate::theme::ACCENT
+            } else {
+                crate::theme::TEXT
+            });
         if selected {
             text = text.strong();
         }
@@ -423,18 +441,22 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     // Favorites shortcut row (like 1Password).
     {
         let fav_selected = filter_favorites;
-        let rect = sidebar_row_background(ui, fav_selected, 28.0);
+        let rect = sidebar_row_background(ui, fav_selected, 30.0);
         let mut content = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(rect.shrink2(egui::vec2(8.0, 3.0)))
+                .max_rect(rect.shrink2(egui::vec2(10.0, 4.0)))
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         let (star_rect, _) =
             content.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
         crate::theme::draw_star_badge(content.painter(), star_rect.center(), 7.5);
         let mut text = egui::RichText::new("Favorites")
-            .size(14.0)
-            .color(crate::theme::TEXT);
+            .size(13.5)
+            .color(if fav_selected {
+                crate::theme::ACCENT
+            } else {
+                crate::theme::TEXT
+            });
         if fav_selected {
             text = text.strong();
         }
@@ -516,16 +538,20 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         ui.add_space(2.0);
         for tag in &all_tags {
             let is_sel = selected_tag.as_deref() == Some(tag.as_str());
-            let rect = sidebar_row_background(ui, is_sel, 26.0);
+            let rect = sidebar_row_background(ui, is_sel, 28.0);
             let mut content = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(rect.shrink2(egui::vec2(8.0, 3.0)))
+                    .max_rect(rect.shrink2(egui::vec2(10.0, 4.0)))
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             crate::theme::draw_tag_pill(&mut content, crate::theme::TAG_GREEN);
             let mut text = egui::RichText::new(tag)
                 .size(13.5)
-                .color(crate::theme::TEXT);
+                .color(if is_sel {
+                    crate::theme::ACCENT
+                } else {
+                    crate::theme::TEXT
+                });
             if is_sel {
                 text = text.strong();
             }
@@ -783,7 +809,7 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
         .id_salt("entry-list-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.spacing_mut().item_spacing.y = 4.0;
             let mut last_month: Option<String> = None;
             for row in rows {
                 let month = row
@@ -792,7 +818,7 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                     .unwrap_or_else(|| "MARCH 2025".to_owned());
                 if last_month.as_deref() != Some(month.as_str()) {
                     if last_month.is_some() {
-                        ui.add_space(10.0);
+                        ui.add_space(12.0);
                     }
                     ui.label(
                         egui::RichText::new(&month)
@@ -807,28 +833,48 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                 let selected = app.selected_entry == Some(row.id)
                     || app.selected_entries.contains(&row.id);
                 let (rect, _alloc) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 56.0),
+                    egui::vec2(ui.available_width(), 58.0),
                     egui::Sense::hover(),
                 );
                 let hovered = ui.rect_contains_pointer(rect);
                 let fill = if selected {
                     crate::theme::LIST_SELECTED
                 } else if hovered {
-                    crate::theme::HOVER
+                    crate::theme::LIST_HOVER
                 } else {
                     egui::Color32::TRANSPARENT
                 };
                 if fill != egui::Color32::TRANSPARENT {
                     ui.painter()
-                        .rect_filled(rect, egui::CornerRadius::same(8), fill);
+                        .rect_filled(rect, egui::CornerRadius::same(10), fill);
+                }
+                if selected {
+                    ui.painter().rect_stroke(
+                        rect,
+                        egui::CornerRadius::same(10),
+                        egui::Stroke::new(1.0, crate::theme::LIST_SELECTED_STROKE),
+                        egui::StrokeKind::Inside,
+                    );
+                    let bar = egui::Rect::from_min_max(
+                        egui::pos2(rect.left() + 3.0, rect.top() + 10.0),
+                        egui::pos2(rect.left() + 6.5, rect.bottom() - 10.0),
+                    );
+                    ui.painter()
+                        .rect_filled(bar, egui::CornerRadius::same(2), crate::theme::ACCENT);
                 }
                 let mut content = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(rect.shrink2(egui::vec2(10.0, 6.0)))
+                        .max_rect(rect.shrink2(egui::vec2(12.0, 7.0)))
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
+                let icon_fill = if selected {
+                    crate::theme::PANEL
+                } else {
+                    crate::theme::BG
+                };
                 let icon_resp = egui::Frame::new()
-                    .fill(crate::theme::BG)
+                    .fill(icon_fill)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
                     .corner_radius(8)
                     .inner_margin(egui::Margin::same(4))
                     .show(&mut content, |ui| {
@@ -855,19 +901,23 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                     row.tags.clone()
                 };
                 content.vertical(|ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&row.title)
-                                .size(15.5)
-                                .color(crate::theme::TEXT),
-                        )
-                        .truncate(),
-                    );
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let mut title_text = egui::RichText::new(&row.title)
+                        .size(15.0)
+                        .color(if selected {
+                            crate::theme::ACCENT
+                        } else {
+                            crate::theme::TEXT
+                        });
+                    if selected {
+                        title_text = title_text.strong();
+                    }
+                    ui.add(egui::Label::new(title_text).truncate());
                     if !secondary.is_empty() {
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(secondary)
-                                    .size(13.0)
+                                    .size(12.5)
                                     .color(crate::theme::MUTED),
                             )
                             .truncate(),
@@ -1254,6 +1304,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     ui.horizontal(|ui| {
         let icon_resp = egui::Frame::new()
             .fill(crate::theme::BG)
+            .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
             .corner_radius(14)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
@@ -1271,42 +1322,59 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         );
         ui.add_space(14.0);
         ui.vertical(|ui| {
-            ui.add_space(10.0);
+            ui.add_space(6.0);
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(&d.title)
-                        .size(24.0)
+                        .size(23.0)
                         .strong()
                         .color(crate::theme::TEXT),
                 )
                 .wrap(),
             );
-            if d.has_passkey {
-                ui.add_space(4.0);
-                egui::Frame::new()
-                    .fill(crate::theme::BG)
-                    .corner_radius(6)
-                    .inner_margin(egui::Margin::symmetric(8, 3))
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("Passkey")
-                                .size(12.0)
-                                .color(crate::theme::MUTED),
-                        );
-                    });
-            }
-            if !d.tags.is_empty() {
-                ui.add_space(4.0);
+            // Collect badges on a single row, deduplicating any user tag named
+            // "Passkey" / "Passkeys" when the entry already shows the Passkey
+            // indicator chip from KPEX_PASSKEY* / KPXC_PASSKEY* fields.
+            let non_passkey_tags: Vec<&str> = d
+                .tags
+                .split(',')
+                .map(str::trim)
+                .filter(|t| {
+                    !t.is_empty()
+                        && !(d.has_passkey
+                            && (t.eq_ignore_ascii_case("passkey")
+                                || t.eq_ignore_ascii_case("passkeys")))
+                })
+                .collect();
+            if d.has_passkey || !non_passkey_tags.is_empty() {
+                ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
-                    for tag in d.tags.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                    if d.has_passkey {
+                        egui::Frame::new()
+                            .fill(crate::theme::ACCENT_SOFT)
+                            .stroke(egui::Stroke::new(1.0, crate::theme::LIST_SELECTED_STROKE))
+                            .corner_radius(6)
+                            .inner_margin(egui::Margin::symmetric(8, 3))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new("Passkey")
+                                        .size(12.0)
+                                        .strong()
+                                        .color(crate::theme::ACCENT),
+                                );
+                            });
+                    }
+                    for tag in non_passkey_tags {
                         egui::Frame::new()
                             .fill(crate::theme::BG)
+                            .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
                             .corner_radius(6)
-                            .inner_margin(egui::Margin::symmetric(7, 2))
+                            .inner_margin(egui::Margin::symmetric(8, 3))
                             .show(ui, |ui| {
                                 ui.label(
                                     egui::RichText::new(tag)
-                                        .size(11.0)
+                                        .size(11.5)
                                         .color(crate::theme::MUTED),
                                 );
                             });
@@ -1315,7 +1383,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             }
         });
     });
-    ui.add_space(18.0);
+    ui.add_space(16.0);
 
     // The main field card ------------------------------------------------
     detail_card(ui, |ui| {
@@ -1427,80 +1495,92 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
 
     // Website ------------------------------------------------------------
     if !d.url.is_empty() {
-        ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("website")
-                        .size(12.5)
-                        .color(crate::theme::ACCENT),
-                );
-                let (head, tail) = split_url_domain(&d.url);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    if !head.is_empty() {
+        ui.add_space(16.0);
+        detail_card(ui, |ui| {
+            let width = ui.available_width();
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2((width - 110.0).max(80.0), 42.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
                         ui.label(
-                            egui::RichText::new(head)
-                                .size(15.5)
-                                .color(crate::theme::MUTED),
+                            egui::RichText::new("website")
+                                .size(12.5)
+                                .color(crate::theme::ACCENT),
                         );
+                        let (head, tail) = split_url_domain(&d.url);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            if !head.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(head)
+                                        .size(15.5)
+                                        .color(crate::theme::MUTED),
+                                );
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(tail)
+                                        .size(15.5)
+                                        .color(crate::theme::TEXT),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&d.url);
+                        });
+                    },
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(crate::theme::subtle_button("Copy URL"))
+                        .clicked()
+                    {
+                        copy = Some(d.url.clone());
                     }
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(tail)
-                                .size(15.5)
-                                .color(crate::theme::TEXT),
-                        )
-                        .truncate(),
-                    )
-                    .on_hover_text(&d.url);
                 });
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(crate::theme::subtle_button("Copy URL"))
-                    .clicked()
-                {
-                    copy = Some(d.url.clone());
-                }
             });
         });
     }
 
     // Custom fields / security ------------------------------------------
     if !d.attributes.is_empty() {
-        ui.add_space(26.0);
+        ui.add_space(18.0);
         ui.label(
             egui::RichText::new("SECURITY")
-                .size(12.5)
+                .size(11.0)
                 .strong()
-                .color(crate::theme::TEXT),
+                .color(crate::theme::MUTED),
         );
-        ui.add_space(8.0);
-        for (i, (key, value, protected)) in d.attributes.iter().enumerate() {
-            if i > 0 {
-                ui.add_space(10.0);
+        ui.add_space(4.0);
+        detail_card(ui, |ui| {
+            for (i, (key, value, protected)) in d.attributes.iter().enumerate() {
+                if i > 0 {
+                    ui.add(egui::Separator::default().spacing(6.0));
+                }
+                let shown = if *protected && !show_password {
+                    "••••••••••".to_owned()
+                } else {
+                    value.clone()
+                };
+                let label = if *protected {
+                    format!("{key} (protected)")
+                } else {
+                    key.clone()
+                };
+                field_block(ui, &label, &shown, value, "Copy", &mut copy);
             }
-            let shown = if *protected && !show_password {
-                "••••••••••".to_owned()
-            } else {
-                value.clone()
-            };
-            let label = if *protected {
-                format!("{key} (protected)")
-            } else {
-                key.clone()
-            };
-            field_block(ui, &label, &shown, value, "Copy", &mut copy);
-        }
-        if ui.add(crate::theme::subtle_button("Copy Tags")).clicked() {
-            copy = Some(d.tags.clone());
-        }
+            if !d.tags.is_empty() {
+                ui.add(egui::Separator::default().spacing(6.0));
+                if ui.add(crate::theme::subtle_button("Copy Tags")).clicked() {
+                    copy = Some(d.tags.clone());
+                }
+            }
+        });
     }
 
     // Notes --------------------------------------------------------------
     if !d.notes.is_empty() {
-        ui.add_space(22.0);
+        ui.add_space(18.0);
         ui.label(
             egui::RichText::new("NOTES")
                 .size(11.0)
@@ -1519,7 +1599,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
 
     // Auto-Type summary --------------------------------------------------
     if let Some(at) = &d.autotype {
-        ui.add_space(22.0);
+        ui.add_space(18.0);
         ui.label(
             egui::RichText::new("AUTO-TYPE")
                 .size(11.0)
@@ -1555,7 +1635,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
 
     // Attachments --------------------------------------------------------
     if !d.attachments.is_empty() {
-        ui.add_space(22.0);
+        ui.add_space(18.0);
         ui.label(
             egui::RichText::new("ATTACHMENTS")
                 .size(11.0)
@@ -1595,7 +1675,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     }
 
     // Footer -------------------------------------------------------------
-    ui.add_space(26.0);
+    ui.add_space(20.0);
     if let Some(t) = d.last_modified {
         ui.horizontal(|ui| {
             crate::theme::draw_chevron_right(ui, crate::theme::MUTED);
