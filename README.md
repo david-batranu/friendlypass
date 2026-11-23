@@ -172,8 +172,9 @@ Migrated and verified: the headless core (database open/save, all cipher and
 KDF variants, entries/groups/attachments/protected fields, CLI commands
 above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, and the SSH agent is verified against the real
-`ssh-keygen`/`ssh-add` binaries (`./verify.sh`: 31 checks, 13+14 GUI +
-14 ssh-agent tests).
+`ssh-keygen`/`ssh-add` binaries, and the browser protocol against the REAL
+`keepassxc-proxy` from the KeePassXC.app bundle (`./verify.sh`: 34 checks,
+13+2 GUI + 14 ssh-agent + 6 browser tests).
 
 ### Feature matrix (GUI)
 
@@ -199,5 +200,6 @@ above) and the GUI workflow described above — verified against KeePassXC
 | Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
 | Auto-type execution (keystroke injection via `enigo`) | ✅ implemented + pipeline unit-tested with a recording injector; end-to-end injection requires the user to grant the macOS Accessibility permission (manual step) |
 | SSH agent (key serving) | ✅ implemented + tested against the REAL ssh tooling: our parser reads `ssh-keygen` output; `ssh-keygen -y/-lf` accepts our written keys; `ssh-add -l` lists keys served from database attachments via the `kpxc-ssh-agent` binary, the library server, AND the GUI's SSH Agent window; signatures verify. Subset: unencrypted `ssh-ed25519` (RSA/ECDSA + passphrase-encrypted documented as unsupported) |
+| Browser integration (KeepassXC-Browser protocol) | ✅ implemented + verified against the REAL shipped `keepassxc-proxy` binary: X25519 `change-public-keys` handshake, nonce-increment responses, encrypted `associate` / `test-associate` / `get-logins` / `generate-password` / `lock-database` with KeePassXC 2.8.0's exact message shapes and error codes; the full flow (handshake → associate → test-associate → get-logins with base64 credentials → error replies) round-trips through the actual proxy from the KeePassXC.app bundle; the GUI's Browser window starts/stops the server on the socket the proxy connects to |
 | KeeShare (signed share containers) | ❌ not implemented — next in feasibility order after the browser protocol |
 | YubiKey challenge-response keys | ❌ not implemented — requires physical YubiKey hardware to verify |

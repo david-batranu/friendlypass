@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kpxc", "crates/kpxc-gui", "crates/kpxc-ssh-agent"]
+members = ["crates/kpxc", "crates/kpxc-gui", "crates/kpxc-ssh-agent", "crates/kpxc-browser"]
 
 [workspace.package]
 edition = "2021"

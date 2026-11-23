@@ -70,6 +70,9 @@ pub struct App {
     pub ssh_pool: Option<kpxc_ssh_agent::server::IdentityPool>,
     /// Socket path for the SSH agent (editable before starting).
     pub ssh_socket: String,
+    /// The running browser-protocol server (KeePassXC-Browser integration).
+    pub browser_handle: Option<kpxc_browser::ServerHandle>,
+    pub browser_state: Option<kpxc_browser::SharedState>,
 }
 
 impl Default for App {
@@ -96,6 +99,8 @@ impl Default for App {
             ssh_handle: None,
             ssh_pool: None,
             ssh_socket: kpxc_ssh_agent::default_socket_path().display().to_string(),
+            browser_handle: None,
+            browser_state: None,
         }
     }
 }
@@ -720,7 +725,7 @@ impl App {
             .default_size(42.0)
             .show(root, |ui| {
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let name = std::path::Path::new(&self.db_path)
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
@@ -754,6 +759,9 @@ impl App {
                     }
                     if ui.button("SSH Agent…").clicked() {
                         self.dialog = Dialog::SshAgent;
+                    }
+                    if ui.button("Browser…").clicked() {
+                        self.dialog = Dialog::Browser;
                     }
                     ui.separator();
                     let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));

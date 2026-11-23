@@ -145,6 +145,15 @@ check "GUI SSH Agent window serves keys listed by real ssh-add (kittest test)" \
     env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test ssh_agent"
 
 echo
+echo "== 9. Browser protocol (kpxc-browser): REAL keepassxc-proxy interop =="
+check "cargo test -p kpxc-browser (4 unit + 2 proxy-interop tests)" \
+    cargo test --release -p kpxc-browser --manifest-path "$ROOT/Cargo.toml"
+check "the REAL shipped keepassxc-proxy relays our protocol: handshake, associate, test-associate, get-logins, error shape" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-browser --manifest-path '$ROOT/Cargo.toml' --test e2e_proxy full_protocol_flow_through_the_real_keepassxc_proxy"
+check "GUI Browser window starts/stops serving the protocol (kittest test)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test browser"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

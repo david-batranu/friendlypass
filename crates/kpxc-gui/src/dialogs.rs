@@ -33,6 +33,8 @@ pub enum Dialog {
     BatchMove(Box<BatchMove>),
     /// SSH agent integration: serve the database's SSH keys.
     SshAgent,
+    /// KeePassXC-Browser protocol integration.
+    Browser,
 }
 
 /// State of the batch-move dialog.
@@ -1301,6 +1303,88 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if !close_clicked && open {
                 app.dialog = Dialog::SshAgent;
+            }
+        }
+        Dialog::Browser => {
+            let mut open = true;
+            let mut close_clicked = false;
+            let mut start_clicked = false;
+            let mut stop_clicked = false;
+            egui::Window::new("Browser Integration")
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(
+                        "Serve the KeepassXC-Browser protocol on the same socket the shipped \
+                         keepassxc-proxy connects to, so the real browser extension can fill \
+                         credentials from this database.",
+                    );
+                    ui.separator();
+                    let associations = app
+                        .browser_state
+                        .as_ref()
+                        .and_then(|s| s.lock().ok().map(|s| s.associations.len()))
+                        .unwrap_or(0);
+                    if app.browser_handle.is_some() {
+                        ui.label(format!(
+                            "Serving on: {}",
+                            kpxc_browser::browser_server_path().display()
+                        ));
+                        ui.weak(format!("{associations} associated browser client(s)"));
+                        // Refresh the served snapshot from the live database.
+                        if let Some(state) = app.browser_state.clone() {
+                            if let Some(db) = app.db.as_ref() {
+                                let snapshot = kpxc_browser::snapshot_from_database(db);
+                                let _ = state.lock().map(|mut s| {
+                                    s.entries = snapshot.entries;
+                                    if !snapshot.db_hash.is_empty() {
+                                        s.db_hash = snapshot.db_hash;
+                                    }
+                                });
+                            }
+                        }
+                        if ui.button("Stop serving").clicked() {
+                            stop_clicked = true;
+                        }
+                    } else {
+                        ui.label("Browser integration is not running.");
+                        if ui.button("Start serving").clicked() {
+                            start_clicked = true;
+                        }
+                    }
+                    ui.add_space(6.0);
+                    if ui.button("Close").clicked() {
+                        close_clicked = true;
+                    }
+                });
+
+            if start_clicked {
+                let state: kpxc_browser::SharedState = std::sync::Arc::new(std::sync::Mutex::new(
+                    app.db
+                        .as_ref()
+                        .map(kpxc_browser::snapshot_from_database)
+                        .unwrap_or_default(),
+                ));
+                let path = kpxc_browser::browser_server_path();
+                match kpxc_browser::start(&path, state.clone()) {
+                    Ok(handle) => {
+                        app.browser_handle = Some(handle);
+                        app.browser_state = Some(state);
+                        app.status =
+                            format!("Browser protocol serving on {}", path.display());
+                    }
+                    Err(e) => app.status = format!("cannot start browser server: {e:#}"),
+                }
+            }
+            if stop_clicked {
+                if let Some(handle) = app.browser_handle.take() {
+                    handle.stop();
+                    app.browser_state = None;
+                    app.status = "Browser integration stopped".into();
+                }
+            }
+            if !close_clicked && open {
+                app.dialog = Dialog::Browser;
             }
         }
     }
