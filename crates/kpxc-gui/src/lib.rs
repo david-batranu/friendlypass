@@ -1,12 +1,23 @@
-//! `kpxc-gui` — the KeePassXC Rust migration's GUI, drawn with **BUI**
-//! (Blender's UI, <https://github.com/ppmpreetham/BUI>).
+//! `kpxc-gui` — the cross-platform (egui) GUI of the KeePassXC Rust
+//! migration.
 //!
-//! The state and file-format work live in [`state`]; [`ui`] builds the
-//! Blender-styled widget tree with the `blenderui` crate. The headless
-//! tests drive the same tree (element bounds, clicks, typing) and render
-//! PNG screenshots from BUI's software rasterizer.
+//! Feature set mirrors KeePassXC's core GUI flow: unlock screen (password +
+//! key file), group tree, entry list, search, entry details with clipboard
+//! actions, entry/group editing with history, password generator, database
+//! info, save / save-as (with KDBX 3 → 4.1 upgrade), new database creation,
+//! and lock.
+//!
+//! The GUI is a thin layer over the same engine used by the `kpxc` CLI (the
+//! `keepass` crate) — all file-format behavior is shared and verified by the
+//! existing 13 integration tests + `verify.sh`.
 
-pub mod state;
-pub mod ui;
+pub mod app;
+pub mod autotype;
+pub mod browser;
+pub mod config;
+pub mod dialogs;
+pub mod icons;
+pub mod refs;
+pub mod totp;
 
-pub use state::BuiApp;
+pub use app::App;

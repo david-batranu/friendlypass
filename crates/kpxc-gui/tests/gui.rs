@@ -30,14 +30,14 @@ fn fresh_sample(dir: &tempfile::TempDir) -> PathBuf {
 
 /// Make snapshots deterministic: the status bar shows the (random) tempdir
 /// path, which would otherwise make image comparisons unstable.
-fn stabilize(harness: &mut Harness<kpxc_gui_egui::App>) {
+fn stabilize(harness: &mut Harness<kpxc_gui::App>) {
     harness.state_mut().status.clear();
     harness.run();
 }
 
 #[test]
 fn unlock_screen_renders() {
-    let mut harness = Harness::new_eframe(|_cc| kpxc_gui_egui::App::default());
+    let mut harness = Harness::new_eframe(|_cc| kpxc_gui::App::default());
     harness.run();
 
     // All the unlock controls are present and accessible.
@@ -53,7 +53,7 @@ fn unlock_screen_renders() {
 #[test]
 fn wrong_password_shows_error() {
     let mut harness = Harness::new_eframe(|_cc| {
-        let mut app = kpxc_gui_egui::App::default();
+        let mut app = kpxc_gui::App::default();
         app.db_path = fixture("sample4.kdbx").display().to_string();
         app.password = "wrong-password".into();
         app
@@ -81,7 +81,7 @@ fn browse_groups_entries_and_details() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
@@ -132,7 +132,7 @@ fn add_entry_via_ui_save_with_upgrade_and_reopen() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness = Harness::new_eframe(move |_cc| {
-        kpxc_gui_egui::App::with_open_database(&path_str, key)
+        kpxc_gui::App::with_open_database(&path_str, key)
     });
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
@@ -222,7 +222,7 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
@@ -269,7 +269,7 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
     );
 
     // Empty the bin via the tree action (empty now, but must not fail).
-    harness.state_mut().dialog = kpxc_gui_egui::dialogs::Dialog::ConfirmEmptyRecycleBin;
+    harness.state_mut().dialog = kpxc_gui::dialogs::Dialog::ConfirmEmptyRecycleBin;
     harness.run();
     harness.get_by_label("Empty Recycle Bin").click();
     harness.run();
@@ -302,7 +302,7 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
 // ---------------------------------------------------------------------------
 
 /// Focus the widget, select all, and replace its text.
-fn replace_text(harness: &mut Harness<kpxc_gui_egui::App>, label: &str, text: &str) {
+fn replace_text(harness: &mut Harness<kpxc_gui::App>, label: &str, text: &str) {
     harness.get_by_label(label).click();
     harness.run();
     harness.key_combination_modifiers(egui::Modifiers::COMMAND, &[egui::Key::A]);
@@ -312,7 +312,7 @@ fn replace_text(harness: &mut Harness<kpxc_gui_egui::App>, label: &str, text: &s
 }
 
 /// Focus a text field, select all and delete its contents.
-fn clear_text(harness: &mut Harness<kpxc_gui_egui::App>, label: &str) {
+fn clear_text(harness: &mut Harness<kpxc_gui::App>, label: &str) {
     harness.get_by_label(label).click();
     harness.run();
     harness.key_combination_modifiers(egui::Modifiers::COMMAND, &[egui::Key::A]);
@@ -328,11 +328,11 @@ fn entry_history_browser_and_restore() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
-    let history_len = |h: &Harness<kpxc_gui_egui::App>| {
+    let history_len = |h: &Harness<kpxc_gui::App>| {
         h.state()
             .db
             .as_ref()
@@ -413,7 +413,7 @@ fn custom_attributes_and_autotype_edit_and_persist() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
@@ -500,7 +500,7 @@ fn icon_picker_standard_and_custom_icons() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
@@ -587,7 +587,7 @@ fn multi_selection_batch_move_and_recycle() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
@@ -665,7 +665,7 @@ fn entry_reference_insert_and_resolve() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
@@ -675,7 +675,7 @@ fn entry_reference_insert_and_resolve() {
     harness.run();
     harness.get_by_label("Edit…").click();
     harness.run();
-    if let kpxc_gui_egui::dialogs::Dialog::EntryEdit(d) = &mut harness.state_mut().dialog {
+    if let kpxc_gui::dialogs::Dialog::EntryEdit(d) = &mut harness.state_mut().dialog {
         d.ref_target = d.ref_targets.iter().position(|t| t.title == "Sample Entry");
         assert!(d.ref_target.is_some(), "Sample Entry is a reference target");
     }
@@ -756,7 +756,7 @@ fn drag_and_drop_entry_onto_group() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 720.0));
     harness.run();
 
@@ -837,11 +837,11 @@ fn drag_and_drop_group_onto_group() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 720.0));
     harness.run();
 
-    let parent_of = |h: &Harness<kpxc_gui_egui::App>, name: &str| -> Option<keepass::db::GroupId> {
+    let parent_of = |h: &Harness<kpxc_gui::App>, name: &str| -> Option<keepass::db::GroupId> {
         h.state()
             .db
             .as_ref()
@@ -937,7 +937,7 @@ fn share_group_dialog_exports_and_persists_reference() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
@@ -1015,7 +1015,7 @@ fn share_group_signed_container_via_gui() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
@@ -1084,8 +1084,8 @@ fn write_database_for_external_verification() {
     let _ = std::fs::remove_file(&out);
 
     let mut harness = Harness::new_eframe(|_cc| {
-        let mut app = kpxc_gui_egui::App::default();
-        app.dialog = kpxc_gui_egui::dialogs::Dialog::NewDb(Box::new(kpxc_gui_egui::dialogs::NewDb {
+        let mut app = kpxc_gui::App::default();
+        app.dialog = kpxc_gui::dialogs::Dialog::NewDb(Box::new(kpxc_gui::dialogs::NewDb {
             path: out.display().to_string(),
             name: "GUI Roundtrip".into(),
             password: "gui-pass-123".into(),
@@ -1150,7 +1150,7 @@ fn write_database_for_external_verification() {
     harness.get_by_label("Protected 0").click();
     harness.run();
     replace_text(&mut harness, "Default sequence:", "{USERNAME}{TAB}{PASSWORD}{ENTER}");
-    if let kpxc_gui_egui::dialogs::Dialog::EntryEdit(d) = &mut harness.state_mut().dialog {
+    if let kpxc_gui::dialogs::Dialog::EntryEdit(d) = &mut harness.state_mut().dialog {
         d.ref_target = d.ref_targets.iter().position(|t| t.title == "Temp Entry");
     }
     harness.run();
@@ -1254,7 +1254,7 @@ fn unlock_with_challenge_response_secret() {
     // Unlock through the GUI with the correct secret.
     let path = db_path.display().to_string();
     let mut harness = Harness::new_eframe(move |_cc| {
-        let mut app = kpxc_gui_egui::App::default();
+        let mut app = kpxc_gui::App::default();
         app.db_path = path;
         app.password = "cr-pass".into();
         app.challenge_response = SECRET.into();
@@ -1272,7 +1272,7 @@ fn unlock_with_challenge_response_secret() {
 
     // Wrong secret: rejected with an error, DB stays locked.
     let mut bad = Harness::new_eframe(|_cc| {
-        let mut app = kpxc_gui_egui::App::default();
+        let mut app = kpxc_gui::App::default();
         app.db_path = db_path.display().to_string();
         app.password = "cr-pass".into();
         app.challenge_response = "ffffffffffffffffffffffffffffffffffffffff".into();
@@ -1302,7 +1302,7 @@ fn details_show_current_totp_code() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 900.0));
     harness.run();
 
@@ -1355,13 +1355,13 @@ fn details_show_current_totp_code() {
 
 #[test]
 fn keyboard_shortcuts_and_dialog_keys() {
-    use kpxc_gui_egui::dialogs::Dialog;
+    use kpxc_gui::dialogs::Dialog;
     let dir = tempfile::tempdir().unwrap();
     let path = fresh_sample(&dir);
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1400.0, 1000.0));
     harness.run();
 
@@ -1453,7 +1453,7 @@ fn keyboard_shortcuts_and_dialog_keys() {
     let mut search_harness = {
         let path = path.display().to_string();
         let key = DatabaseKey::new().with_password("testpassword");
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path, key))
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path, key))
     };
     search_harness.set_size(egui::Vec2::new(1400.0, 1000.0));
     search_harness.run();
@@ -1480,8 +1480,8 @@ fn columns_are_customizable_and_persist() {
     let mut harness = {
         let config_path = config_path.clone();
         Harness::new_eframe(move |_cc| {
-            let mut app = kpxc_gui_egui::App::with_open_database(&db_path_str, key);
-            app.prefs = kpxc_gui_egui::config::Preferences::load(&config_path);
+            let mut app = kpxc_gui::App::with_open_database(&db_path_str, key);
+            app.prefs = kpxc_gui::config::Preferences::load(&config_path);
             app.config_path = Some(config_path);
             app
         })
@@ -1508,11 +1508,11 @@ fn columns_are_customizable_and_persist() {
         0,
         "URL column is hidden"
     );
-    let prefs = kpxc_gui_egui::config::Preferences::load(&config_path);
+    let prefs = kpxc_gui::config::Preferences::load(&config_path);
     let url = prefs
         .columns
         .iter()
-        .find(|c| c.id == kpxc_gui_egui::config::ColumnId::Url)
+        .find(|c| c.id == kpxc_gui::config::ColumnId::Url)
         .expect("URL column config");
     assert!(!url.visible, "hidden URL column persisted: {url:?}");
 
@@ -1522,8 +1522,8 @@ fn columns_are_customizable_and_persist() {
         let db_path_str = db_path.display().to_string();
         Harness::new_eframe(move |_cc| {
             let key = DatabaseKey::new().with_password("testpassword");
-            let mut app = kpxc_gui_egui::App::with_open_database(&db_path_str, key);
-            app.prefs = kpxc_gui_egui::config::Preferences::load(&config_path);
+            let mut app = kpxc_gui::App::with_open_database(&db_path_str, key);
+            app.prefs = kpxc_gui::config::Preferences::load(&config_path);
             app.config_path = Some(config_path);
             app
         })
@@ -1547,12 +1547,12 @@ fn column_order_and_widths_come_from_preferences() {
 
     // Save a layout where UserName is the first column and only Title and
     // UserName are visible.
-    let mut prefs = kpxc_gui_egui::config::Preferences::default();
+    let mut prefs = kpxc_gui::config::Preferences::default();
     for id in [
-        kpxc_gui_egui::config::ColumnId::Password,
-        kpxc_gui_egui::config::ColumnId::Url,
-        kpxc_gui_egui::config::ColumnId::Notes,
-        kpxc_gui_egui::config::ColumnId::Tags,
+        kpxc_gui::config::ColumnId::Password,
+        kpxc_gui::config::ColumnId::Url,
+        kpxc_gui::config::ColumnId::Notes,
+        kpxc_gui::config::ColumnId::Tags,
     ] {
         prefs.set_visible(id, false);
     }
@@ -1565,8 +1565,8 @@ fn column_order_and_widths_come_from_preferences() {
     let mut harness = {
         let config_path = config_path.clone();
         Harness::new_eframe(move |_cc| {
-            let mut app = kpxc_gui_egui::App::with_open_database(&db_path_str, key);
-            app.prefs = kpxc_gui_egui::config::Preferences::load(&config_path);
+            let mut app = kpxc_gui::App::with_open_database(&db_path_str, key);
+            app.prefs = kpxc_gui::config::Preferences::load(&config_path);
             app.config_path = Some(config_path);
             app
         })
@@ -1597,7 +1597,7 @@ fn recent_databases_are_remembered_across_launches() {
         let config_path = config_path.clone();
         let db_path = db_path.display().to_string();
         Harness::new_eframe(move |_cc| {
-            let mut app = kpxc_gui_egui::App::with_config_path(config_path);
+            let mut app = kpxc_gui::App::with_config_path(config_path);
             app.db_path = db_path;
             app.password = "testpassword".into();
             app
@@ -1611,7 +1611,7 @@ fn recent_databases_are_remembered_across_launches() {
     assert!(first.state().db.is_some(), "database unlocked");
 
     // The successful open was persisted.
-    let prefs = kpxc_gui_egui::config::Preferences::load(&config_path);
+    let prefs = kpxc_gui::config::Preferences::load(&config_path);
     assert_eq!(prefs.recent, vec![expected.clone()]);
     assert_eq!(prefs.last_db.as_deref(), Some(expected.as_str()));
     drop(first);
@@ -1619,7 +1619,7 @@ fn recent_databases_are_remembered_across_launches() {
     // Second launch: the last database is prefilled and listed as recent.
     let mut second = {
         let config_path = config_path.clone();
-        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_config_path(config_path))
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_config_path(config_path))
     };
     second.set_size(egui::Vec2::new(1200.0, 900.0));
     second.run();
@@ -1648,7 +1648,7 @@ fn recent_databases_are_remembered_across_launches() {
     second.get_by_label("Clear recent list").click();
     second.run();
     assert!(second.state().prefs.recent.is_empty());
-    let prefs = kpxc_gui_egui::config::Preferences::load(&config_path);
+    let prefs = kpxc_gui::config::Preferences::load(&config_path);
     assert!(prefs.recent.is_empty(), "cleared list persisted");
     assert!(prefs.last_db.is_none(), "clearing also forgets the startup prefill");
 }
