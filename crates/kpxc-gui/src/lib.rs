@@ -17,5 +17,6 @@ pub mod browser;
 pub mod dialogs;
 pub mod icons;
 pub mod refs;
+pub mod totp;
 
 pub use app::App;

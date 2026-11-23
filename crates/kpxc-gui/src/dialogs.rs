@@ -555,15 +555,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             egui::Window::new(if d.entry_id.is_some() { "Edit Entry" } else { "New Entry" })
                 .open(&mut open)
                 .collapsible(false)
+                .default_width(820.0)
                 .show(ctx, |ui| {
                     egui::Grid::new("entry-edit").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                         let l = ui.label("Title:");
-                        let r = ui.text_edit_singleline(&mut d.title);
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.title).desired_width(560.0),
+                        );
                         r.labelled_by(l.id);
                         ui.end_row();
 
                         let l = ui.label("UserName:");
-                        let r = ui.text_edit_singleline(&mut d.username);
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.username).desired_width(560.0),
+                        );
                         r.labelled_by(l.id);
                         ui.end_row();
 
@@ -571,33 +576,46 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         let r = ui.add(
                             egui::TextEdit::singleline(&mut d.password)
                                 .password(!d.show_password)
-                                .hint_text("password"),
+                                .hint_text("password")
+                                .desired_width(560.0),
                         );
                         r.labelled_by(l.id);
-                        if ui.button("Generate").clicked() {
-                            d.password = kpxc::commands::generate_password_opts(24, true, true, true, true);
-                        }
-                        if ui
-                            .button(if d.show_password { "Hide" } else { "Show" })
-                            .on_hover_text("Show or hide the password")
-                            .clicked()
-                        {
-                            d.show_password = !d.show_password;
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Generate").clicked() {
+                                d.password = kpxc::commands::generate_password_opts(24, true, true, true, true);
+                            }
+                            if ui
+                                .button(if d.show_password { "Hide" } else { "Show" })
+                                .on_hover_text("Show or hide the password")
+                                .clicked()
+                            {
+                                d.show_password = !d.show_password;
+                            }
+                        });
                         ui.end_row();
 
                         let l = ui.label("URL:");
-                        let r = ui.text_edit_singleline(&mut d.url);
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.url).desired_width(560.0),
+                        );
                         r.labelled_by(l.id);
                         ui.end_row();
 
                         let l = ui.label("Tags:");
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.tags).hint_text("comma,separated"));
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.tags)
+                                .hint_text("comma,separated")
+                                .desired_width(560.0),
+                        );
                         r.labelled_by(l.id);
                         ui.end_row();
 
                         let l = ui.label("Notes:");
-                        let r = ui.add(egui::TextEdit::multiline(&mut d.notes).desired_rows(3).desired_width(320.0));
+                        let r = ui.add(
+                            egui::TextEdit::multiline(&mut d.notes)
+                                .desired_rows(4)
+                                .desired_width(560.0),
+                        );
                         r.labelled_by(l.id);
                         ui.end_row();
                     });
@@ -613,7 +631,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             r.labelled_by(l.id);
                             let l = ui.label(format!("Attribute {i} value:"));
                             let r = ui.add(
-                                egui::TextEdit::singleline(&mut a.value).password(a.protected),
+                                egui::TextEdit::singleline(&mut a.value).password(a.protected).desired_width(300.0),
                             );
                             r.labelled_by(l.id);
                             ui.checkbox(&mut a.protected, format!("Protected {i}"));

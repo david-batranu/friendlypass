@@ -511,6 +511,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "base32"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "022dfe9eb35f19ebbcb51e0b40a5ab759f46ad60cadf7297e0bd085afb50e076"
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2586,6 +2592,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8025344cf174f72cccbac2a99640a8d1e82cf46922d57e06a45a32e49edfed16"
 dependencies = [
  "aes 0.9.4",
+ "base32",
  "base64 0.23.1",
  "block-modes",
  "byteorder",
@@ -2610,7 +2617,9 @@ dependencies = [
  "sha1 0.11.0",
  "sha2 0.11.1",
  "thiserror 2.0.21",
+ "totp-lite",
  "twofish",
+ "url",
  "uuid",
  "zeroize",
 ]
@@ -4918,6 +4927,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6769c452d71ba30696c6b37770c439a9cc9110f47f7d5cdbeda79840ef5ea31"
 dependencies = [
  "winnow",
+]
+
+[[package]]
+name = "totp-lite"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8e43134db17199f7f721803383ac5854edd0d3d523cc34dba321d6acfbe76c3"
+dependencies = [
+ "digest 0.10.7",
+ "hmac 0.12.1",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
 ]
 
 [[package]]

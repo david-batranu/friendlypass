@@ -1282,8 +1282,64 @@ fn unlock_with_challenge_response_secret() {
 }
 
 // ---------------------------------------------------------------------------
-// unit tests for the pure logic helpers
+// TOTP display in the entry details
 // ---------------------------------------------------------------------------
+
+#[test]
+fn details_show_current_totp_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 900.0));
+    harness.run();
+
+    // An entry with TOTP (RFC 6238 test secret, 6 digits).
+    {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        let mut root = db.root_mut();
+        let mut e = root.add_entry();
+        e.set_unprotected("Title", "OTP Entry");
+        e.set_unprotected(
+            "otp",
+            "otpauth://totp/Example:user?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=6&period=30",
+        );
+    }
+    harness.run();
+
+    // Select the entry: the details panel shows the TOTP row.
+    harness.get_by_label("OTP Entry").click();
+    harness.run();
+    harness.get_by_label("TOTP");
+    harness.get_by_label("Copy TOTP");
+
+    // The displayed code matches the code computed from the same TOTP
+    // configuration (allow for a period boundary between render and check).
+    let codes: Vec<String> = {
+        let state = harness.state();
+        let db = state.db.as_ref().unwrap();
+        let entry = db
+            .iter_all_entries()
+            .find(|e| e.get("Title") == Some("OTP Entry"))
+            .unwrap();
+        let totp = entry.get_otp().expect("otp parsed");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        vec![totp.value_at(now).code, totp.value_at(now + 1).code]
+    };
+    let found = codes
+        .iter()
+        .any(|code| harness.query_all_by_label(code.as_str()).count() > 0);
+    assert!(found, "details show one of the expected TOTP codes {codes:?}");
+    // (No image snapshot here: the code and its countdown change over time.)
+}
+
+
 
 #[test]
 fn generator_options_produce_expected_classes() {

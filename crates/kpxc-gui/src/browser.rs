@@ -551,6 +551,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             url: crate::refs::resolve_references(db, e.get(fields::URL).unwrap_or_default()),
             notes: crate::refs::resolve_references(db, e.get(fields::NOTES).unwrap_or_default()),
             tags: e.tags.join(", "),
+            otp: crate::totp::current_code(&e),
             attributes: e
                 .fields
                 .iter()
@@ -638,6 +639,21 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             ui.label("Notes");
             weak_label(ui, &d.notes);
             ui.end_row();
+
+            if let Some((code, valid_for)) = &d.otp {
+                // Live TOTP: repaint once a second so the code stays current.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(1));
+                ui.label("TOTP");
+                ui.strong(egui::RichText::new(code).monospace().size(16.0));
+                ui.horizontal(|ui| {
+                    weak_label(ui, format!("valid for {valid_for}s"));
+                    if ui.button("Copy TOTP").clicked() {
+                        copy = Some(code.clone());
+                    }
+                });
+                ui.end_row();
+            }
         });
 
     // Custom attributes (like KeePassXC's details view).
@@ -732,6 +748,7 @@ struct EntryDetailsData {
     url: String,
     notes: String,
     tags: String,
+    otp: Option<(String, u64)>,
     attributes: Vec<(String, String, bool)>,
     autotype: Option<AutoTypeSummary>,
     history_count: usize,

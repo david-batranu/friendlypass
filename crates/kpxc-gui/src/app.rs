@@ -661,7 +661,7 @@ impl App {
                 .show(ui, |ui| {
                     let db_label = ui.label("Database file:");
                     let path_resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.db_path).hint_text("/path/to/database.kdbx"),
+                        egui::TextEdit::singleline(&mut self.db_path).hint_text("/path/to/database.kdbx").desired_width(420.0),
                     );
                     path_resp.labelled_by(db_label.id);
                     if ui.button("Browse…").clicked() {
@@ -678,7 +678,8 @@ impl App {
                     let pw_resp = ui.add(
                         egui::TextEdit::singleline(&mut self.password)
                             .password(true)
-                            .hint_text("password"),
+                            .hint_text("password")
+                            .desired_width(420.0),
                     );
                     // Enter in the password field unlocks.
                     let enter_unlock = pw_resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter));
@@ -691,7 +692,7 @@ impl App {
 
                     let kf_label = ui.label("Key file (optional):");
                     let kf_resp = ui
-                        .add(egui::TextEdit::singleline(&mut self.key_file).hint_text("/path/to/keyfile.keyx"));
+                        .add(egui::TextEdit::singleline(&mut self.key_file).hint_text("/path/to/keyfile.keyx").desired_width(420.0));
                     kf_resp.labelled_by(kf_label.id);
                     if ui.button("Browse…").clicked() {
                         if let Some(p) = rfd::FileDialog::new()
@@ -706,7 +707,8 @@ impl App {
                     let cr_label = ui.label("Challenge-response secret (hex, optional):");
                     let cr_resp = ui.add(
                         egui::TextEdit::singleline(&mut self.challenge_response)
-                            .hint_text("YubiKey-equivalent HMAC-SHA1 secret"),
+                            .hint_text("YubiKey-equivalent HMAC-SHA1 secret")
+                            .desired_width(420.0),
                     );
                     cr_resp.labelled_by(cr_label.id);
                     ui.label("");

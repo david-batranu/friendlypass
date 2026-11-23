@@ -186,6 +186,13 @@ check "real YubiKey USB transport is hardware-gated (documented; LocalChallenge 
     sh -c "grep -q 'live USB YubiKey' '$ROOT/README.md'"
 
 echo
+echo "== 12. TOTP (one-time passwords) =="
+check "TOTP generation matches RFC 6238 test vectors (SHA-1, 8 and 6 digits)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --lib totp"
+check "GUI details panel shows the live TOTP code for OTP entries (kittest test)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui details_show_current_totp_code"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

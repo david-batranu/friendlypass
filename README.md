@@ -69,7 +69,7 @@ layers; this project is the behavior/compatibility layer on top:
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **48/48 checks, all workspace tests green.**
+Current result: **50/50 checks, all workspace tests green.**
 
 ## Layout
 
@@ -142,8 +142,9 @@ Linux). It mirrors KeePassXC's core GUI workflow:
   KeePassXC SVG assets) plus database custom icons; pick per entry, add
   custom images from files, rendered in the group tree and entry table
 * **Entry details** — copy username / password / URL to the clipboard,
-  custom attributes, auto-type summary, attachments with export, edit,
-  delete
+  **live TOTP codes** for OTP entries (RFC 6238, refreshed every second,
+  copy button), custom attributes, auto-type summary, attachments with
+  export, edit, delete
 * **Entry editor** — full field editing with a built-in password
   generator and reveal toggle; edits record entry history like KeePassXC;
   custom attribute editor with per-attribute protection toggles;
@@ -180,7 +181,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 48 checks; GUI kittest, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 50 checks; GUI kittest, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)
@@ -195,7 +196,8 @@ CLI test suites all green).
 | Multi-selection & batch operations (move to group, recycle) | ✅ tested (Cmd/Ctrl-click) |
 | Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
 | Entry details + clipboard copy + attachment export | ✅ tested |
-| Entry editor (all fields, tags, password generator) | ✅ tested |
+| TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
+| Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |
 | Custom attributes with protection toggles | ✅ tested + C++ cross-checked |
 | Auto-type editor (default sequence, obfuscation, window associations, placeholder preview) | ✅ tested + C++ cross-checked |
 | Entry references ({REF:…}) — insertion, resolution, persistence | ✅ tested + C++ cross-checked (keepassxc-cli resolves GUI-written references) |

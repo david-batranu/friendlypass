@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-keepass = { version = "0.17", features = ["save_kdbx4", "challenge_response"] }
+keepass = { version = "0.17", features = ["save_kdbx4", "challenge_response", "totp"] }
 rust-argon2 = "3.0"
 clap = { version = "4", features = ["derive"] }
 rpassword = "7"
