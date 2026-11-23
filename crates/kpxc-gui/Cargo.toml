@@ -12,13 +12,15 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 eframe = { version = "0.37.0", features = ["persistence"] }
 egui_extras = { version = "0.37.0", features = ["serde"] }
 enigo = "0.6.1"
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp"] }
 keepass = { version = "0.17.0", features = ["save_kdbx4", "challenge_response", "totp"] }
 kpxc = { path = "../kpxc" }
 kpxc-ssh-agent = { path = "../kpxc-ssh-agent" }
 kpxc-browser = { path = "../kpxc-browser" }
+resvg = { version = "0.47.0", default-features = false }
 rfd = "0.18.0"
 rust-argon2 = "3.0.0"
+ureq = "3.3.0"
 uuid = "1.29.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

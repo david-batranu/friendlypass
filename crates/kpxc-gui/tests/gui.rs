@@ -2267,6 +2267,128 @@ fn group_tree_scrolls_to_overflowing_groups() {
 }
 
 // ---------------------------------------------------------------------------
+// website SVG / favicon fetching and caching
+// ---------------------------------------------------------------------------
+
+#[test]
+fn website_svg_icon_is_fetched_displayed_and_cached() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    const SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#186ADE"/><circle cx="16" cy="16" r="7" fill="#FFFFFF"/></svg>"##;
+
+    let icon_hits = Arc::new(AtomicUsize::new(0));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+
+    let hits_srv = Arc::clone(&icon_hits);
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else { break };
+            let mut req = [0u8; 1024];
+            let n = stream.read(&mut req).unwrap_or(0);
+            let line = String::from_utf8_lossy(&req[..n]);
+            let path = line
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or("/");
+            match path {
+                "/" => {
+                    let body = r#"<html><head><link rel="icon" type="image/svg+xml" href="/site.svg"></head></html>"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+                "/site.svg" => {
+                    hits_srv.fetch_add(1, Ordering::SeqCst);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        SVG.len(),
+                        SVG
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+                _ => {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            }
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache_dir = dir.path().join("favicons");
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let cache_dir_init = cache_dir.clone();
+    let mut harness = Harness::new_eframe(move |_cc| {
+        let mut app = kpxc_gui::App::with_open_database(&path_str, key);
+        app.icon_cache.set_cache_dir(Some(cache_dir_init));
+        app
+    });
+    harness.set_size(egui::Vec2::new(1300.0, 900.0));
+
+    // Point both entries at the same website origin.
+    {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        let ids: Vec<_> = db.iter_all_entries().map(|e| e.id()).collect();
+        for (i, id) in ids.into_iter().enumerate() {
+            if let Some(mut entry) = db.entry_mut(id) {
+                entry.set_unprotected("URL", format!("{origin}/page-{i}"));
+            }
+        }
+    }
+    harness.run();
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+
+    // Wait briefly for the background worker to complete and upload the texture.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !harness.state().icon_cache.is_site_cached_or_failed(&origin)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        harness.run();
+    }
+    let _ = server.join();
+
+    assert!(
+        harness.state().icon_cache.is_site_cached_or_failed(&origin),
+        "website icon loaded into the GUI texture cache"
+    );
+    assert_eq!(
+        icon_hits.load(Ordering::SeqCst),
+        1,
+        "multiple entries and frames for the same origin only fetch the SVG once"
+    );
+
+    // Additional frames and selecting the second entry reuse the in-memory cache.
+    harness.get_by_label("Web Login").click();
+    harness.run();
+    assert_eq!(icon_hits.load(Ordering::SeqCst), 1);
+
+    // A fresh IconCache backed by the same on-disk cache directory loads the
+    // cached SVG from disk without any network access.
+    let mut second_cache = kpxc_gui::icons::IconCache::default().with_cache_dir(cache_dir);
+    second_cache.network_enabled = false;
+    let ctx = egui::Context::default();
+    assert!(
+        second_cache.website(&ctx, &origin).is_some(),
+        "disk cache serves the SVG offline on subsequent launches"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // unit tests for the pure logic helpers
 // ---------------------------------------------------------------------------
 

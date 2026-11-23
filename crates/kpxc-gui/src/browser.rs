@@ -123,14 +123,16 @@ fn entry_row(db: &Database, id: EntryId, with_group: bool) -> EntryRow {
         .last_modification
         .or(entry.times.creation)
         .map(|t| t.format("%B %Y").to_string().to_uppercase());
+    let url = entry.get(fields::URL).unwrap_or_default().to_owned();
+    let resolved_url = crate::refs::resolve_references(db, &url);
     EntryRow {
         id,
         group,
-        icon: crate::icons::icon_spec(db, entry.icon(), crate::icons::DEFAULT_ENTRY_ICON),
+        icon: crate::icons::entry_icon_spec(db, entry.icon(), &resolved_url),
         title: entry.get(fields::TITLE).unwrap_or_default().to_owned(),
         username: entry.get(fields::USERNAME).unwrap_or_default().to_owned(),
         password: entry.get(fields::PASSWORD).unwrap_or_default().to_owned(),
-        url: entry.get(fields::URL).unwrap_or_default().to_owned(),
+        url,
         notes: entry.get(fields::NOTES).unwrap_or_default().to_owned(),
         tags: entry.tags.join(", "),
         is_favorite: entry_is_favorite(&entry),
@@ -1199,7 +1201,11 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 let path = group_path(db, e.parent().id());
                 if path.is_empty() { "All Items".into() } else { path }
             },
-            icon: crate::icons::icon_spec(db, e.icon(), crate::icons::DEFAULT_ENTRY_ICON),
+            icon: {
+                let resolved_url =
+                    crate::refs::resolve_references(db, e.get(fields::URL).unwrap_or_default());
+                crate::icons::entry_icon_spec(db, e.icon(), &resolved_url)
+            },
             last_modified: e.times.last_modification,
             attributes: e
                 .fields

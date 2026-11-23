@@ -259,6 +259,11 @@ check "selecting a sidebar tag shows only the entries with that tag (kittest)" \
     env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui selecting_a_tag_filters_the_entry_list"
 
 echo
+echo "== 21. Website SVG / favicon fetching and caching =="
+check "website SVG icon is preferred over raster favicons, falls back to favicon.ico, and is cached in memory and on disk" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --lib icons && timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui website_svg_icon_is_fetched_displayed_and_cached"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1
