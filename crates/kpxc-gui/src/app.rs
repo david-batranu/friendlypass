@@ -83,6 +83,10 @@ pub struct App {
     /// Set to focus the search box on the next frame (Cmd/Ctrl+F).
     pub focus_search: bool,
     pub selected_group: Option<GroupId>, // None = root
+    /// Active tag filter from the sidebar TAGS section.
+    pub selected_tag: Option<String>,
+    /// Show only favorite (starred) entries.
+    pub filter_favorites: bool,
     pub selected_entry: Option<keepass::db::EntryId>,
     /// Multi-selection (Ctrl/Cmd-click) for batch operations.
     pub selected_entries: std::collections::HashSet<EntryId>,
@@ -133,6 +137,8 @@ impl Default for App {
             search: String::new(),
             focus_search: false,
             selected_group: None,
+            selected_tag: None,
+            filter_favorites: false,
             selected_entry: None,
             selected_entries: std::collections::HashSet::new(),
             sort_column: SortColumn::Title,
@@ -438,6 +444,8 @@ impl App {
         self.upgrade_confirmed = false;
         self.selected_entry = None;
         self.selected_group = None;
+        self.selected_tag = None;
+        self.filter_favorites = false;
         self.search.clear();
         self.dialog = Dialog::None;
         self.inline_edit = None;
@@ -1272,6 +1280,10 @@ impl App {
             )
             .show(root, |ui| {
                 ui.horizontal(|ui| {
+                    let db_name = std::path::Path::new(&self.db_path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "database".into());
                     ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new("KeePassXC-RS")
@@ -1279,29 +1291,29 @@ impl App {
                                 .strong()
                                 .color(crate::theme::TEXT),
                         );
-                        let name = std::path::Path::new(&self.db_path)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "database".into());
                         ui.label(
                             egui::RichText::new(format!(
-                                "{name}{}",
+                                "{db_name}{}",
                                 if self.dirty { "  *" } else { "" }
                             ))
                             .size(11.0)
                             .color(crate::theme::MUTED),
                         );
                     });
-                    ui.add_space(24.0);
+                    ui.add_space(16.0);
+                    crate::theme::draw_nav_arrow(ui, true, crate::theme::MUTED);
+                    crate::theme::draw_nav_arrow(ui, false, crate::theme::MUTED);
+                    ui.add_space(6.0);
+                    crate::theme::draw_search_icon(ui, crate::theme::MUTED);
 
                     let search_label = ui.label(
                         egui::RichText::new("Search:")
-                            .size(12.0)
+                            .size(11.0)
                             .color(crate::theme::MUTED),
                     );
                     let search_resp = ui.add(
                         egui::TextEdit::singleline(&mut self.search)
-                            .hint_text("Search all entries…")
+                            .hint_text(format!("Search in {db_name}"))
                             .desired_width(300.0),
                     );
                     if self.focus_search {
@@ -1435,7 +1447,7 @@ impl App {
         // Sidebar: groups ---------------------------------------------------
         egui::Panel::left("sidebar")
             .resizable(true)
-            .default_size(240.0)
+            .default_size(225.0)
             .frame(
                 egui::Frame::new()
                     .fill(crate::theme::SIDEBAR)
@@ -1455,7 +1467,7 @@ impl App {
         if self.prefs.list_view {
             egui::Panel::left("entry-list")
                 .resizable(true)
-                .default_size(380.0)
+                .default_size(340.0)
                 .frame(
                     egui::Frame::new()
                         .fill(crate::theme::PANEL)

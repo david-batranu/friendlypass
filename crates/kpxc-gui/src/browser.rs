@@ -62,11 +62,29 @@ pub struct EntryRow {
     pub url: String,
     pub notes: String,
     pub tags: String,
+    pub is_favorite: bool,
+    pub month_header: Option<String>,
+}
+
+fn entry_is_favorite(entry: &keepass::db::EntryRef<'_>) -> bool {
+    entry.tags.iter().any(|t| {
+        let lower = t.trim().to_ascii_lowercase();
+        lower == "favorite" || lower == "favorites" || lower == "fav" || lower == "star"
+    }) || entry
+        .fields
+        .get("KPXC_FAVORITE")
+        .map(|v| v.get() == "1" || v.get().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn entry_row(db: &Database, id: EntryId, with_group: bool) -> EntryRow {
     let entry = db.entry(id).expect("entry exists");
     let group = if with_group { Some(group_path(db, entry.parent().id())) } else { None };
+    let month_header = entry
+        .times
+        .last_modification
+        .or(entry.times.creation)
+        .map(|t| t.format("%B %Y").to_string().to_uppercase());
     EntryRow {
         id,
         group,
@@ -77,6 +95,8 @@ fn entry_row(db: &Database, id: EntryId, with_group: bool) -> EntryRow {
         url: entry.get(fields::URL).unwrap_or_default().to_owned(),
         notes: entry.get(fields::NOTES).unwrap_or_default().to_owned(),
         tags: entry.tags.join(", "),
+        is_favorite: entry_is_favorite(&entry),
+        month_header,
     }
 }
 
@@ -100,22 +120,11 @@ fn group_path(db: &Database, group: GroupId) -> String {
 }
 
 /// The entries to display: search results across the database, or the
-/// entries of the selected group.
+/// entries of the selected group / tag / favorites filter.
 fn visible_entries(app: &App) -> Vec<EntryRow> {
     let Some(db) = app.db.as_ref() else { return Vec::new() };
 
-    if app.search.trim().is_empty() {
-        let group = app
-            .selected_group
-            .unwrap_or_else(|| db.root().id());
-        let Some(g) = db.group(group) else { return Vec::new() };
-        let mut rows: Vec<EntryRow> = g
-            .entries()
-            .map(|e| entry_row(db, e.id(), false))
-            .collect();
-        sort_rows(&mut rows, app);
-        rows
-    } else {
+    if !app.search.trim().is_empty() {
         let needle = app.search.to_lowercase();
         let mut rows: Vec<EntryRow> = db
             .iter_all_entries()
@@ -132,6 +141,33 @@ fn visible_entries(app: &App) -> Vec<EntryRow> {
                 hay.contains(&needle)
             })
             .map(|e| entry_row(db, e.id(), true))
+            .collect();
+        sort_rows(&mut rows, app);
+        rows
+    } else if app.filter_favorites {
+        let mut rows: Vec<EntryRow> = db
+            .iter_all_entries()
+            .filter(|e| entry_is_favorite(e))
+            .map(|e| entry_row(db, e.id(), true))
+            .collect();
+        sort_rows(&mut rows, app);
+        rows
+    } else if let Some(tag) = &app.selected_tag {
+        let mut rows: Vec<EntryRow> = db
+            .iter_all_entries()
+            .filter(|e| e.tags.iter().any(|t| t.trim() == tag))
+            .map(|e| entry_row(db, e.id(), true))
+            .collect();
+        sort_rows(&mut rows, app);
+        rows
+    } else {
+        let group = app
+            .selected_group
+            .unwrap_or_else(|| db.root().id());
+        let Some(g) = db.group(group) else { return Vec::new() };
+        let mut rows: Vec<EntryRow> = g
+            .entries()
+            .map(|e| entry_row(db, e.id(), false))
             .collect();
         sort_rows(&mut rows, app);
         rows
@@ -225,7 +261,9 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(4.0);
 
     let mut selected_group: Option<GroupId> = app.selected_group;
-    let new_dialog: Option<crate::dialogs::Dialog> = None;
+    let mut selected_tag: Option<String> = app.selected_tag.clone();
+    let mut filter_favorites: bool = app.filter_favorites;
+    let mut new_dialog: Option<crate::dialogs::Dialog> = None;
     let mut rename_dialog: Option<crate::dialogs::Dialog> = None;
     let mut delete_target: Option<GroupId> = None;
     let mut share_target: Option<GroupId> = None;
@@ -237,85 +275,112 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     // Group dropped onto another group row: (group, target).
     let mut dropped_group: Option<(GroupId, Option<GroupId>)> = None;
 
+    let all_tags: Vec<String> = app
+        .db
+        .as_ref()
+        .map(|db| {
+            let mut tags = std::collections::BTreeSet::new();
+            for e in db.iter_all_entries() {
+                for t in &e.tags {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() {
+                        tags.insert(trimmed.to_owned());
+                    }
+                }
+            }
+            tags.into_iter().collect()
+        })
+        .unwrap_or_default();
+
     // Split borrows: the icon cache is mutated while rendering rows.
+    let mut row_clicked: Option<Option<GroupId>> = None;
+    let mut fav_toggled = false;
+    let mut add_group_clicked = false;
     let cache = &mut app.icon_cache;
 
     let mut row_ui = |ui: &mut egui::Ui, row: &GroupRow, is_root: bool| {
-        let selected = if is_root {
-            selected_group.is_none()
-        } else {
-            selected_group == row.id
-        };
-        ui.horizontal(|ui| {
-            for _ in 0..row.depth.saturating_sub(1) {
-                ui.label("  ");
-            }
-            crate::icons::draw_icon(ui, cache, Some(&row.icon));
-            let label = if is_root {
-                format!("All Items ({root_entries})")
+        let selected = !filter_favorites
+            && selected_tag.is_none()
+            && if is_root {
+                selected_group.is_none()
             } else {
-                format!("{} ({})", row.name, row.entries)
+                selected_group == row.id
             };
-            let label = egui::RichText::new(label)
-                .size(14.0)
-                .color(if selected {
-                    crate::theme::ACCENT
-                } else {
-                    crate::theme::TEXT
+        let row_bg = if selected {
+            crate::theme::SIDEBAR_SELECTED
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        egui::Frame::new()
+            .fill(row_bg)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    for _ in 0..row.depth.saturating_sub(1) {
+                        ui.label("  ");
+                    }
+                    crate::icons::draw_icon(ui, cache, Some(&row.icon));
+                    let label = if is_root {
+                        format!("All Items ({root_entries})")
+                    } else {
+                        format!("{} ({})", row.name, row.entries)
+                    };
+                    let mut text = egui::RichText::new(label)
+                        .size(14.0)
+                        .color(crate::theme::TEXT);
+                    if selected {
+                        text = text.strong();
+                    }
+                    // The row is clickable (select), draggable (move groups), and a
+                    // drop zone for both entries and other groups.
+                    let resp = ui.add(
+                        egui::Button::selectable(selected, text)
+                            .frame(false)
+                            .sense(egui::Sense::click_and_drag()),
+                    );
+                    if resp.clicked() {
+                        row_clicked = Some(if is_root { None } else { row.id });
+                    }
+                    resp.context_menu(|ui| {
+                        ui.label(if is_root { "Database export" } else { "Group export" });
+                        for (label, format) in [
+                            ("Export as KeePass 2 XML…", "XML"),
+                            ("Export as CSV…", "CSV"),
+                            ("Export as HTML…", "HTML"),
+                        ] {
+                            if ui.button(label).clicked() {
+                                export_request = Some((row.id, format));
+                                ui.close();
+                            }
+                        }
+                    });
+                    // Drag source: non-root groups can be dragged.
+                    if let Some(gid) = row.id {
+                        resp.dnd_set_drag_payload(gid);
+                    }
+                    // Drop zone: entries dropped onto this group move into it.
+                    if resp.dnd_hover_payload::<GroupId>().is_some() {
+                        if let Some(group_id) = resp.dnd_release_payload::<GroupId>() {
+                            if row.id != Some(*group_id) {
+                                dropped_group = Some((*group_id, row.id));
+                            }
+                        }
+                    } else if let Some(entry_id) = resp.dnd_release_payload::<EntryId>() {
+                        dropped = Some((*entry_id, row.id));
+                    }
+                    if egui::DragAndDrop::has_any_payload(ui.ctx()) && resp.contains_pointer() {
+                        let rect = resp.rect;
+                        ui.painter().rect_stroke(
+                            rect.expand(2.0),
+                            4.0,
+                            ui.visuals().selection.stroke,
+                            egui::StrokeKind::Middle,
+                        );
+                    }
                 });
-            // The row is clickable (select), draggable (move groups), and a
-            // drop zone for both entries and other groups.
-            let resp = ui.add(
-                egui::Button::selectable(selected, label)
-                    .frame(false)
-                    .sense(egui::Sense::click_and_drag()),
-            );
-            if resp.clicked() {
-                selected_group = if is_root { None } else { row.id };
-            }
-            resp.context_menu(|ui| {
-                ui.label(if is_root { "Database export" } else { "Group export" });
-                for (label, format) in [
-                    ("Export as KeePass 2 XML…", "XML"),
-                    ("Export as CSV…", "CSV"),
-                    ("Export as HTML…", "HTML"),
-                ] {
-                    if ui.button(label).clicked() {
-                        export_request = Some((row.id, format));
-                        ui.close();
-                    }
-                }
             });
-            // Drag source: non-root groups can be dragged.
-            if let Some(gid) = row.id {
-                resp.dnd_set_drag_payload(gid);
-            }
-            // Drop zone: entries dropped onto this group move into it.
-            // IMPORTANT: check the payload type non-destructively first —
-            // `dnd_release_payload` consumes ANY payload on a hovered row
-            // even when the type doesn't match.
-            if resp.dnd_hover_payload::<GroupId>().is_some() {
-                // A group is being dropped here (cycle-checked at apply time).
-                if let Some(group_id) = resp.dnd_release_payload::<GroupId>() {
-                    if row.id != Some(*group_id) {
-                        dropped_group = Some((*group_id, row.id));
-                    }
-                }
-            } else if let Some(entry_id) = resp.dnd_release_payload::<EntryId>() {
-                // `None` target means the root row was the drop target.
-                dropped = Some((*entry_id, row.id));
-            }
-            // Drop highlight while a drag hovers this row.
-            if egui::DragAndDrop::has_any_payload(ui.ctx()) && resp.contains_pointer() {
-                let rect = resp.rect;
-                ui.painter().rect_stroke(
-                    rect.expand(2.0),
-                    4.0,
-                    ui.visuals().selection.stroke,
-                    egui::StrokeKind::Middle,
-                );
-            }
-        });
     };
 
     row_ui(
@@ -329,16 +394,139 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         },
         true,
     );
-    ui.add_space(14.0);
-    ui.label(
-        egui::RichText::new("GROUPS")
-            .size(11.0)
-            .strong()
-            .color(crate::theme::MUTED),
-    );
+
+    // Favorites shortcut row (like 1Password).
+    {
+        let fav_selected = filter_favorites;
+        let row_bg = if fav_selected {
+            crate::theme::SIDEBAR_SELECTED
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        egui::Frame::new()
+            .fill(row_bg)
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let (star_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    crate::theme::draw_star_badge(ui.painter(), star_rect.center(), 7.5);
+                    let mut text = egui::RichText::new("Favorites")
+                        .size(14.0)
+                        .color(crate::theme::TEXT);
+                    if fav_selected {
+                        text = text.strong();
+                    }
+                    if ui
+                        .add(egui::Button::selectable(fav_selected, text).frame(false))
+                        .clicked()
+                    {
+                        fav_toggled = true;
+                    }
+                });
+            });
+    }
+
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        crate::theme::draw_chevron_down(ui, crate::theme::MUTED);
+        ui.label(
+            egui::RichText::new("GROUPS")
+                .size(11.0)
+                .strong()
+                .color(crate::theme::MUTED),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("+")
+                            .size(15.0)
+                            .strong()
+                            .color(crate::theme::MUTED),
+                    )
+                    .frame(false),
+                )
+                .on_hover_text("New Group")
+                .clicked()
+            {
+                add_group_clicked = true;
+            }
+        });
+    });
     ui.add_space(2.0);
     for row in &rows {
         row_ui(ui, row, false);
+    }
+
+    if let Some(group) = row_clicked {
+        selected_group = group;
+        selected_tag = None;
+        filter_favorites = false;
+    }
+    if fav_toggled {
+        filter_favorites = !filter_favorites;
+        if filter_favorites {
+            selected_tag = None;
+        }
+    }
+    if add_group_clicked {
+        if let Some(parent) = selected_group.or(root_id) {
+            new_dialog = Some(crate::dialogs::Dialog::GroupNew(Box::new(
+                crate::dialogs::GroupEdit::new(parent),
+            )));
+        }
+    }
+
+    if !all_tags.is_empty() {
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            crate::theme::draw_chevron_down(ui, crate::theme::MUTED);
+            ui.label(
+                egui::RichText::new("TAGS")
+                    .size(11.0)
+                    .strong()
+                    .color(crate::theme::MUTED),
+            );
+        });
+        ui.add_space(2.0);
+        for tag in &all_tags {
+            let is_sel = selected_tag.as_deref() == Some(tag.as_str());
+            let row_bg = if is_sel {
+                crate::theme::SIDEBAR_SELECTED
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            egui::Frame::new()
+                .fill(row_bg)
+                .corner_radius(8)
+                .inner_margin(egui::Margin::symmetric(8, 3))
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        crate::theme::draw_tag_pill(ui, crate::theme::TAG_GREEN);
+                        let mut text = egui::RichText::new(tag)
+                            .size(13.5)
+                            .color(crate::theme::TEXT);
+                        if is_sel {
+                            text = text.strong();
+                        }
+                        if ui
+                            .add(egui::Button::selectable(is_sel, text).frame(false))
+                            .clicked()
+                        {
+                            if is_sel {
+                                selected_tag = None;
+                            } else {
+                                selected_tag = Some(tag.clone());
+                                filter_favorites = false;
+                            }
+                        }
+                    });
+                });
+        }
     }
 
     if let Some((group, format)) = export_request {
@@ -427,6 +615,8 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
 
     // Apply pending mutations now that the immutable borrows are over.
     app.selected_group = selected_group;
+    app.selected_tag = selected_tag;
+    app.filter_favorites = filter_favorites;
     if let Some((entry_id, target)) = dropped {
         // Dropping onto the root row moves the entry to the root group.
         let gid = target.or(root_id);
@@ -468,24 +658,23 @@ pub fn entry_view(ui: &mut egui::Ui, app: &mut App) {
     let rows = visible_entries(app);
     let title = if !app.search.trim().is_empty() {
         "Search Results".to_owned()
+    } else if app.filter_favorites {
+        "Favorites".to_owned()
+    } else if let Some(tag) = &app.selected_tag {
+        format!("Tag: {tag}")
     } else {
         app.selected_group
             .and_then(|id| app.db.as_ref().and_then(|db| db.group(id)).map(|g| g.name.clone()))
-            .unwrap_or_else(|| "All Items".into())
+            .unwrap_or_else(|| "All Categories".into())
     };
     ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new(title).size(21.0).strong());
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} item{}",
-                    rows.len(),
-                    if rows.len() == 1 { "" } else { "s" }
-                ))
-                .size(12.0)
-                .color(crate::theme::MUTED),
-            );
-        });
+        crate::theme::draw_categories_grid_icon(ui);
+        ui.label(
+            egui::RichText::new(&title)
+                .size(14.5)
+                .color(crate::theme::TEXT),
+        );
+        crate::theme::draw_chevron_down(ui, crate::theme::MUTED);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let table = !app.prefs.list_view;
             if ui.selectable_label(table, "Table").clicked() {
@@ -526,7 +715,7 @@ pub fn entry_view(ui: &mut egui::Ui, app: &mut App) {
             });
         });
     });
-    ui.add_space(8.0);
+    ui.add_space(10.0);
 
     if app.prefs.list_view {
         entry_list(ui, app, &rows);
@@ -558,8 +747,27 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
         .id_salt("entry-list-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.spacing_mut().item_spacing.y = 3.0;
+            let mut last_month: Option<String> = None;
             for row in rows {
+                let month = row
+                    .month_header
+                    .clone()
+                    .unwrap_or_else(|| "MARCH 2025".to_owned());
+                if last_month.as_deref() != Some(month.as_str()) {
+                    if last_month.is_some() {
+                        ui.add_space(10.0);
+                    }
+                    ui.label(
+                        egui::RichText::new(&month)
+                            .size(11.0)
+                            .strong()
+                            .color(crate::theme::MUTED),
+                    );
+                    ui.add_space(4.0);
+                    last_month = Some(month);
+                }
+
                 let selected = app.selected_entry == Some(row.id)
                     || app.selected_entries.contains(&row.id);
                 let (rect, _alloc) = ui.allocate_exact_size(
@@ -568,7 +776,7 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                 );
                 let hovered = ui.rect_contains_pointer(rect);
                 let fill = if selected {
-                    crate::theme::ACCENT_SOFT
+                    crate::theme::LIST_SELECTED
                 } else if hovered {
                     crate::theme::HOVER
                 } else {
@@ -576,34 +784,33 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                 };
                 if fill != egui::Color32::TRANSPARENT {
                     ui.painter()
-                        .rect_filled(rect, egui::CornerRadius::same(10), fill);
-                }
-                if selected {
-                    // A thin accent bar on the left, like a browser tab.
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_size(rect.left_top() + egui::vec2(0.0, 10.0), egui::vec2(3.0, rect.height() - 20.0)),
-                        egui::CornerRadius::same(2),
-                        crate::theme::ACCENT,
-                    );
+                        .rect_filled(rect, egui::CornerRadius::same(8), fill);
                 }
                 let mut content = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(rect.shrink2(egui::vec2(12.0, 6.0)))
+                        .max_rect(rect.shrink2(egui::vec2(10.0, 6.0)))
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
-                egui::Frame::new()
+                let icon_resp = egui::Frame::new()
                     .fill(crate::theme::BG)
                     .corner_radius(8)
-                    .inner_margin(egui::Margin::same(3))
+                    .inner_margin(egui::Margin::same(4))
                     .show(&mut content, |ui| {
                         crate::icons::draw_icon_sized(
                             ui,
                             &mut app.icon_cache,
                             Some(&row.icon),
-                            24.0,
+                            26.0,
                         );
                     });
-                content.add_space(8.0);
+                if row.is_favorite {
+                    crate::theme::draw_star_badge(
+                        content.painter(),
+                        icon_resp.response.rect.right_bottom() + egui::vec2(-2.0, -2.0),
+                        5.5,
+                    );
+                }
+                content.add_space(10.0);
                 let secondary = if !row.username.is_empty() {
                     row.username.clone()
                 } else if !row.url.is_empty() {
@@ -615,8 +822,7 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(&row.title)
-                                .size(15.0)
-                                .strong()
+                                .size(15.5)
                                 .color(crate::theme::TEXT),
                         )
                         .truncate(),
@@ -902,6 +1108,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             tags: e.tags.join(", "),
             otp: crate::totp::current_code(&e),
             has_passkey: e.fields.keys().any(|k| is_passkey_field(k)),
+            parent_group_id: e.parent().id(),
             group: {
                 let path = group_path(db, e.parent().id());
                 if path.is_empty() { "All Items".into() } else { path }
@@ -912,7 +1119,9 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 .fields
                 .iter()
                 .filter(|(k, _)| {
-                    !fields::KNOWN_FIELDS.contains(&k.as_str()) && !is_passkey_field(k)
+                    !fields::KNOWN_FIELDS.contains(&k.as_str())
+                        && !is_passkey_field(k)
+                        && *k != "KPXC_FAVORITE"
                 })
                 .map(|(k, v)| {
                     (
@@ -931,7 +1140,6 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     .map(|assoc| (assoc.window.clone(), assoc.sequence.clone()))
                     .collect(),
             }),
-            history_count: e.history.as_ref().map(|h| h.get_entries().len()).unwrap_or(0),
             attachments: e
                 .attachments_named()
                 .map(|(name, a)| (name.to_owned(), a.data.get().len()))
@@ -940,34 +1148,94 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     });
     let Some(d) = data else { return };
 
+    let db_name = std::path::Path::new(&app.db_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "database".into());
+
     let mut copy: Option<String> = None;
     let mut edit_clicked = false;
     let mut delete_clicked = false;
     let mut history_clicked = false;
     let mut autotype_clicked = false;
+    let mut share_clicked = false;
     let mut show_password = app.show_passwords;
     let mut export: Option<(String, Vec<u8>)> = None;
 
-    // Header ------------------------------------------------------------
+    // 1Password-style top breadcrumb & action bar -----------------------
     ui.horizontal(|ui| {
-        egui::Frame::new()
+        ui.label(
+            egui::RichText::new(&db_name)
+                .size(13.5)
+                .color(crate::theme::TEXT),
+        );
+        ui.label(egui::RichText::new("|").size(13.0).color(crate::theme::BORDER));
+        ui.label(
+            egui::RichText::new(&d.group)
+                .size(13.5)
+                .color(crate::theme::TEXT),
+        );
+        crate::theme::draw_chevron_down(ui, crate::theme::MUTED);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::theme::draw_kebab_icon(ui, crate::theme::MUTED);
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Edit…")
+                            .size(14.0)
+                            .color(crate::theme::TEXT),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+            {
+                edit_clicked = true;
+            }
+            let (p_rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+            crate::theme::draw_pencil_icon(ui.painter(), p_rect.center(), crate::theme::MUTED);
+            ui.add_space(6.0);
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Share")
+                            .size(14.0)
+                            .color(crate::theme::TEXT),
+                    )
+                    .frame(false),
+                )
+                .on_hover_text("Share group via KeeShare")
+                .clicked()
+            {
+                share_clicked = true;
+            }
+            let (s_rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+            crate::theme::draw_share_icon(ui.painter(), s_rect.center(), crate::theme::MUTED);
+        });
+    });
+    ui.add_space(18.0);
+
+    // Header: Large icon + Favorite star + Title ------------------------
+    ui.horizontal(|ui| {
+        let icon_resp = egui::Frame::new()
             .fill(crate::theme::BG)
-            .corner_radius(16)
-            .inner_margin(egui::Margin::same(9))
+            .corner_radius(14)
+            .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 crate::icons::draw_icon_sized(
                     ui,
                     &mut app.icon_cache,
                     Some(&d.icon),
-                    54.0,
+                    52.0,
                 );
             });
-        ui.add_space(12.0);
-        let title_width = (ui.available_width() - 96.0).max(110.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(title_width, 60.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
+        crate::theme::draw_star_badge(
+            ui.painter(),
+            icon_resp.response.rect.right_bottom() + egui::vec2(-3.0, -3.0),
+            9.0,
+        );
+        ui.add_space(14.0);
+        ui.vertical(|ui| {
+            ui.add_space(10.0);
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(&d.title)
@@ -976,11 +1244,6 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                         .color(crate::theme::TEXT),
                 )
                 .wrap(),
-            );
-            ui.label(
-                egui::RichText::new(&d.group)
-                    .size(13.0)
-                    .color(crate::theme::MUTED),
             );
             if d.has_passkey {
                 ui.add_space(4.0);
@@ -997,7 +1260,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     });
             }
             if !d.tags.is_empty() {
-                ui.add_space(3.0);
+                ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     for tag in d.tags.split(',').map(str::trim).filter(|t| !t.is_empty()) {
                         egui::Frame::new()
@@ -1015,50 +1278,8 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 });
             }
         });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            if ui.add(crate::theme::primary_button("Edit…")).clicked() {
-                edit_clicked = true;
-            }
-        });
     });
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        if ui
-            .add(crate::theme::subtle_button("History…"))
-            .on_hover_text("Browse and restore previous versions")
-            .clicked()
-        {
-            history_clicked = true;
-        }
-        if ui
-            .add(crate::theme::subtle_button("Auto-Type"))
-            .on_hover_text("Type the entry's sequence (macOS needs Accessibility permission)")
-            .clicked()
-        {
-            autotype_clicked = true;
-        }
-        if ui
-            .add(
-                egui::Button::new(
-                    egui::RichText::new("Delete…").color(crate::theme::DANGER),
-                )
-                .frame(false),
-            )
-            .clicked()
-        {
-            delete_clicked = true;
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !d.tags.is_empty() {
-                ui.label(
-                    egui::RichText::new(format!("{} history", d.history_count))
-                        .size(11.0)
-                        .color(crate::theme::MUTED),
-                );
-            }
-        });
-    });
-    ui.add_space(16.0);
+    ui.add_space(18.0);
 
     // The main field card ------------------------------------------------
     detail_card(ui, |ui| {
@@ -1074,17 +1295,18 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         let masked = if show_password || d.password.is_empty() {
             d.password.clone()
         } else {
-            "••••••••".to_owned()
+            "••••••••••".to_owned()
         };
+        let (strength_label, strength_frac, strength_color) = password_strength(&d.password);
         let row_width = ui.available_width();
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
-                egui::vec2((row_width - 170.0).max(80.0), 42.0),
+                egui::vec2((row_width - 255.0).max(80.0), 42.0),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.label(
                         egui::RichText::new("password")
-                            .size(12.0)
+                            .size(12.5)
                             .color(crate::theme::ACCENT),
                     );
                     ui.label(
@@ -1095,18 +1317,28 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     );
                 },
             );
-            if ui
-                .add(crate::theme::subtle_button(if show_password { "Hide" } else { "Show" }))
-                .clicked()
-            {
-                show_password = !show_password;
-            }
-            if ui
-                .add(crate::theme::subtle_button("Copy Password"))
-                .clicked()
-            {
-                copy = Some(d.password.clone());
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(crate::theme::subtle_button("Copy Password"))
+                    .clicked()
+                {
+                    copy = Some(d.password.clone());
+                }
+                if ui
+                    .add(crate::theme::subtle_button(if show_password { "Hide" } else { "Show" }))
+                    .clicked()
+                {
+                    show_password = !show_password;
+                }
+                if !d.password.is_empty() {
+                    crate::theme::draw_progress_ring(ui, 7.0, strength_frac, strength_color);
+                    ui.label(
+                        egui::RichText::new(strength_label)
+                            .size(13.0)
+                            .color(crate::theme::MUTED),
+                    );
+                }
+            });
         });
         if let Some((code, valid_for)) = &d.otp {
             ui.ctx()
@@ -1120,88 +1352,111 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     |ui| {
                         ui.label(
                             egui::RichText::new("one-time password (TOTP)")
-                                .size(12.0)
+                                .size(12.5)
                                 .color(crate::theme::ACCENT),
                         );
                         ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new(spaced_code(code))
-                                    .size(18.0)
+                                    .size(17.0)
                                     .monospace()
-                                    .strong()
                                     .color(crate::theme::TEXT),
                             );
+                            let frac = (*valid_for as f32 / 30.0).clamp(0.05, 1.0);
+                            crate::theme::draw_progress_ring(
+                                ui,
+                                6.5,
+                                frac,
+                                crate::theme::GOOD,
+                            );
                             ui.label(
-                                egui::RichText::new(format!("{valid_for}s"))
-                                    .size(11.0)
+                                egui::RichText::new(format!("{valid_for}"))
+                                    .size(13.0)
                                     .color(crate::theme::MUTED),
                             );
                         });
                     },
                 );
-                if ui
-                    .add(crate::theme::subtle_button("Copy TOTP"))
-                    .clicked()
-                {
-                    copy = Some(code.clone());
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(crate::theme::subtle_button("Copy TOTP"))
+                        .clicked()
+                    {
+                        copy = Some(code.clone());
+                    }
+                });
             });
         }
     });
 
     // Website ------------------------------------------------------------
     if !d.url.is_empty() {
-        ui.add_space(16.0);
-        ui.label(
-            egui::RichText::new("website")
-                .size(12.0)
-                .color(crate::theme::ACCENT),
-        );
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(&d.url)
-                    .size(15.0)
-                    .color(crate::theme::ACCENT),
-            )
-            .truncate(),
-        )
-        .on_hover_text(&d.url);
-        if ui
-            .add(crate::theme::subtle_button("Copy URL"))
-            .clicked()
-        {
-            copy = Some(d.url.clone());
-        }
+        ui.add_space(18.0);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("website")
+                        .size(12.5)
+                        .color(crate::theme::ACCENT),
+                );
+                let (head, tail) = split_url_domain(&d.url);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    if !head.is_empty() {
+                        ui.label(
+                            egui::RichText::new(head)
+                                .size(15.5)
+                                .color(crate::theme::MUTED),
+                        );
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(tail)
+                                .size(15.5)
+                                .color(crate::theme::TEXT),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&d.url);
+                });
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(crate::theme::subtle_button("Copy URL"))
+                    .clicked()
+                {
+                    copy = Some(d.url.clone());
+                }
+            });
+        });
     }
 
     // Custom fields / security ------------------------------------------
     if !d.attributes.is_empty() {
-        ui.add_space(22.0);
+        ui.add_space(26.0);
         ui.label(
             egui::RichText::new("SECURITY")
-                .size(11.0)
+                .size(12.5)
                 .strong()
-                .color(crate::theme::MUTED),
+                .color(crate::theme::TEXT),
         );
-        ui.add_space(4.0);
-        detail_card(ui, |ui| {
-            for (i, (key, value, protected)) in d.attributes.iter().enumerate() {
-                if i > 0 {
-                    ui.add(egui::Separator::default().spacing(4.0));
-                }
-                let shown = if *protected && !show_password {
-                    "••••••••".to_owned()
-                } else {
-                    value.clone()
-                };
-                let label = if *protected {
-                    format!("{key} (protected)")
-                } else {
-                    key.clone()
-                };
-                field_block(ui, &label, &shown, value, "Copy", &mut copy);
+        ui.add_space(8.0);
+        for (i, (key, value, protected)) in d.attributes.iter().enumerate() {
+            if i > 0 {
+                ui.add_space(10.0);
             }
-        });
+            let shown = if *protected && !show_password {
+                "••••••••••".to_owned()
+            } else {
+                value.clone()
+            };
+            let label = if *protected {
+                format!("{key} (protected)")
+            } else {
+                key.clone()
+            };
+            field_block(ui, &label, &shown, value, "Copy", &mut copy);
+        }
         if ui.add(crate::theme::subtle_button("Copy Tags")).clicked() {
             copy = Some(d.tags.clone());
         }
@@ -1304,17 +1559,50 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     }
 
     // Footer -------------------------------------------------------------
+    ui.add_space(26.0);
     if let Some(t) = d.last_modified {
-        ui.add_space(24.0);
-        ui.label(
-            egui::RichText::new(format!(
-                "Last edited {}",
-                t.format("%A, %B %-d, %Y at %-I:%M:%S %p")
-            ))
-            .size(12.0)
-            .color(crate::theme::MUTED),
-        );
+        ui.horizontal(|ui| {
+            crate::theme::draw_chevron_right(ui, crate::theme::MUTED);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Last edited {}",
+                    t.format("%A, %B %-d, %Y at %-I:%M:%S %p")
+                ))
+                .size(13.0)
+                .color(crate::theme::TEXT),
+            );
+        });
+        ui.add_space(8.0);
     }
+    ui.horizontal(|ui| {
+        if ui
+            .add(crate::theme::subtle_button("History…"))
+            .on_hover_text("Browse and restore previous versions")
+            .clicked()
+        {
+            history_clicked = true;
+        }
+        if ui
+            .add(crate::theme::subtle_button("Auto-Type"))
+            .on_hover_text("Type the entry's sequence (macOS needs Accessibility permission)")
+            .clicked()
+        {
+            autotype_clicked = true;
+        }
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new("Delete…")
+                        .size(12.5)
+                        .color(crate::theme::DANGER),
+                )
+                .frame(false),
+            )
+            .clicked()
+        {
+            delete_clicked = true;
+        }
+    });
 
     // Apply pending mutations.
     app.show_passwords = show_password;
@@ -1333,6 +1621,13 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     if delete_clicked {
         app.dialog = crate::dialogs::Dialog::ConfirmDeleteEntry(id);
     }
+    if share_clicked {
+        if let Some(db) = app.db.as_ref() {
+            app.dialog = crate::dialogs::Dialog::ShareGroup(Box::new(
+                crate::dialogs::ShareDialog::for_group(db, d.parent_group_id),
+            ));
+        }
+    }
     if let Some((name, data)) = export {
         if let Some(path) = rfd::FileDialog::new().set_file_name(&name).save_file() {
             match std::fs::write(&path, &data) {
@@ -1347,8 +1642,8 @@ fn detail_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(crate::theme::CARD)
         .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
-        .corner_radius(12)
-        .inner_margin(egui::Margin::symmetric(16, 10))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(16, 12))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             add(ui);
@@ -1366,28 +1661,61 @@ fn field_block(
     let width = ui.available_width();
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(
-            egui::vec2((width - 90.0).max(80.0), 42.0),
+            egui::vec2((width - 110.0).max(80.0), 42.0),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.label(
                     egui::RichText::new(label)
-                        .size(12.0)
+                        .size(12.5)
                         .color(crate::theme::ACCENT),
                 );
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(shown)
-                            .size(16.0)
+                            .size(15.5)
                             .color(crate::theme::TEXT),
                     )
                     .truncate(),
                 );
             },
         );
-        if ui.add(crate::theme::subtle_button(copy_label)).clicked() {
-            *copy = Some(copy_value.to_owned());
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(crate::theme::subtle_button(copy_label)).clicked() {
+                *copy = Some(copy_value.to_owned());
+            }
+        });
     });
+}
+
+fn password_strength(pw: &str) -> (&'static str, f32, egui::Color32) {
+    let len = pw.chars().count();
+    let has_upper = pw.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = pw.chars().any(|c| c.is_ascii_lowercase());
+    let has_digit = pw.chars().any(|c| c.is_ascii_digit());
+    let has_sym = pw.chars().any(|c| !c.is_ascii_alphanumeric());
+    let classes =
+        has_upper as usize + has_lower as usize + has_digit as usize + has_sym as usize;
+    let score = len.saturating_mul(2) + classes * 4;
+    if score >= 36 {
+        ("Fantastic", 0.96, crate::theme::GOOD)
+    } else if score >= 20 {
+        ("Very Good", 0.80, crate::theme::GOOD)
+    } else if score >= 12 {
+        ("Good", 0.55, crate::theme::WARN)
+    } else {
+        ("Weak", 0.25, crate::theme::DANGER)
+    }
+}
+
+/// Split a URL into `(scheme_prefix, domain_and_path)` so we can dim `https://`
+/// and highlight the domain like 1Password.
+fn split_url_domain(url: &str) -> (&str, &str) {
+    for prefix in ["https://www.", "http://www.", "https://", "http://"] {
+        if let Some(rest) = url.strip_prefix(prefix) {
+            return (&url[..prefix.len()], rest);
+        }
+    }
+    ("", url)
 }
 
 fn spaced_code(code: &str) -> String {
@@ -1408,6 +1736,7 @@ fn is_passkey_field(key: &str) -> bool {
 
 struct EntryDetailsData {
     has_passkey: bool,
+    parent_group_id: GroupId,
     title: String,
     username: String,
     password: String,
@@ -1420,7 +1749,6 @@ struct EntryDetailsData {
     otp: Option<(String, u64)>,
     attributes: Vec<(String, String, bool)>,
     autotype: Option<AutoTypeSummary>,
-    history_count: usize,
     attachments: Vec<(String, usize)>,
 }
 
