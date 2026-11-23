@@ -120,8 +120,118 @@ fn export_and_import_roundtrip() {
     assert_eq!(entry.get(fields::USERNAME), Some("updated-user"));
 }
 
-/// Writes a share container to a fixed path for the external keepassxc-cli
-/// cross-check in verify.sh (ignored during normal test runs).
+#[test]
+fn signed_export_and_import_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let share_path = dir.path().join("signed.kdbx.share");
+
+    let (source, group_id) = build_source_db();
+    let identity = kpxc::keeshare_signed::Identity::generate("Alice").unwrap();
+    let info = kpxc::keeshare_signed::export_signed(&source, group_id, &share_path, "share-pw", &identity)
+        .unwrap();
+    assert_eq!(info.entries, 2);
+
+    // ZIP container with KeePassXC's layout.
+    let bytes = std::fs::read(&share_path).unwrap();
+    assert!(kpxc::keeshare_signed::is_signed_container(&bytes));
+
+    // A consumer imports: signature verified, entries merged, signer reported.
+    let mut consumer = Database::new();
+    let target = consumer.root().id();
+    let result = kpxc::keeshare_signed::import_signed(&mut consumer, target, &share_path, "share-pw")
+        .unwrap();
+    assert_eq!(result.signer, "Alice");
+    assert_eq!(result.import.added, 2);
+    assert_eq!(consumer.num_entries(), 2);
+
+    // Tampering with the database portion breaks verification.
+    let tampered_path = dir.path().join("tampered.kdbx.share");
+    {
+        let file = std::fs::File::open(&share_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut db_bytes = Vec::new();
+        {
+            let mut entry = archive
+                .by_name(kpxc::keeshare_signed::CONTAINER_FILE)
+                .unwrap();
+            use std::io::Read;
+            entry.read_to_end(&mut db_bytes).unwrap();
+        }
+        let mut sig = String::new();
+        {
+            let mut entry = archive
+                .by_name(kpxc::keeshare_signed::SIGNATURE_FILE)
+                .unwrap();
+            use std::io::Read;
+            entry.read_to_string(&mut sig).unwrap();
+        }
+        drop(archive);
+
+        // Flip one byte in the middle of the database.
+        let mid = db_bytes.len() / 2;
+        db_bytes[mid] ^= 0xFF;
+
+        let out = std::fs::File::create(&tampered_path).unwrap();
+        let mut zipw = zip::ZipWriter::new(out);
+        let opts = zip::write::SimpleFileOptions::default();
+        use std::io::Write;
+        zipw.start_file(kpxc::keeshare_signed::SIGNATURE_FILE, opts).unwrap();
+        zipw.write_all(sig.as_bytes()).unwrap();
+        zipw.start_file(kpxc::keeshare_signed::CONTAINER_FILE, opts).unwrap();
+        zipw.write_all(&db_bytes).unwrap();
+        zipw.finish().unwrap();
+    }
+    let mut consumer2 = Database::new();
+    let target2 = consumer2.root().id();
+    let err = kpxc::keeshare_signed::import_signed(&mut consumer2, target2, &tampered_path, "share-pw");
+    assert!(err.is_err(), "tampered container must be rejected");
+    let msg = format!("{:#}", err.unwrap_err());
+    assert!(
+        msg.contains("signature") || msg.contains("padding") || msg.contains("decrypt"),
+        "unexpected error: {msg}"
+    );
+}
+
+/// Writes a signed container + the signer's RSA public key (PEM) for the
+/// real-tool cross-checks in verify.sh (openssl dgst -verify, unzip -l).
+#[test]
+#[ignore]
+fn signed_export_for_external_verification() {
+    use rsa::pkcs8::EncodePublicKey;
+    let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let share = out_dir.join("keeshare-signed.kdbx.share");
+    let db_file = out_dir.join("keeshare-signed-container.kdbx");
+    let pub_file = out_dir.join("keeshare-signer.pub.pem");
+    let _ = std::fs::remove_file(&share);
+
+    let (db, group_id) = build_source_db();
+    let identity = kpxc::keeshare_signed::Identity::generate("Verify Signer").unwrap();
+    kpxc::keeshare_signed::export_signed(&db, group_id, &share, "signed-pw", &identity).unwrap();
+
+    // Extract the DB bytes for the cross-check.
+    let file = std::fs::File::open(&share).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let mut db_bytes = Vec::new();
+    {
+        let mut entry = archive
+            .by_name(kpxc::keeshare_signed::CONTAINER_FILE)
+            .unwrap();
+        use std::io::Read;
+        entry.read_to_end(&mut db_bytes).unwrap();
+    }
+    std::fs::write(&db_file, &db_bytes).unwrap();
+
+    // Write the RSA public key (PEM/SPKI) and the raw signature for openssl.
+    let pem = identity
+        .public_key()
+        .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+        .unwrap();
+    std::fs::write(&pub_file, pem).unwrap();
+    let sig = identity.sign(&db_bytes);
+    let hex_sig = sig.strip_prefix("rsa|").unwrap();
+    std::fs::write(out_dir.join("keeshare-signature.bin"), hex::decode(hex_sig).unwrap()).unwrap();
+}
+
 #[test]
 #[ignore]
 fn export_for_external_verification() {

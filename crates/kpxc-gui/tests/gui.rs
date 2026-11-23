@@ -990,6 +990,80 @@ fn share_group_dialog_exports_and_persists_reference() {
     assert!(reference.import && reference.export);
 }
 
+// ---------------------------------------------------------------------------
+// KeeShare signed containers via the GUI
+// ---------------------------------------------------------------------------
+
+#[test]
+fn share_group_signed_container_via_gui() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let share_path = dir.path().join("signed.kdbx.share");
+    // Keep the generated signing identity inside the test's temp dir.
+    std::env::set_var("KPXC_KEESHARE_DIR", dir.path().join("identity"));
+
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 1500.0));
+    harness.run();
+
+    // Put an entry into the Web group.
+    {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        let web_id = db.iter_all_groups().find(|g| g.name == "Web").unwrap().id();
+        let mut group = db.group_mut(web_id).unwrap();
+        let mut e = group.add_entry();
+        e.set_unprotected("Title", "Signed Login");
+        e.set_unprotected("UserName", "signed-user");
+        e.set_protected("Password", "signed-pass");
+    }
+    harness.run();
+
+    harness.get_by_label("Web (1)").click();
+    harness.run();
+    harness.get_by_label("Share group…").click();
+    harness.run();
+    replace_text(&mut harness, "Share container path:", share_path.display().to_string().as_str());
+    replace_text(&mut harness, "Share password:", "signed-pw");
+    harness.get_by_label("Export now").click();
+    harness.run();
+
+    assert!(share_path.exists(), "signed container written");
+    let bytes = std::fs::read(&share_path).unwrap();
+    assert!(kpxc::keeshare_signed::is_signed_container(&bytes), "ZIP container");
+    let state = harness.state();
+    assert!(
+        state.status.contains("SIGNED"),
+        "status reports a signed export: {:?}",
+        state.status
+    );
+
+    // A consumer imports it: the signature verifies and the signer is known.
+    let mut consumer = keepass::Database::new();
+    let target = consumer.root().id();
+    let info = kpxc::keeshare_signed::import_signed(&mut consumer, target, &share_path, "signed-pw")
+        .expect("signed import verifies");
+    assert_eq!(info.signer, "KeePassXC-RS");
+    assert_eq!(info.import.added, 1);
+    assert!(consumer
+        .iter_all_entries()
+        .any(|e| e.get("Title") == Some("Signed Login")));
+
+    // Importing through the GUI also verifies and reports the signer.
+    // (Modify the entry name in the consumer first so an update is visible.)
+    harness.get_by_label("Import now").click();
+    harness.run();
+    let state = harness.state();
+    assert!(
+        state.status.contains("Verified signed container") && state.status.contains("KeePassXC-RS"),
+        "status: {:?}",
+        state.status
+    );
+}
+
 /// Produces a database entirely through the GUI (created + saved via the
 /// dialogs) for external verification by `verify.sh` with keepassxc-cli.
 #[test]

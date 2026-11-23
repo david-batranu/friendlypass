@@ -163,6 +163,16 @@ check "KeeShare test writes a share container for the C++ cross-check" \
     env sh -c "timeout 120 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare export_for_external_verification -- --ignored"
 check "keepassxc-cli reads the shared entries from our KeeShare container" \
     env sh -c "printf 'share-pw\n' | '$CLI' ls '$ROOT/target/keeshare-share.kdbx' | grep -q 'Shared Entry'"
+check "KeeShare signed mode: signed export verifies + tampering is rejected (unit/integration)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare signed_export_and_import_roundtrip"
+check "KeeShare signed GUI test (signed export + verified import through the dialogs)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui share_group_signed_container_via_gui"
+check "KeeShare signed container has KeePassXC's ZIP layout (container.share.kdbx + container.share.signature)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare signed_export_for_external_verification -- --ignored && unzip -l '$ROOT/target/keeshare-signed.kdbx.share' | grep -q container.share.kdbx && unzip -l '$ROOT/target/keeshare-signed.kdbx.share' | grep -q container.share.signature"
+check "OpenSSL verifies our RSA PKCS#1 v1.5 SHA-256 share signature" \
+    env sh -c "openssl dgst -sha256 -verify '$ROOT/target/keeshare-signer.pub.pem' -signature '$ROOT/target/keeshare-signature.bin' '$ROOT/target/keeshare-signed-container.kdbx' | grep -q 'Verified OK'"
+check "keepassxc-cli reads the database inside our SIGNED KeeShare container" \
+    env sh -c "printf 'signed-pw\n' | '$CLI' ls '$ROOT/target/keeshare-signed-container.kdbx' | grep -q 'Shared Entry'"
 
 echo
 echo "================================"

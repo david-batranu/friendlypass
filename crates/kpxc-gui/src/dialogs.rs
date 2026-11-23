@@ -1454,6 +1454,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                          container protected by the share password, and can be imported back \
                          (entries are matched by UUID).",
                     );
+                    ui.weak(
+                        "Paths ending in .kdbx.share produce a SIGNED ZIP container \
+                         (container.share.kdbx + container.share.signature, RSA PKCS#1 v1.5 \
+                         SHA-256) signed with the local X.509 identity; signed containers are \
+                         verified on import.",
+                    );
                     ui.separator();
                     let l = ui.label("Share container path:");
                     let r = ui.add(
@@ -1518,19 +1524,36 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
             if export_clicked {
                 if let Some(db) = app.db.as_ref() {
-                    match kpxc::keeshare::export_share(
-                        db,
-                        d.group,
-                        std::path::Path::new(&d.path),
-                        &d.password,
-                    ) {
-                        Ok(info) => {
-                            d.message = format!(
-                                "Exported {} entries ({} groups) to {}",
-                                info.entries,
-                                info.groups,
-                                info.path.display()
-                            );
+                    let path = std::path::Path::new(&d.path);
+                    let signed = d.path.ends_with(".kdbx.share");
+                    let result = if signed {
+                        kpxc::keeshare_signed::load_or_create_identity("KeePassXC-RS").and_then(
+                            |identity| {
+                                let info = kpxc::keeshare_signed::export_signed(
+                                    db, d.group, path, &d.password, &identity,
+                                )?;
+                                Ok((info, Some(identity.signer)))
+                            },
+                        )
+                    } else {
+                        kpxc::keeshare::export_share(db, d.group, path, &d.password)
+                            .map(|info| (info, None))
+                    };
+                    match result {
+                        Ok((info, signer)) => {
+                            d.message = match signer {
+                                Some(signer) => format!(
+                                    "Exported {} entries to a SIGNED container as {signer} ({})",
+                                    info.entries,
+                                    info.path.display()
+                                ),
+                                None => format!(
+                                    "Exported {} entries ({} groups) to {}",
+                                    info.entries,
+                                    info.groups,
+                                    info.path.display()
+                                ),
+                            };
                             app.status = d.message.clone();
                             // Persist the reference with the export settings.
                             if let Some(db) = app.db.as_mut() {
@@ -1552,15 +1575,27 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if import_clicked {
                 if let Some(db) = app.db.as_mut() {
-                    match kpxc::keeshare::import_share(
-                        db,
-                        d.group,
-                        std::path::Path::new(&d.path),
-                        &d.password,
-                    ) {
-                        Ok(info) => {
-                            d.message =
-                                format!("Imported: {} added, {} updated", info.added, info.updated);
+                    let path = std::path::Path::new(&d.path);
+                    let is_zip = std::fs::read(path)
+                        .map(|b| kpxc::keeshare_signed::is_signed_container(&b))
+                        .unwrap_or(false);
+                    let result = if is_zip {
+                        kpxc::keeshare_signed::import_signed(db, d.group, path, &d.password).map(
+                            |info| {
+                                format!(
+                                    "Verified signed container from '{}'; imported: {} added, {} updated",
+                                    info.signer, info.import.added, info.import.updated
+                                )
+                            },
+                        )
+                    } else {
+                        kpxc::keeshare::import_share(db, d.group, path, &d.password).map(|info| {
+                            format!("Imported: {} added, {} updated", info.added, info.updated)
+                        })
+                    };
+                    match result {
+                        Ok(message) => {
+                            d.message = message;
                             app.status = d.message.clone();
                             app.dirty = true;
                         }

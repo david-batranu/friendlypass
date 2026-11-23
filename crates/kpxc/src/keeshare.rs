@@ -198,6 +198,22 @@ pub fn export_share(
     path: &std::path::Path,
     password: &str,
 ) -> Result<ExportInfo> {
+    let (bytes, info) = export_share_bytes(db, group_id, password)?;
+    std::fs::write(path, &bytes)
+        .with_context(|| format!("cannot create share container {}", path.display()))?;
+    Ok(ExportInfo {
+        path: path.to_path_buf(),
+        ..info
+    })
+}
+
+/// Serialize a group subtree as a share database (KDBX bytes), counting the
+/// shared entries/groups.
+pub fn export_share_bytes(
+    db: &Database,
+    group_id: GroupId,
+    password: &str,
+) -> Result<(Vec<u8>, ExportInfo)> {
     let group = db
         .group(group_id)
         .ok_or_else(|| anyhow::anyhow!("group not found"))?;
@@ -221,20 +237,19 @@ pub fn export_share(
         groups += 1;
     }
 
-    let mut out = std::io::BufWriter::new(
-        std::fs::File::create(path)
-            .with_context(|| format!("cannot create share container {}", path.display()))?,
-    );
+    let mut bytes = Vec::new();
     target
-        .save(&mut out, DatabaseKey::new().with_password(password))
+        .save(&mut bytes, DatabaseKey::new().with_password(password))
         .map_err(|e| anyhow::anyhow!("cannot write share container: {e}"))?;
-    drop(out);
 
-    Ok(ExportInfo {
-        entries: shared,
-        groups,
-        path: path.to_path_buf(),
-    })
+    Ok((
+        bytes,
+        ExportInfo {
+            entries: shared,
+            groups,
+            path: std::path::PathBuf::new(),
+        },
+    ))
 }
 
 /// Recursively copy groups/entries from `db` into `parent` on the target.
@@ -286,6 +301,16 @@ pub fn import_share(
         .with_context(|| format!("cannot open share container {}", path.display()))?;
     let shared = Database::open(&mut file, DatabaseKey::new().with_password(password))
         .map_err(|e| anyhow::anyhow!("cannot read share container (wrong password?): {e}"))?;
+    merge_shared_entries(db, group_id, &shared)
+}
+
+/// Merge all entries of an already-opened share database into `group_id`
+/// (UUID-matched upsert; used by both classic and signed imports).
+pub fn merge_shared_entries(
+    db: &mut Database,
+    group_id: GroupId,
+    shared: &Database,
+) -> Result<ImportInfo> {
 
     // Collect the shared entries first (uuid + content; EntryRef gives
     // access to attachments, the plain Entry does not).
