@@ -63,7 +63,7 @@ layers; this project is the behavior/compatibility layer on top:
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **20/20 checks, 13/13 tests.**
+Current result: **44/44 checks, all workspace tests green.**
 
 ## Layout
 
@@ -171,10 +171,11 @@ attribute in clear text, and reports "Recycle bin is enabled"
 Migrated and verified: the headless core (database open/save, all cipher and
 KDF variants, entries/groups/attachments/protected fields, CLI commands
 above) and the GUI workflow described above — verified against KeePassXC
-2.8.0 in both directions, and the SSH agent is verified against the real
-`ssh-keygen`/`ssh-add` binaries, and the browser protocol against the REAL
-`keepassxc-proxy` from the KeePassXC.app bundle (`./verify.sh`: 34 checks,
-13+2 GUI + 14 ssh-agent + 6 browser tests).
+2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
+the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
+(classic + signed) against `keepassxc-cli` and OpenSSL
+(`./verify.sh`: 44 checks; GUI kittest, ssh-agent, browser, KeeShare and
+CLI test suites all green).
 
 ### Feature matrix (GUI)
 
