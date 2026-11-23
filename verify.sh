@@ -210,6 +210,21 @@ check "column layout (visibility, order, width) is configurable in the GUI and p
     env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --lib config && timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui columns_are_customizable_and_persist"
 check "recent databases are remembered, prefilled on the next launch, listed on the welcome screen, clearable and unlockable (kittest)" \
     env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui recent_databases_are_remembered_across_launches"
+echo
+echo "== 16. Import / export =="
+check "library formats: KeePass 2 XML/CSV/HTML export; XML/CSV/Bitwarden/Proton Pass/1PUX/KeePass 1 (AES + Twofish) import (10 tests)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test import_export"
+check "GUI Import…/Export… dialogs: XML export, XML merge-import and a real KeePass 1 (KDB) import (kittest)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui import_export_dialogs_and_keepass1_import"
+check "keepassxc-cli imports our XML export, then reads its entries and attachment" \
+    env sh -c "printf 'testpassword\\n' | '$KPXC' export -f xml '$ROOT/fixtures/sample4.kdbx' > '$WORK/export.xml' && printf 'xcpass\\nxcpass\\n' | '$CLI' import --set-password '$WORK/export.xml' '$WORK/xc-import.kdbx' >/dev/null 2>&1 && printf 'xcpass\\n' | '$CLI' ls '$WORK/xc-import.kdbx' | grep -q 'Sample Entry' && printf 'xcpass\\n' | '$CLI' attachment-export '$WORK/xc-import.kdbx' 'Sample Entry' attach.txt '$WORK/xc-att.txt' >/dev/null 2>&1 && printf 'Content\\n' | cmp - '$WORK/xc-att.txt'"
+check "our importer reads keepassxc-cli's XML export (entries + attachment)" \
+    env sh -c "printf 'testpassword\\n' | '$CLI' export -f xml '$ROOT/fixtures/sample4.kdbx' > '$WORK/real.xml' && printf 'newpass\\nnewpass\\n' | '$KPXC' import '$WORK/real.xml' '$WORK/from-xc.kdbx' --set-password >/dev/null 2>&1 && printf 'newpass\\n' | '$KPXC' show '$WORK/from-xc.kdbx' 'Sample Entry' | grep -q 'YvWQMCdkU9NkwU5cEHsj'"
+check "our CSV export is byte-identical to keepassxc-cli's for the same database" \
+    env sh -c "printf 'testpassword\\n' | '$KPXC' export -f csv '$ROOT/fixtures/sample4.kdbx' > '$WORK/ours.csv' && printf 'testpassword\\n' | '$CLI' export -f csv '$ROOT/fixtures/sample4.kdbx' > '$WORK/real.csv' && cmp '$WORK/real.csv' '$WORK/ours.csv'"
+check "KeePass 1 KDB import: field model, attachment and Twofish variant preserved" \
+    env sh -c "printf 'masterpw\\nkdbpass\\nkdbpass\\n' | '$KPXC' import '$ROOT/fixtures/keepass1.kdb' '$WORK/kdb-import.kdbx' --set-password >/dev/null 2>&1 && printf 'kdbpass\\n' | '$KPXC' show '$WORK/kdb-import.kdbx' 'Test entry' | grep -q 'secretpassword' && printf 'masterpw\\nkdbpass\\nkdbpass\\n' | '$KPXC' import '$ROOT/fixtures/keepass1-twofish.kdb' '$WORK/twofish-import.kdbx' --set-password >/dev/null 2>&1 && printf 'kdbpass\\n' | '$KPXC' ls '$WORK/twofish-import.kdbx' | grep -q 'Twofish/'"
+
 
 echo
 echo "================================"

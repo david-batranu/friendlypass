@@ -23,6 +23,8 @@ migration.
 | `add`               | `add`                    | prompts / generates entry passwords      |
 | `mkdir`             | `mkdir`                  | nested paths (`Web/Sub`)                 |
 | `attachment-export` | `attachment-export`     | byte-identical export                    |
+| `export`            | `export`                 | KeePass 2 XML (`-f xml`), CSV, HTML to stdout |
+| `import`            | `import`                 | XML, CSV, Bitwarden/Proton Pass JSON, 1PUX, KeePass 1 KDB (AES/Twofish), KDBX into a new database |
 
 Passwords are read from a hidden prompt on a TTY, or one line from stdin when
 piped (same convention as keepassxc-cli: `printf 'pw\n' | kpxc ls db.kdbx`).
@@ -106,7 +108,7 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **55/55 checks, all workspace tests green.**
+Current result: **61/61 checks, all workspace tests green.**
 
 ## Layout
 
@@ -129,6 +131,7 @@ verify.sh             end-to-end Rust <=> KeePassXC cross-verification
 | `Compressed.kdbx`    | *(empty)*       | KeePassXC repo test data     |
 | `NonAscii.kdbx`      | `Δöض`           | KeePassXC repo test data     |
 | `ProtectedStrings.kdbx` | `masterpw`   | KeePassXC repo test data     |
+| `keepass1.kdb` / `keepass1-twofish.kdb` | `masterpw` | KeePassXC repo test data (KDB, AES / Twofish) |
 
 ## Usage
 
@@ -143,7 +146,33 @@ $ printf 'mypw\n' | target/release/kpxc show fixtures/sample4.kdbx "Sample Entry
 Title:    Sample Entry
 UserName: user@example.com
 ...
+$ printf 'mypw\n' | target/release/kpxc export -f csv fixtures/sample4.kdbx
+"Group","Title","Username","Password",...
+$ printf 'masterpw\nnewpw\nnewpw\n' | \
+    target/release/kpxc import fixtures/keepass1.kdb imported.kdbx --set-password
+Successfully imported KeePass 1 (KDB) into imported.kdbx
 ```
+
+## Import / export
+
+`kpxc export -f xml|csv|html` matches `keepassxc-cli export` (the CSV is
+byte-identical for the fixture, and `keepassxc-cli import` accepts our XML).
+`kpxc import` creates a new database from:
+
+| Format | Notes |
+| --- | --- |
+| KeePass 2 XML (`.xml`) | both our exports and `keepassxc-cli export -f xml`; groups, fields, tags, attachments, auto-type, custom icons and times |
+| CSV (`.csv`) | KeePassXC's header, plus common Title/Username/Password/URL/Notes/Folder layouts; unknown columns become custom attributes; group paths are recreated |
+| Bitwarden JSON (`.json`) | unencrypted exports: folders → groups, logins, URIs, TOTP, notes, custom fields (hidden fields stay protected) |
+| Proton Pass JSON (`.json`) | unencrypted exports: vaults → groups, logins/credit cards/Wi-Fi/SSH keys, extra fields; auto-detected when a `.json` has `vaults` |
+| 1Password 1PUX (`.1pux`) | vaults → groups, login fields, notes, URLs, section fields |
+| KeePass 1 KDB (`.kdb`) | AES-256 and Twofish; groups/levels, entries, attachments, auto-type lines, packed timestamps; the KDB meta streams are hidden like KeePassXC does |
+| KeePass 2 KDBX (`.kdbx`) | opened with its password (and optional key file through the API) |
+
+Not yet supported: encrypted third-party exports (Bitwarden/Proton Pass
+encrypted JSON is rejected) and 1Password's legacy `.opvault` format.
+Everything else round-trips through the `keepass` crate and is covered by
+tests and real-tool cross-checks (see below).
 
 ## GUI (`kpxc-gui`)
 
@@ -178,6 +207,9 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 * **Icons** — all 69 KeePass standard icons (rasterized from the original
   KeePassXC SVG assets) plus database custom icons; pick per entry, add
   custom images from files, rendered in the group tree and entry table
+* **Import… / Export…** — the same formats as the CLI, through dialogs:
+  imports are merged into the open database (root group), exports warn that
+  the XML/CSV/HTML file is unencrypted
 * **Entry details** — copy username / password / URL to the clipboard,
   **live TOTP codes** for OTP entries (RFC 6238, refreshed every second,
   copy button), custom attributes, auto-type summary, attachments with
@@ -218,7 +250,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 55 checks; GUI kittest, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 61 checks; GUI kittest, import/export, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)
@@ -232,6 +264,7 @@ CLI test suites all green).
 | Icons: 69 standard icons + custom icon pool, rendered in tree/table, per-entry picker | ✅ tested (standard + custom persisted; rendered from the original KeePassXC assets) |
 | Multi-selection & batch operations (move to group, recycle) | ✅ tested (Cmd/Ctrl-click) |
 | Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
+| Import / export (XML, CSV, HTML; Bitwarden, Proton Pass, 1PUX, KeePass 1 KDB AES/Twofish, KDBX) | ✅ tested: XML round-trip, byte-identical CSV export, real `keepassxc-cli` imports our XML (entries + attachments) and our importer reads its XML; KeePassXC's own KDB test databases (AES and Twofish) import with entries/attachments; Bitwarden/Proton Pass/1PUX fixtures tested. ❌ 1Password legacy `.opvault` and encrypted third-party JSON |
 | Entry details + clipboard copy + attachment export | ✅ tested |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |

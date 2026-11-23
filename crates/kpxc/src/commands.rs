@@ -497,3 +497,67 @@ pub fn generate_password_opts(
         .map(|b| alphabet[(*b as usize) % alphabet.len()] as char)
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// export / import
+// ---------------------------------------------------------------------------
+
+/// Export to stdout in KeePassXC's XML, CSV or HTML format.
+pub fn export(db: &DbArgs, key: DatabaseKey, format: &str) -> Result<()> {
+    let database = saveutil::open(&db.database, key)?;
+    let out = match format.to_ascii_lowercase().as_str() {
+        "xml" | "keepass2" => crate::export::export_xml(&database)?,
+        "csv" => crate::export::export_csv(&database),
+        "html" => crate::export::export_html(&database, &db.database.display().to_string()),
+        other => bail!("unsupported export format {other:?} (use xml, csv or html)"),
+    };
+    use std::io::Write;
+    std::io::stdout().write_all(out.as_bytes())?;
+    Ok(())
+}
+
+/// Import a foreign format into a newly created database.
+pub fn import(
+    source: &std::path::Path,
+    target: &std::path::Path,
+    format: Option<&str>,
+    set_password: bool,
+    key_file: Option<PathBuf>,
+    stdin_is_tty: bool,
+) -> Result<()> {
+    if target.exists() {
+        bail!("file {} already exists", target.display());
+    }
+    let format = match format {
+        Some(name) => crate::import::ImportFormat::from_name(name)
+            .with_context(|| format!("unsupported import format {name:?}"))?,
+        None => crate::import::ImportFormat::from_path(source)
+            .with_context(|| format!("cannot detect the format of {} (use --format)", source.display()))?,
+    };
+    // Encrypted source formats prompt for their own password first.
+    let source_password = match format {
+        crate::import::ImportFormat::Kdb | crate::import::ImportFormat::Kdbx => {
+            Some(key::read_password(&source.display().to_string(), stdin_is_tty)?)
+        }
+        _ => None,
+    };
+    let mut imported = crate::import::import_file(source, source_password.as_deref(), None)?;
+
+    let mut key = DatabaseKey::new();
+    if set_password {
+        let pw = key::read_new_password_confirm(stdin_is_tty)?;
+        key = key.with_password(&pw);
+    }
+    if let Some(kf) = &key_file {
+        key::ensure_key_file(kf)?;
+        let mut f = std::fs::File::open(kf)?;
+        key = key.with_keyfile(&mut f)?;
+    }
+    if !set_password && key_file.is_none() {
+        bail!("no key is set for the imported database (use --set-password or --set-key-file)");
+    }
+    ensure_writable_version(&mut imported);
+    saveutil::save(target, &imported, key)?;
+    println!("Successfully imported {} into {}", format.label(), target.display());
+    Ok(())
+}

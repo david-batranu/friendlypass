@@ -117,6 +117,35 @@ pub enum Command {
         /// Path of the group to add (e.g. "Web/Sub")
         group: String,
     },
+    /// Export the database to an unencrypted file (XML, CSV or HTML)
+    Export {
+        #[command(flatten)]
+        db: DbArgs,
+
+        /// Output format: xml (KeePass 2), csv or html
+        #[arg(short = 'f', long, default_value = "xml")]
+        format: String,
+    },
+    /// Import an XML/CSV/Bitwarden/1PUX/KDB/KDBX file into a new database
+    Import {
+        /// File to import
+        source: PathBuf,
+
+        /// Path of the new database
+        database: PathBuf,
+
+        /// Format (xml, csv, bitwarden, 1pux, kdb, kdbx); auto-detected by default
+        #[arg(short = 'f', long)]
+        format: Option<String>,
+
+        /// Set (prompt for) a password for the new database
+        #[arg(short = 'p', long = "set-password")]
+        set_password: bool,
+
+        /// Set (or create) a key file for the new database
+        #[arg(short = 'k', long = "set-key-file")]
+        key_file: Option<PathBuf>,
+    },
     /// Export an attachment of an entry
     AttachmentExport {
         #[command(flatten)]

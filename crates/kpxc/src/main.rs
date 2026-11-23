@@ -62,6 +62,17 @@ fn main() -> anyhow::Result<()> {
             let key = key::build_key(&db, stdin_is_tty)?;
             commands::mkdir(&db, key, &group)
         }
+        Command::Export { db, format } => {
+            let key = key::build_key(&db, stdin_is_tty)?;
+            commands::export(&db, key, &format)
+        }
+        Command::Import {
+            source,
+            database,
+            format,
+            set_password,
+            key_file,
+        } => commands::import(&source, &database, format.as_deref(), set_password, key_file, stdin_is_tty),
         Command::AttachmentExport {
             db,
             entry,

@@ -20,6 +20,9 @@
 
 pub mod cli;
 pub mod commands;
+pub mod export;
+pub mod import;
+pub mod kdb;
 pub mod keeshare;
 pub mod keeshare_signed;
 pub mod key;

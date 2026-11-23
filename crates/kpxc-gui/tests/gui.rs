@@ -1654,6 +1654,70 @@ fn recent_databases_are_remembered_across_launches() {
 }
 
 // ---------------------------------------------------------------------------
+// import / export
+// ---------------------------------------------------------------------------
+
+#[test]
+fn import_export_dialogs_and_keepass1_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = db_path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1400.0, 1000.0));
+    harness.run();
+
+    let before = harness.state().db.as_ref().unwrap().num_entries();
+
+    // Export the whole database as KeePass 2 XML (the default format).
+    let xml_path = dir.path().join("export.xml");
+    harness.get_by_label("Export…").click();
+    harness.run();
+    replace_text(&mut harness, "Export to:", &xml_path.display().to_string());
+    harness.get_by_label("Export now").click();
+    harness.run();
+    let xml = std::fs::read_to_string(&xml_path).expect("XML export written");
+    assert!(xml.starts_with("<?xml"), "KeePass XML header");
+    assert!(xml.contains("<KeePassFile>"));
+    assert!(xml.contains("Sample Entry"));
+
+    // Import it back: entries are merged into the open database.
+    harness.get_by_label("Import…").click();
+    harness.run();
+    replace_text(
+        &mut harness,
+        "File to import:",
+        &xml_path.display().to_string(),
+    );
+    harness.get_by_label("Import now").click();
+    harness.run();
+    let after = harness.state().db.as_ref().unwrap().num_entries();
+    assert_eq!(after, before * 2, "XML import merged all entries");
+    assert!(harness.state().status.contains("Imported"));
+
+    // Import a real KeePass 1 (KDB) database with its password.
+    harness.get_by_label("Import…").click();
+    harness.run();
+    replace_text(
+        &mut harness,
+        "File to import:",
+        &fixture("keepass1.kdb").display().to_string(),
+    );
+    // Auto-detect sees the .kdb extension and asks for the source password.
+    replace_text(&mut harness, "Database password:", "masterpw");
+    harness.get_by_label("Import now").click();
+    harness.run();
+    assert!(
+        harness.state().db.as_ref().unwrap().iter_all_entries().any(|e| e
+            .get("Title")
+            == Some("Test entry")),
+        "KDB entry imported: {:?}",
+        harness.state().status
+    );
+}
+
+// ---------------------------------------------------------------------------
 // unit tests for the pure logic helpers
 // ---------------------------------------------------------------------------
 

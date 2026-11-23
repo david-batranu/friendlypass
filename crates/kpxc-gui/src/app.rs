@@ -1051,6 +1051,15 @@ impl App {
                     if ui.button("Database Info…").clicked() {
                         self.dialog = Dialog::DbInfo;
                     }
+                    if ui.button("Import…").clicked() {
+                        self.dialog = Dialog::Import(Box::default());
+                    }
+                    if ui.button("Export…").clicked() {
+                        self.dialog = Dialog::Export(Box::new(dialogs::ExportDialog::new(
+                            &self.db_path,
+                            "XML",
+                        )));
+                    }
                     if ui.button("Shortcuts…").clicked() {
                         self.dialog = Dialog::Shortcuts;
                     }

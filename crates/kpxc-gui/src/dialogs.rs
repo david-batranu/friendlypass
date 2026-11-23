@@ -41,6 +41,88 @@ pub enum Dialog {
     Shortcuts,
     /// Entry-table column configuration (visibility, order, width).
     Columns,
+    /// Import XML/CSV/Bitwarden/1PUX/KDB/KDBX into the open database.
+    Import(Box<ImportDialog>),
+    /// Export the open database to XML/CSV/HTML.
+    Export(Box<ExportDialog>),
+}
+
+/// State of the import dialog.
+pub struct ImportDialog {
+    pub path: String,
+    pub format: String,
+    pub password: String,
+    pub error: String,
+}
+
+impl Default for ImportDialog {
+    fn default() -> Self {
+        ImportDialog {
+            path: String::new(),
+            format: "Auto-detect".into(),
+            password: String::new(),
+            error: String::new(),
+        }
+    }
+}
+
+impl ImportDialog {
+    fn format(&self) -> Option<kpxc::import::ImportFormat> {
+        match self.format.as_str() {
+            "Auto-detect" => kpxc::import::ImportFormat::from_path(std::path::Path::new(self.path.trim())),
+            "KeePass 2 XML" => Some(kpxc::import::ImportFormat::Xml),
+            "CSV" => Some(kpxc::import::ImportFormat::Csv),
+            "Bitwarden JSON" => Some(kpxc::import::ImportFormat::Bitwarden),
+            "Proton Pass JSON" => Some(kpxc::import::ImportFormat::ProtonPass),
+            "1Password 1PUX" => Some(kpxc::import::ImportFormat::OnePux),
+            "KeePass 1 (KDB)" => Some(kpxc::import::ImportFormat::Kdb),
+            "KeePass 2 (KDBX)" => Some(kpxc::import::ImportFormat::Kdbx),
+            _ => None,
+        }
+    }
+
+    fn is_encrypted(&self) -> bool {
+        matches!(
+            self.format(),
+            Some(kpxc::import::ImportFormat::Kdb | kpxc::import::ImportFormat::Kdbx)
+        )
+    }
+}
+
+/// State of the export dialog.
+pub struct ExportDialog {
+    pub path: String,
+    pub format: String,
+    pub error: String,
+}
+
+impl ExportDialog {
+    pub fn new(database_path: &str, format: &str) -> Self {
+        let mut dialog = ExportDialog {
+            path: String::new(),
+            format: format.to_owned(),
+            error: String::new(),
+        };
+        dialog.update_default_path(database_path);
+        dialog
+    }
+
+    fn update_default_path(&mut self, database_path: &str) {
+        let ext = match self.format.as_str() {
+            "CSV" => "csv",
+            "HTML" => "html",
+            _ => "xml",
+        };
+        let stem = std::path::Path::new(database_path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "database".into());
+        let dir = std::path::Path::new(database_path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        self.path = dir.join(format!("{stem}.{ext}")).display().to_string();
+    }
 }
 
 /// State of the KeeShare dialog.
@@ -588,6 +670,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             | Dialog::BatchMove(_)
             | Dialog::ShareGroup(_)
             | Dialog::Columns
+            | Dialog::Import(_)
+            | Dialog::Export(_)
     );
     let enter_key = dialog_open && enter_applies && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     let cmd_enter_key = matches!(app.dialog, Dialog::EntryEdit(_))
@@ -1860,6 +1944,203 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if !close_clicked && open {
                 app.dialog = Dialog::Columns;
+            }
+        }
+        Dialog::Import(mut d) => {
+            let mut open = true;
+            let mut import_clicked = false;
+            let mut cancelled = false;
+            egui::Window::new("Import")
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(860.0)
+                .show(ctx, |ui| {
+                    form_row(ui, "File to import:", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.path)
+                                .hint_text("/path/to/export.xml")
+                                .desired_width(520.0),
+                        );
+                        r.labelled_by(id);
+                    });
+                    if ui.button("Browse…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("KeePass XML", &["xml"])
+                            .add_filter("CSV", &["csv"])
+                            .add_filter("JSON", &["json"])
+                            .add_filter("1Password 1PUX", &["1pux"])
+                            .add_filter("KeePass databases", &["kdb", "kdbx"])
+                            .pick_file()
+                        {
+                            d.path = p.display().to_string();
+                        }
+                    }
+                    form_row(ui, "Format:", |ui, id| {
+                        let resp = egui::ComboBox::from_id_salt("import-format")
+                            .selected_text(d.format.clone())
+                            .show_ui(ui, |ui| {
+                                for option in [
+                                    "Auto-detect",
+                                    "KeePass 2 XML",
+                                    "CSV",
+                                    "Bitwarden JSON",
+                                    "Proton Pass JSON",
+                                    "1Password 1PUX",
+                                    "KeePass 1 (KDB)",
+                                    "KeePass 2 (KDBX)",
+                                ] {
+                                    ui.selectable_value(&mut d.format, option.into(), option);
+                                }
+                            });
+                        resp.response.labelled_by(id);
+                    });
+                    if d.is_encrypted() {
+                        form_row(ui, "Database password:", |ui, id| {
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut d.password)
+                                    .password(true)
+                                    .desired_width(520.0),
+                            );
+                            r.labelled_by(id);
+                        });
+                    }
+                    ui.label(
+                        "The imported entries are merged into the current database (root group). \
+                         XML, CSV, Bitwarden JSON and 1PUX are unencrypted; KDB/KDBX need their password.",
+                    );
+                    if !d.error.is_empty() {
+                        ui.colored_label(egui::Color32::RED, &d.error);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                        if ui.button("Import now").clicked() {
+                            import_clicked = true;
+                        }
+                    });
+                });
+            if import_clicked {
+                let path = std::path::PathBuf::from(d.path.trim());
+                let password = (!d.password.is_empty()).then_some(d.password.as_str());
+                match kpxc::import::import_file(&path, password, None) {
+                    Ok(source) => {
+                        if let Some(db) = app.db.as_mut() {
+                            let root = db.root().id();
+                            let count = kpxc::import::merge_into(db, &source, root);
+                            app.dirty = true;
+                            app.status = format!("Imported {count} entries from {}", path.display());
+                            app.dialog = Dialog::None;
+                        } else {
+                            d.error = "No database is open".into();
+                            app.dialog = Dialog::Import(d);
+                        }
+                    }
+                    Err(e) => {
+                        d.error = format!("{e:#}");
+                        app.dialog = Dialog::Import(d);
+                    }
+                }
+            } else if !cancelled && open {
+                app.dialog = Dialog::Import(d);
+            }
+        }
+        Dialog::Export(mut d) => {
+            let mut open = true;
+            let mut export_clicked = false;
+            let mut cancelled = false;
+            egui::Window::new("Export (unencrypted)")
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(860.0)
+                .show(ctx, |ui| {
+                    form_row(ui, "Format:", |ui, id| {
+                        let resp = egui::ComboBox::from_id_salt("export-format")
+                            .selected_text(d.format.clone())
+                            .show_ui(ui, |ui| {
+                                for option in ["XML", "CSV", "HTML"] {
+                                    ui.selectable_value(&mut d.format, option.into(), option);
+                                }
+                            });
+                        resp.response.labelled_by(id);
+                    });
+                    form_row(ui, "Export to:", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.path).desired_width(520.0),
+                        );
+                        r.labelled_by(id);
+                    });
+                    if ui.button("Browse…").clicked() {
+                        let ext = match d.format.as_str() {
+                            "CSV" => "csv",
+                            "HTML" => "html",
+                            _ => "xml",
+                        };
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("Export", &[ext])
+                            .set_file_name(
+                                std::path::Path::new(&d.path)
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| format!("database.{ext}")),
+                            )
+                            .save_file()
+                        {
+                            d.path = p.display().to_string();
+                        }
+                    }
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0xe0, 0xa0, 0x40),
+                        "You are about to export your database to an unencrypted file. \
+                         This leaves passwords and sensitive information readable by anyone.",
+                    );
+                    if !d.error.is_empty() {
+                        ui.colored_label(egui::Color32::RED, &d.error);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                        if ui.button("Export now").clicked() {
+                            export_clicked = true;
+                        }
+                    });
+                });
+            if export_clicked {
+                let Some(db) = app.db.as_ref() else {
+                    d.error = "No database is open".into();
+                    app.dialog = Dialog::Export(d);
+                    return;
+                };
+                let rendered = match d.format.as_str() {
+                    "CSV" => Ok(kpxc::export::export_csv(db)),
+                    "HTML" => Ok(kpxc::export::export_html(
+                        db,
+                        &std::path::Path::new(&app.db_path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| app.db_path.clone()),
+                    )),
+                    _ => kpxc::export::export_xml(db).map_err(|e| format!("{e:#}")),
+                };
+                match rendered {
+                    Ok(out) => match std::fs::write(std::path::Path::new(d.path.trim()), out) {
+                        Ok(()) => {
+                            app.status = format!("Exported {} to {}", d.format, d.path);
+                            app.dialog = Dialog::None;
+                        }
+                        Err(e) => {
+                            d.error = format!("unable to write {}: {e}", d.path);
+                            app.dialog = Dialog::Export(d);
+                        }
+                    },
+                    Err(e) => {
+                        d.error = e;
+                        app.dialog = Dialog::Export(d);
+                    }
+                }
+            } else if !cancelled && open {
+                app.dialog = Dialog::Export(d);
             }
         }
     }
