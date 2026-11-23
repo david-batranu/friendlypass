@@ -31,6 +31,8 @@ behaviorally compatible with it.
 | `add`               | `add`                    | prompts / generates entry passwords      |
 | `mkdir`             | `mkdir`                  | nested paths (`Web/Sub`)                 |
 | `attachment-export` | `attachment-export`     | byte-identical export                    |
+| `attachment-add`    | —                        | attach a file to an entry (replaces a same-named one) |
+| `attachment-remove` | —                        | detach a file (the previous revision stays in entry history) |
 | `export`            | `export`                 | KeePass 2 XML (`-f xml`), CSV, HTML to stdout |
 | `import`            | `import`                 | XML, CSV, Bitwarden/Proton Pass JSON, 1PUX, KeePass 1 KDB (AES/Twofish), KDBX into a new database |
 
@@ -296,8 +298,12 @@ Linux). It mirrors KeePassXC's core GUI workflow:
   hidden from the generic attribute list
 * **Entry details** — copy username / password / URL to the clipboard,
   **live TOTP codes** for OTP entries (RFC 6238, refreshed every second,
-  copy button), custom attributes, auto-type summary, attachments with
-  export, edit, delete
+  copy button), custom attributes, auto-type summary, and an **Attachments**
+  card that manages files: **Add file…** (replaces a same-named attachment),
+  per-file **Export…**, and **Delete** with a confirmation. Every change
+  records an entry history revision and is saved with the database, so it is
+  undoable from *History…*, and files also ride along through Save As and
+  the CLI (`attachment-add` / `attachment-remove`)
 * **Entry editor** — full field editing with a built-in password
   generator and reveal toggle; edits record entry history like KeePassXC;
   custom attribute editor with per-attribute protection toggles;
@@ -353,7 +359,8 @@ CLI test suites all green).
 | 1Password-inspired light UI | ✅ three columns (library sidebar with Favorites, groups and tags, card list with month sections, details), light palette with blue accents, rounded cards, large entry details header, inline field cards, website/security/notes/attachments sections, last-edited footer, List/Table switch — kittest snapshots |
 | Sidebar tag filter | ✅ tags collected from all entries; clicking anywhere on a tag row filters the list to entries with that tag (click again or the × clears it); selecting a group/favorite clears the tag filter — kittest |
 | Entry details layout | ✅ details live in the rightmost column, not under the groups/list; the group/list dividers never cross it — kittest geometry check |
-| Entry details + clipboard copy + attachment export | ✅ tested (light card layout with username/password/TOTP, website, security fields, notes, attachments, last edited) |
+| Entry details + clipboard copy | ✅ tested (light card layout with username/password/TOTP, website, security fields, notes, attachments, last edited) |
+| Entry attachments | ✅ **manage** them from the details panel: add a file, replace one of the same name, export, delete (with confirmation); names are reduced to bare file names; sizes are shown per file and in total. Each change records entry history, survives save/re-open, and is covered by `tests/attachments.rs`; `keepassxc-cli` exports friendlypass-written attachments byte-identically |
 | Inline entry editing (right column) | ✅ **Edit…** replaces the details view with the editor; OK/Cancel pinned at the top while the form scrolls; kittest verifies the editor is in the right column and changes persist |
 | Passkeys | ✅ `KPEX_PASSKEY*` / `FRIENDLYPASS_PASSKEY*` entries show a **Passkey** chip; raw fields are hidden from the attribute list — kittest |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |

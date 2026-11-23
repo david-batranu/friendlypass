@@ -24,6 +24,8 @@ pub enum Dialog {
     /// Pending save that requires upgrading KDBX 3 → 4.1.
     ConfirmUpgrade,
     ConfirmDeleteEntry(EntryId),
+    /// Remove one attachment from an entry (undoable via entry history).
+    ConfirmDeleteAttachment(EntryId, String),
     ConfirmDeleteGroup(GroupId),
     /// Browse / restore an entry's history revisions.
     History(EntryId),
@@ -951,6 +953,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         app.dialog,
         Dialog::ConfirmUpgrade
             | Dialog::ConfirmDeleteEntry(_)
+            | Dialog::ConfirmDeleteAttachment(..)
             | Dialog::ConfirmDeleteGroup(_)
             | Dialog::ConfirmEmptyRecycleBin
             | Dialog::DbInfo
@@ -991,6 +994,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 let id = *id;
                 app.dialog = Dialog::None;
                 app.delete_entry(id);
+                return;
+            }
+            Dialog::ConfirmDeleteAttachment(id, name) => {
+                let (id, name) = (*id, name.clone());
+                app.dialog = Dialog::None;
+                if let Err(e) = app.remove_entry_attachment(id, &name) {
+                    app.status = format!("unable to remove attachment: {e:#}");
+                }
                 return;
             }
             Dialog::ConfirmDeleteGroup(id) => {
@@ -1394,6 +1405,45 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 app.delete_entry(id);
             } else if !cancelled && open {
                 app.dialog = Dialog::ConfirmDeleteEntry(id);
+            }
+        }
+        Dialog::ConfirmDeleteAttachment(id, name) => {
+            let mut open = true;
+            let mut confirmed = false;
+            let mut cancelled = false;
+            let size = app
+                .db
+                .as_ref()
+                .and_then(|db| db.entry(id))
+                .and_then(|e| e.attachment_by_name(&name).map(|a| a.data.get().len()));
+            egui::Window::new("Delete Attachment")
+                .open(&mut open)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("Remove the attachment \"{name}\" from this entry?"));
+                    if let Some(size) = size {
+                        ui.weak(format!("{} of data.", crate::app::format_size(size)));
+                    }
+                    ui.weak(
+                        "The entry's history keeps the previous version, so this can be \
+                         restored from Entry History.",
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                        if ui.button("Delete").clicked() {
+                            confirmed = true;
+                        }
+                    });
+                });
+            if confirmed {
+                if let Err(e) = app.remove_entry_attachment(id, &name) {
+                    app.status = format!("unable to remove attachment: {e:#}");
+                }
+            } else if !cancelled && open {
+                app.dialog = Dialog::ConfirmDeleteAttachment(id, name);
             }
         }
         Dialog::ConfirmDeleteGroup(id) => {

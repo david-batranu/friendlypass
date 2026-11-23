@@ -1088,6 +1088,92 @@ impl App {
         }
     }
 
+    /// Attach `data` to entry `id` under `name`, overwriting an attachment of
+    /// the same name (KeePassXC replaces rather than rejects duplicates).
+    /// Like every other mutation this records an entry history revision, so
+    /// the change can be undone from the history browser.
+    pub fn add_entry_attachment(
+        &mut self,
+        id: keepass::db::EntryId,
+        name: &str,
+        data: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        let name = attachment_name(name);
+        if name.is_empty() {
+            anyhow::bail!("the file name cannot be empty");
+        }
+        let Some(db) = self.db.as_mut() else {
+            anyhow::bail!("no database is open");
+        };
+        let Some(mut entry) = db.entry_mut(id) else {
+            anyhow::bail!("entry not found");
+        };
+        let bytes = data.len();
+        let replaced = entry.as_ref().attachment_by_name(&name).is_some();
+        entry.track_changes().as_mut().edit(|e| {
+            e.add_attachment(name.clone(), keepass::db::Value::unprotected(data));
+        });
+        self.dirty = true;
+        self.status = format!(
+            "{} attachment '{name}' ({bytes} bytes)",
+            if replaced { "Replaced" } else { "Added" }
+        );
+        Ok(())
+    }
+
+    /// Remove attachment `name` from entry `id`, recording a history revision.
+    /// Data shared with other entries is only detached here — the file is
+    /// deleted from the database once nothing references it.
+    pub fn remove_entry_attachment(
+        &mut self,
+        id: keepass::db::EntryId,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        let Some(db) = self.db.as_mut() else {
+            anyhow::bail!("no database is open");
+        };
+        let Some(mut entry) = db.entry_mut(id) else {
+            anyhow::bail!("entry not found");
+        };
+        if entry.as_ref().attachment_by_name(name).is_none() {
+            anyhow::bail!("no attachment named {name:?}");
+        }
+        entry.track_changes().as_mut().edit(|e| {
+            e.remove_attachment_by_name(name);
+        });
+        self.dirty = true;
+        self.status = format!("Removed attachment '{name}'");
+        Ok(())
+    }
+}
+
+/// Tidy a user- or OS-supplied file name into something that is safe as a
+/// KeePass attachment name: directories are stripped (the attachment name is
+/// not a path, so "/" in it breaks export on Unix and Windows alike).
+pub fn attachment_name(raw: &str) -> String {
+    let trimmed = raw.trim().trim_start_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // Split on both separators regardless of the host OS: a name coming from
+    // a Windows path on macOS must still lose its directories.
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| trimmed.to_owned())
+}
+
+/// Human-readable byte size ("512 bytes", "1.4 KB", "3.2 MB").
+pub fn format_size(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    match bytes as f64 {
+        b if b < KB => format!("{bytes} bytes"),
+        b if b < KB * KB => format!("{:.1} KB", b / KB),
+        b => format!("{:.1} MB", b / (KB * KB)),
+    }
 }
 
 /// Open a database with friendly error mapping (shared with the CLI layer).

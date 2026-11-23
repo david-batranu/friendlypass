@@ -86,6 +86,14 @@ check "keepassxc-cli opens the friendlypass-created database" \
     env sh -c "printf 'vpass\n' | '$CLI' ls v.kdbx"
 check "keepassxc-cli shows the friendlypass-added entry" \
     env sh -c "printf 'vpass\n' | '$CLI' show v.kdbx 'V Entry'"
+check "friendlypass attachment-add attaches a file (replacing same-named ones)" \
+    env sh -c "printf 'vpass\n' | '$FRIENDLYPASS' attachment-add v.kdbx 'V Entry' '$ROOT/README.md' -n notes.md && printf 'vpass\n' | '$FRIENDLYPASS' show v.kdbx 'V Entry' | grep -q 'Attachment: notes.md'"
+check "keepassxc-cli exports the friendlypass-added attachment byte-identically" \
+    env sh -c "printf 'vpass\n' | '$CLI' attachment-export v.kdbx 'V Entry' notes.md '$WORK/cpp-notes.md' && cmp '$WORK/cpp-notes.md' '$ROOT/README.md'"
+check "friendlypass attachment-remove drops it again" \
+    env sh -c "printf 'vpass\n' | '$FRIENDLYPASS' attachment-remove v.kdbx 'V Entry' notes.md && ! printf 'vpass\n' | '$FRIENDLYPASS' show v.kdbx 'V Entry' | grep -q 'Attachment: notes.md'"
+check "friendlypass GUI attachment tests (attachments card: add/replace/delete + history + persistence)" \
+    cargo test --release -p friendlypass-gui --manifest-path "$ROOT/Cargo.toml" --test attachments
 
 echo
 echo "== 4. cipher/KDF variants written by friendlypass open in keepassxc-cli =="

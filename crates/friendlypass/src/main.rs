@@ -82,5 +82,18 @@ fn main() -> anyhow::Result<()> {
             let key = key::build_key(&db, stdin_is_tty)?;
             commands::attachment_export(&db, key, &entry, &name, output)
         }
+        Command::AttachmentAdd {
+            db,
+            entry,
+            file,
+            name,
+        } => {
+            let key = key::build_key(&db, stdin_is_tty)?;
+            commands::attachment_add(&db, key, &entry, &file, name.as_deref())
+        }
+        Command::AttachmentRemove { db, entry, name } => {
+            let key = key::build_key(&db, stdin_is_tty)?;
+            commands::attachment_remove(&db, key, &entry, &name)
+        }
     }
 }

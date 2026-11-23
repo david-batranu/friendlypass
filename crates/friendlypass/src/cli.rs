@@ -161,6 +161,32 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
+    /// Attach a file to an entry (replaces an attachment of the same name)
+    AttachmentAdd {
+        #[command(flatten)]
+        db: DbArgs,
+
+        /// Title of the entry
+        entry: String,
+
+        /// File to attach
+        file: PathBuf,
+
+        /// Name to store it under (defaults to the file name)
+        #[arg(short = 'n', long)]
+        name: Option<String>,
+    },
+    /// Remove an attachment from an entry (undoable via entry history)
+    AttachmentRemove {
+        #[command(flatten)]
+        db: DbArgs,
+
+        /// Title of the entry
+        entry: String,
+
+        /// Name of the attachment
+        name: String,
+    },
 }
 
 #[derive(Args, Debug)]

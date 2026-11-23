@@ -1252,6 +1252,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     let mut share_clicked = false;
     let mut show_password = app.show_passwords;
     let mut export: Option<(String, Vec<u8>)> = None;
+    let mut attach: Option<AttachmentAction> = None;
 
     // 1Password-style top breadcrumb & action bar -----------------------
     ui.horizontal(|ui| {
@@ -1680,53 +1681,98 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     }
 
     // Attachments --------------------------------------------------------
-    if !d.attachments.is_empty() {
-        ui.add_space(18.0);
+    // Always shown (with an "Add file…" button) so the section is
+    // discoverable on entries that have no attachments yet.
+    ui.add_space(18.0);
+    ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("ATTACHMENTS")
                 .size(11.0)
                 .strong()
                 .color(crate::theme::MUTED),
         );
-        ui.add_space(4.0);
-        detail_card(ui, |ui| {
-            for (i, (name, size)) in d.attachments.iter().enumerate() {
-                if i > 0 {
-                    ui.add(egui::Separator::default().spacing(4.0));
-                }
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(name).size(14.0));
-                        ui.label(
-                            egui::RichText::new(format!("{size} bytes"))
-                                .size(11.0)
-                                .color(crate::theme::MUTED),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::theme::action_button(
-                            ui,
-                            &format!("export:{name}"),
-                            "Export…",
-                            crate::theme::ActionIcon::None,
-                            "Export this attachment to a file",
-                        )
-                        .clicked()
-                        {
-                            if let Some(data) = app
-                                .db
-                                .as_ref()
-                                .and_then(|db| db.entry(id))
-                                .and_then(|e| e.attachment_by_name(name).map(|a| a.data.get().clone()))
-                            {
-                                export = Some((name.clone(), data));
-                            }
-                        }
-                    });
-                });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if crate::theme::action_button(
+                ui,
+                &format!("attach-add:{id:?}"),
+                "Add file…",
+                crate::theme::ActionIcon::None,
+                "Attach a file to this entry",
+            )
+            .clicked()
+            {
+                attach = Some(AttachmentAction::Add);
             }
         });
-    }
+    });
+    ui.add_space(4.0);
+    detail_card(ui, |ui| {
+        if d.attachments.is_empty() {
+            ui.label(
+                egui::RichText::new("No attachments")
+                    .size(13.0)
+                    .color(crate::theme::MUTED),
+            );
+            return;
+        }
+        let total: usize = d.attachments.iter().map(|(_, size)| *size).sum();
+        for (i, (name, size)) in d.attachments.iter().enumerate() {
+            if i > 0 {
+                ui.add(egui::Separator::default().spacing(4.0));
+            }
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(name).size(14.0));
+                    ui.label(
+                        egui::RichText::new(crate::app::format_size(*size))
+                            .size(11.0)
+                            .color(crate::theme::MUTED),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::theme::action_button(
+                        ui,
+                        &format!("attach-delete:{name}"),
+                        "Delete",
+                        crate::theme::ActionIcon::None,
+                        "Remove this attachment from the entry",
+                    )
+                    .clicked()
+                    {
+                        attach = Some(AttachmentAction::Delete(name.clone()));
+                    }
+                    if crate::theme::action_button(
+                        ui,
+                        &format!("attach-export:{name}"),
+                        "Export…",
+                        crate::theme::ActionIcon::None,
+                        "Export this attachment to a file",
+                    )
+                    .clicked()
+                    {
+                        if let Some(data) = app
+                            .db
+                            .as_ref()
+                            .and_then(|db| db.entry(id))
+                            .and_then(|e| e.attachment_by_name(name).map(|a| a.data.get().clone()))
+                        {
+                            export = Some((name.clone(), data));
+                        }
+                    }
+                });
+            });
+        }
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "{} · {} in total",
+                pluralize(d.attachments.len(), "attachment"),
+                crate::app::format_size(total)
+            ))
+            .size(11.0)
+            .color(crate::theme::MUTED),
+        );
+    });
 
     // Footer -------------------------------------------------------------
     ui.add_space(20.0);
@@ -1818,6 +1864,44 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 Err(e) => app.status = format!("export failed: {e}"),
             }
         }
+    }
+    match attach {
+        Some(AttachmentAction::Add) => {
+            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match std::fs::read(&path) {
+                    Ok(data) => {
+                        if let Err(e) = app.add_entry_attachment(id, &name, data) {
+                            app.status = format!("unable to attach '{name}': {e:#}");
+                        }
+                    }
+                    Err(e) => app.status = format!("unable to read {}: {e}", path.display()),
+                }
+            }
+        }
+        Some(AttachmentAction::Delete(name)) => {
+            app.dialog = crate::dialogs::Dialog::ConfirmDeleteAttachment(id, name);
+        }
+        None => {}
+    }
+}
+
+/// What the attachments card asked for; applied after painting so `app` is
+/// not borrowed while rendering.
+pub enum AttachmentAction {
+    Add,
+    Delete(String),
+}
+
+/// "1 attachment" / "3 attachments".
+fn pluralize(n: usize, singular: &str) -> String {
+    if n == 1 {
+        format!("{n} {singular}")
+    } else {
+        format!("{n} {singular}s")
     }
 }
 

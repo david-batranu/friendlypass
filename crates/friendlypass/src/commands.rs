@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use keepass::config::{CompressionConfig, DatabaseVersion, InnerCipherConfig, KdfConfig, OuterCipherConfig};
 use keepass::db::{fields, Database, EntryRef, GroupId, GroupRef, Value};
 use keepass::DatabaseKey;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cli::{DbArgs, DbCreateArgs};
 use crate::key;
@@ -446,6 +446,98 @@ pub fn attachment_export(
         }
     }
     bail!("no attachment named {name:?} on entry {entry_title:?}");
+}
+
+// ---------------------------------------------------------------------------
+// attachment-add / attachment-remove
+// ---------------------------------------------------------------------------
+
+/// Tidy a path into a bare attachment name (no directories): attachment
+/// names are stored verbatim, so a "/" inside would break exports on every
+/// platform.
+pub fn attachment_name(raw: &std::ffi::OsStr) -> String {
+    let raw = raw.to_string_lossy();
+    raw.trim()
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+/// Attach `file` to the first entry titled `entry_title`. An attachment of
+/// the same name is replaced (KeePassXC behaviour) and, like any edit, the
+/// previous revision is kept in the entry history.
+pub fn attachment_add(
+    args: &DbArgs,
+    key: DatabaseKey,
+    entry_title: &str,
+    file: &Path,
+    name: Option<&str>,
+) -> Result<()> {
+    let data = std::fs::read(file)
+        .with_context(|| format!("unable to read {}", file.display()))?;
+    let name = match name {
+        Some(n) => attachment_name(std::ffi::OsStr::new(n)),
+        None => file
+            .file_name()
+            .map(attachment_name)
+            .unwrap_or_default(),
+    };
+    if name.is_empty() {
+        bail!("the attachment name cannot be empty");
+    }
+
+    let mut db = saveutil::open(&args.database, key.clone())?;
+    ensure_writable_version(&mut db);
+    let id = find_entry_by_title(&db, entry_title)?;
+    let bytes = data.len();
+    let replaced;
+    {
+        let mut entry = db.entry_mut(id).ok_or_else(|| anyhow::anyhow!("entry not found"))?;
+        replaced = entry.as_ref().attachment_by_name(&name).is_some();
+        entry.track_changes().as_mut().edit(|e| {
+            e.add_attachment(name.clone(), Value::unprotected(data));
+        });
+    }
+    saveutil::save(&args.database, &db, key)?;
+    println!(
+        "Successfully {} attachment {name} ({bytes} bytes) on entry {entry_title}.",
+        if replaced { "replaced" } else { "added" }
+    );
+    Ok(())
+}
+
+/// Remove attachment `name` from the first entry titled `entry_title`.
+pub fn attachment_remove(
+    args: &DbArgs,
+    key: DatabaseKey,
+    entry_title: &str,
+    name: &str,
+) -> Result<()> {
+    let mut db = saveutil::open(&args.database, key.clone())?;
+    ensure_writable_version(&mut db);
+    let id = find_entry_by_title(&db, entry_title)?;
+    {
+        let mut entry = db.entry_mut(id).ok_or_else(|| anyhow::anyhow!("entry not found"))?;
+        if entry.as_ref().attachment_by_name(name).is_none() {
+            bail!("no attachment named {name:?} on entry {entry_title:?}");
+        }
+        entry.track_changes().as_mut().edit(|e| {
+            e.remove_attachment_by_name(name);
+        });
+    }
+    saveutil::save(&args.database, &db, key)?;
+    println!("Successfully removed attachment {name} from entry {entry_title}.");
+    Ok(())
+}
+
+/// The id of the first (depth-first) entry whose title matches.
+fn find_entry_by_title(db: &Database, title: &str) -> Result<keepass::db::EntryId> {
+    db.iter_all_entries()
+        .find(|e| e.get(fields::TITLE) == Some(title))
+        .map(|e| e.id())
+        .ok_or_else(|| anyhow::anyhow!("no entry titled {title:?}"))
 }
 
 // ---------------------------------------------------------------------------
