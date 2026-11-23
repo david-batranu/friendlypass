@@ -117,6 +117,7 @@ crates/kpxc/          the CLI + library (commands, key handling, save logic)
 crates/kpxc-gui/      the cross-platform GUI (egui) + headless UI tests
 crates/kpxc/tests/    integration tests against the fixtures
 fixtures/             real .kdbx files (see passwords below)
+packaging/            macOS .app bundle, Linux .desktop entry
 verify.sh             end-to-end Rust <=> KeePassXC cross-verification
 ../keepassxc/         the original C++ (reference clone)
 ```
@@ -173,6 +174,26 @@ Not yet supported: encrypted third-party exports (Bitwarden/Proton Pass
 encrypted JSON is rejected) and 1Password's legacy `.opvault` format.
 Everything else round-trips through the `keepass` crate and is covered by
 tests and real-tool cross-checks (see below).
+
+### Launching without a terminal window
+
+A bare Unix executable is opened *through Terminal* when double-clicked in
+Finder. The GUI therefore ships a macOS app-bundle script:
+
+```console
+$ ./packaging/macos/package.sh          # builds target/release/KeePassXC-RS.app
+$ open target/release/KeePassXC-RS.app  # or double-click it in Finder
+```
+
+The app is launched by LaunchServices (parent process `launchd`, not
+Terminal), has an `Info.plist` with bundle id `org.keepassxc.rs`, an icon and
+an ad-hoc signature. Re-run the script after rebuilding.
+
+On **Windows**, release builds use the GUI subsystem
+(`windows_subsystem = "windows"`), so double-clicking `kpxc-gui.exe` does not
+open a console; debug builds keep it for logs. On **Linux**, install
+`packaging/linux/kpxc-gui.desktop` (`Terminal=false`) so the desktop launcher
+starts the GUI directly.
 
 ## GUI (`kpxc-gui`)
 

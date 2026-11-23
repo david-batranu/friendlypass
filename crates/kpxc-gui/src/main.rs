@@ -1,6 +1,10 @@
 //! `kpxc-gui` binary: the cross-platform (egui) GUI of the KeePassXC Rust
 //! migration.
 
+// On Windows, release builds are GUI-subsystem binaries: launching the .exe
+// does not open a console window. Debug builds keep the console for logs.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

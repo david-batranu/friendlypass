@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=KeePassXC-RS
+Comment=KeePassXC migrated to Rust
+Exec=kpxc-gui %f
+Icon=keepassxc
+Terminal=false
+Categories=Utility;Security;
+Keywords=password;keepass;kdbx;
+MimeType=application/x-keepass2;
