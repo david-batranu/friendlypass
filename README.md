@@ -69,7 +69,7 @@ layers; this project is the behavior/compatibility layer on top:
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **50/50 checks, all workspace tests green.**
+Current result: **51/51 checks, all workspace tests green.**
 
 ## Layout
 
@@ -181,7 +181,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 50 checks; GUI kittest, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 51 checks; GUI kittest, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)

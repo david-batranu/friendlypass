@@ -179,6 +179,22 @@ fn icon_picker(
     }
 }
 
+/// A form row: a fixed-width label followed by the field content.
+///
+/// egui 0.37's `Grid` clamps a widget's available width to the *previous
+/// frame's* column width, so a `TextEdit` inside a `Grid` stays at the tiny
+/// initial cell width and `desired_width` can never grow it. Forms therefore
+/// use manual horizontal rows with a fixed label column.
+fn form_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui::Id)) {
+    ui.horizontal(|ui| {
+        let label_resp = ui.add_sized(
+            [190.0, ui.spacing().interact_size.y],
+            egui::Label::new(label),
+        );
+        add(ui, label_resp.id);
+    });
+}
+
 /// Apply an icon choice to an entry (works for both new and existing entries).
 fn apply_entry_icon(entry: &mut keepass::db::EntryMut<'_>, choice: &IconChoice) {
     match choice {
@@ -555,69 +571,54 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             egui::Window::new(if d.entry_id.is_some() { "Edit Entry" } else { "New Entry" })
                 .open(&mut open)
                 .collapsible(false)
-                .default_width(820.0)
+                .default_width(880.0)
                 .show(ctx, |ui| {
-                    egui::Grid::new("entry-edit").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
-                        let l = ui.label("Title:");
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut d.title).desired_width(560.0),
-                        );
-                        r.labelled_by(l.id);
-                        ui.end_row();
-
-                        let l = ui.label("UserName:");
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut d.username).desired_width(560.0),
-                        );
-                        r.labelled_by(l.id);
-                        ui.end_row();
-
-                        let l = ui.label("Password:");
+                    form_row(ui, "Title:", |ui, id| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.title).desired_width(600.0));
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "UserName:", |ui, id| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.username).desired_width(600.0));
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Password:", |ui, id| {
                         let r = ui.add(
                             egui::TextEdit::singleline(&mut d.password)
                                 .password(!d.show_password)
                                 .hint_text("password")
-                                .desired_width(560.0),
+                                .desired_width(600.0),
                         );
-                        r.labelled_by(l.id);
-                        ui.horizontal(|ui| {
-                            if ui.button("Generate").clicked() {
-                                d.password = kpxc::commands::generate_password_opts(24, true, true, true, true);
-                            }
-                            if ui
-                                .button(if d.show_password { "Hide" } else { "Show" })
-                                .on_hover_text("Show or hide the password")
-                                .clicked()
-                            {
-                                d.show_password = !d.show_password;
-                            }
-                        });
-                        ui.end_row();
-
-                        let l = ui.label("URL:");
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut d.url).desired_width(560.0),
-                        );
-                        r.labelled_by(l.id);
-                        ui.end_row();
-
-                        let l = ui.label("Tags:");
+                        r.labelled_by(id);
+                        if ui.button("Generate").clicked() {
+                            d.password = kpxc::commands::generate_password_opts(24, true, true, true, true);
+                        }
+                        if ui
+                            .button(if d.show_password { "Hide" } else { "Show" })
+                            .on_hover_text("Show or hide the password")
+                            .clicked()
+                        {
+                            d.show_password = !d.show_password;
+                        }
+                    });
+                    form_row(ui, "URL:", |ui, id| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.url).desired_width(600.0));
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Tags:", |ui, id| {
                         let r = ui.add(
                             egui::TextEdit::singleline(&mut d.tags)
                                 .hint_text("comma,separated")
-                                .desired_width(560.0),
+                                .desired_width(600.0),
                         );
-                        r.labelled_by(l.id);
-                        ui.end_row();
-
-                        let l = ui.label("Notes:");
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Notes:", |ui, id| {
                         let r = ui.add(
                             egui::TextEdit::multiline(&mut d.notes)
-                                .desired_rows(4)
-                                .desired_width(560.0),
+                                .desired_rows(5)
+                                .desired_width(600.0),
                         );
-                        r.labelled_by(l.id);
-                        ui.end_row();
+                        r.labelled_by(id);
                     });
 
                     // --- custom attributes -----------------------------------
@@ -985,40 +986,53 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .collapsible(false)
                 .show(ctx, |ui| {
                     let mut validation_error = d.error.clone();
-                    egui::Grid::new("new-db").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                        let l = ui.label("File path:");
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.path).hint_text("/path/to/new-database.kdbx"));
-                        r.labelled_by(l.id);
-                        ui.end_row();
-                        let l = ui.label("Database name:");
-                        let r = ui.text_edit_singleline(&mut d.name);
-                        r.labelled_by(l.id);
-                        ui.end_row();
-                        let l = ui.label("Password:");
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.password).password(true));
-                        r.labelled_by(l.id);
-                        ui.end_row();
-                        let l = ui.label("Repeat password:");
-                        let r = ui.add(egui::TextEdit::singleline(&mut d.password_repeat).password(true));
-                        r.labelled_by(l.id);
-                        ui.end_row();
-                        let l = ui.label("Key file (optional):");
-                        let r = ui
-                            .add(egui::TextEdit::singleline(&mut d.key_file).hint_text("generated if missing"));
-                        r.labelled_by(l.id);
-                        ui.end_row();
-                        let l = ui.label("Argon2 iterations:");
+                    form_row(ui, "File path:", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.path)
+                                .hint_text("/path/to/new-database.kdbx")
+                                .desired_width(600.0),
+                        );
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Database name:", |ui, id| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(600.0));
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Password:", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.password)
+                                .password(true)
+                                .desired_width(600.0),
+                        );
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Repeat password:", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.password_repeat)
+                                .password(true)
+                                .desired_width(600.0),
+                        );
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Key file (optional):", |ui, id| {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut d.key_file)
+                                .hint_text("generated if missing")
+                                .desired_width(600.0),
+                        );
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Argon2 iterations:", |ui, id| {
                         let r = ui.add(egui::DragValue::new(&mut d.iterations).range(1..=1_000_000));
-                        r.labelled_by(l.id);
-                        ui.end_row();
-                        let l = ui.label("Argon2 memory (MiB):");
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Argon2 memory (MiB):", |ui, id| {
                         let r = ui.add(egui::DragValue::new(&mut d.memory_mib).range(8..=1024));
-                        r.labelled_by(l.id);
-                        ui.end_row();
-                        let l = ui.label("Argon2 parallelism:");
+                        r.labelled_by(id);
+                    });
+                    form_row(ui, "Argon2 parallelism:", |ui, id| {
                         let r = ui.add(egui::DragValue::new(&mut d.parallelism).range(1..=8));
-                        r.labelled_by(l.id);
-                        ui.end_row();
+                        r.labelled_by(id);
                     });
                     if let Err(e) = d.validate() {
                         validation_error = e;

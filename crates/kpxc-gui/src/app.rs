@@ -643,6 +643,19 @@ impl eframe::App for App {
     }
 }
 
+/// A form row on the unlock screen: fixed-width label + field content.
+/// (egui 0.37's Grid clamps TextEdit widths to the previous column width,
+/// leaving the fields tiny; manual rows honor `desired_width`.)
+fn unlock_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui::Id)) {
+    ui.horizontal(|ui| {
+        let label_resp = ui.add_sized(
+            [320.0, ui.spacing().interact_size.y],
+            egui::Label::new(label),
+        );
+        add(ui, label_resp.id);
+    });
+}
+
 impl App {
     /// The unlock / welcome screen.
     fn unlock_screen(&mut self, root: &mut Ui) {
@@ -655,65 +668,67 @@ impl App {
                 ui.add_space(24.0);
             });
 
-            egui::Grid::new("unlock-grid")
-                .num_columns(3)
-                .spacing([8.0, 8.0])
-                .show(ui, |ui| {
-                    let db_label = ui.label("Database file:");
-                    let path_resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.db_path).hint_text("/path/to/database.kdbx").desired_width(420.0),
-                    );
-                    path_resp.labelled_by(db_label.id);
-                    if ui.button("Browse…").clicked() {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .add_filter("KeePass database", &["kdbx", "kdb"])
-                            .pick_file()
-                        {
-                            self.db_path = p.display().to_string();
-                        }
+            // Manual rows (egui 0.37 Grid clamps TextEdit widths to the tiny
+            // previous column width; see `form_row` in dialogs.rs).
+            unlock_row(ui, "Database file:", |ui, id| {
+                let path_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.db_path)
+                        .hint_text("/path/to/database.kdbx")
+                        .desired_width(460.0),
+                );
+                path_resp.labelled_by(id);
+                if ui.button("Browse…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("KeePass database", &["kdbx", "kdb"])
+                        .pick_file()
+                    {
+                        self.db_path = p.display().to_string();
                     }
-                    ui.end_row();
+                }
+            });
 
-                    let pw_label = ui.label("Password:");
-                    let pw_resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.password)
-                            .password(true)
-                            .hint_text("password")
-                            .desired_width(420.0),
-                    );
-                    // Enter in the password field unlocks.
-                    let enter_unlock = pw_resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter));
-                    pw_resp.labelled_by(pw_label.id);
-                    if enter_unlock {
-                        self.try_unlock();
+            let mut unlock_on_enter = false;
+            unlock_row(ui, "Password:", |ui, id| {
+                let pw_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.password)
+                        .password(true)
+                        .hint_text("password")
+                        .desired_width(460.0),
+                );
+                // Enter in the password field unlocks.
+                unlock_on_enter =
+                    pw_resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                pw_resp.labelled_by(id);
+            });
+            if unlock_on_enter {
+                self.try_unlock();
+            }
+
+            unlock_row(ui, "Key file (optional):", |ui, id| {
+                let kf_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.key_file)
+                        .hint_text("/path/to/keyfile.keyx")
+                        .desired_width(460.0),
+                );
+                kf_resp.labelled_by(id);
+                if ui.button("Browse…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("Key file", &["keyx", "key"])
+                        .pick_file()
+                    {
+                        self.key_file = p.display().to_string();
                     }
-                    ui.label("");
-                    ui.end_row();
+                }
+            });
 
-                    let kf_label = ui.label("Key file (optional):");
-                    let kf_resp = ui
-                        .add(egui::TextEdit::singleline(&mut self.key_file).hint_text("/path/to/keyfile.keyx").desired_width(420.0));
-                    kf_resp.labelled_by(kf_label.id);
-                    if ui.button("Browse…").clicked() {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .add_filter("Key file", &["keyx", "key"])
-                            .pick_file()
-                        {
-                            self.key_file = p.display().to_string();
-                        }
-                    }
-                    ui.end_row();
-
-                    let cr_label = ui.label("Challenge-response secret (hex, optional):");
-                    let cr_resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.challenge_response)
-                            .hint_text("YubiKey-equivalent HMAC-SHA1 secret")
-                            .desired_width(420.0),
-                    );
-                    cr_resp.labelled_by(cr_label.id);
-                    ui.label("");
-                    ui.end_row();
-                });
+            unlock_row(ui, "Challenge-response secret (hex, optional):", |ui, id| {
+                let cr_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.challenge_response)
+                        .hint_text("YubiKey-equivalent HMAC-SHA1 secret")
+                        .desired_width(460.0),
+                );
+                cr_resp.labelled_by(id);
+            });
 
             ui.add_space(16.0);
             ui.vertical_centered(|ui| {

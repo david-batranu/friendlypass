@@ -193,6 +193,11 @@ check "GUI details panel shows the live TOTP code for OTP entries (kittest test)
     env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui details_show_current_totp_code"
 
 echo
+echo "== 13. Form layout (fields must be readable widths) =="
+check "entry-editor and unlock-screen text fields are wide (kittest rect measurements)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test layout"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1
