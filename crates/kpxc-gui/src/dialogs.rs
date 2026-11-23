@@ -39,6 +39,8 @@ pub enum Dialog {
     ShareGroup(Box<ShareDialog>),
     /// Keyboard shortcut reference.
     Shortcuts,
+    /// Entry-table column configuration (visibility, order, width).
+    Columns,
 }
 
 /// State of the KeeShare dialog.
@@ -585,6 +587,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             | Dialog::SaveAs(_)
             | Dialog::BatchMove(_)
             | Dialog::ShareGroup(_)
+            | Dialog::Columns
     );
     let enter_key = dialog_open && enter_applies && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     let cmd_enter_key = matches!(app.dialog, Dialog::EntryEdit(_))
@@ -622,7 +625,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 app.empty_recycle_bin();
                 return;
             }
-            Dialog::DbInfo | Dialog::Shortcuts | Dialog::SshAgent | Dialog::Browser => {
+            Dialog::DbInfo | Dialog::Shortcuts | Dialog::SshAgent | Dialog::Browser | Dialog::Columns => {
                 app.dialog = Dialog::None;
                 return;
             }
@@ -1775,6 +1778,90 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 app.dialog = Dialog::Shortcuts;
             }
         }
+        Dialog::Columns => {
+            let mut open = true;
+            let mut close_clicked = false;
+            let mut changed = false;
+            let mut cols = app.prefs.columns.clone();
+            egui::Window::new("Columns")
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(600.0)
+                .show(ctx, |ui| {
+                    ui.label(
+                        "Choose which columns are visible, reorder them, and set their width. \
+                         The width is the starting width; column borders can also be dragged.",
+                    );
+                    ui.add_space(6.0);
+                    let count = cols.len();
+                    for i in 0..count {
+                        ui.horizontal(|ui| {
+                            let label = format!("{} column", cols[i].id.label());
+                            let mut visible = cols[i].visible;
+                            if ui.checkbox(&mut visible, label).changed() {
+                                cols[i].visible = visible;
+                                changed = true;
+                            }
+                            ui.add_space(8.0);
+                            ui.label("Width:");
+                            let mut width = cols[i].width;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut width)
+                                        .range(60.0..=600.0)
+                                        .speed(5.0)
+                                        .suffix(" px"),
+                                )
+                                .changed()
+                            {
+                                cols[i].width = width;
+                                changed = true;
+                            }
+                            ui.add_space(8.0);
+                            if ui
+                                .add_enabled(i > 0, egui::Button::new("Up"))
+                                .on_hover_text("Move this column left")
+                                .clicked()
+                            {
+                                cols.swap(i - 1, i);
+                                changed = true;
+                            }
+                            if ui
+                                .add_enabled(i + 1 < count, egui::Button::new("Down"))
+                                .on_hover_text("Move this column right")
+                                .clicked()
+                            {
+                                cols.swap(i, i + 1);
+                                changed = true;
+                            }
+                        });
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Reset to defaults").clicked() {
+                            cols = crate::config::Preferences::default().columns;
+                            changed = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close_clicked = true;
+                        }
+                    });
+                });
+            if changed {
+                if !cols.iter().any(|c| c.visible) {
+                    if let Some(first) = cols.first_mut() {
+                        first.visible = true;
+                    }
+                    app.status = "At least one column must stay visible".into();
+                }
+                app.prefs.columns = cols;
+                app.reset_columns = true;
+                app.save_preferences();
+            }
+            if !close_clicked && open {
+                app.dialog = Dialog::Columns;
+            }
+        }
     }
 }
 
@@ -1854,4 +1941,6 @@ fn create_new_database(app: &mut App, d: &NewDb) {
     app.selected_group = None;
     app.selected_entry = None;
     app.status = format!("Created {}", app.db_path);
+    let created = app.db_path.clone();
+    app.record_recent_database(&created);
 }

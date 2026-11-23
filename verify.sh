@@ -205,6 +205,13 @@ check "shortcut reference window (toolbar button + F1) documents the full key ma
     sh -c "grep -q 'F1' '$ROOT/crates/kpxc-gui/src/dialogs.rs' && grep -q 'Shortcuts…' '$ROOT/crates/kpxc-gui/src/app.rs'"
 
 echo
+echo "== 15. Column customization + recent databases =="
+check "column layout (visibility, order, width) is configurable in the GUI and persists across restarts (kittest + config unit tests)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --lib config && timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui columns_are_customizable_and_persist"
+check "recent databases are remembered, prefilled on the next launch, listed on the welcome screen, clearable and unlockable (kittest)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui recent_databases_are_remembered_across_launches"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

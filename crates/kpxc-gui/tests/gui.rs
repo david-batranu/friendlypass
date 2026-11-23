@@ -311,6 +311,16 @@ fn replace_text(harness: &mut Harness<kpxc_gui::App>, label: &str, text: &str) {
     harness.run();
 }
 
+/// Focus a text field, select all and delete its contents.
+fn clear_text(harness: &mut Harness<kpxc_gui::App>, label: &str) {
+    harness.get_by_label(label).click();
+    harness.run();
+    harness.key_combination_modifiers(egui::Modifiers::COMMAND, &[egui::Key::A]);
+    harness.run();
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+}
+
 #[test]
 fn entry_history_browser_and_restore() {
     let dir = tempfile::tempdir().unwrap();
@@ -1453,6 +1463,194 @@ fn keyboard_shortcuts_and_dialog_keys() {
         search_harness.get_by_label("Search:").is_focused(),
         "Cmd+F focuses the search box"
     );
+}
+
+// ---------------------------------------------------------------------------
+// customizable columns and recent databases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn columns_are_customizable_and_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("gui-config.json");
+    let db_path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let db_path_str = db_path.display().to_string();
+
+    let mut harness = {
+        let config_path = config_path.clone();
+        Harness::new_eframe(move |_cc| {
+            let mut app = kpxc_gui::App::with_open_database(&db_path_str, key);
+            app.prefs = kpxc_gui::config::Preferences::load(&config_path);
+            app.config_path = Some(config_path);
+            app
+        })
+    };
+    harness.set_size(egui::Vec2::new(1300.0, 900.0));
+    harness.run();
+
+    // All columns are visible initially (the sorted column carries a marker).
+    for header in ["Title ^", "UserName", "Password", "URL", "Notes", "Tags"] {
+        harness.get_by_label(header);
+    }
+
+    // Open the Columns dialog and hide the URL column.
+    harness.get_by_label("Columns…").click();
+    harness.run();
+    harness.get_by_label("URL column").click();
+    harness.run();
+    harness.get_by_label("Close").click();
+    harness.run();
+
+    // The header disappeared and the choice was written to disk.
+    assert_eq!(
+        harness.query_all_by_label("URL").count(),
+        0,
+        "URL column is hidden"
+    );
+    let prefs = kpxc_gui::config::Preferences::load(&config_path);
+    let url = prefs
+        .columns
+        .iter()
+        .find(|c| c.id == kpxc_gui::config::ColumnId::Url)
+        .expect("URL column config");
+    assert!(!url.visible, "hidden URL column persisted: {url:?}");
+
+    // A fresh app (the next launch) restores the hidden column.
+    let mut second = {
+        let config_path = config_path.clone();
+        let db_path_str = db_path.display().to_string();
+        Harness::new_eframe(move |_cc| {
+            let key = DatabaseKey::new().with_password("testpassword");
+            let mut app = kpxc_gui::App::with_open_database(&db_path_str, key);
+            app.prefs = kpxc_gui::config::Preferences::load(&config_path);
+            app.config_path = Some(config_path);
+            app
+        })
+    };
+    second.set_size(egui::Vec2::new(1300.0, 900.0));
+    second.run();
+    assert_eq!(
+        second.query_all_by_label("URL").count(),
+        0,
+        "the hidden column survives a restart"
+    );
+    second.get_by_label("Title ^");
+    second.get_by_label("Tags");
+}
+
+#[test]
+fn column_order_and_widths_come_from_preferences() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("gui-config.json");
+    let db_path = fresh_sample(&dir);
+
+    // Save a layout where UserName is the first column and only Title and
+    // UserName are visible.
+    let mut prefs = kpxc_gui::config::Preferences::default();
+    for id in [
+        kpxc_gui::config::ColumnId::Password,
+        kpxc_gui::config::ColumnId::Url,
+        kpxc_gui::config::ColumnId::Notes,
+        kpxc_gui::config::ColumnId::Tags,
+    ] {
+        prefs.set_visible(id, false);
+    }
+    prefs.columns.swap(0, 1); // UserName before Title
+    prefs.columns[0].width = 321.0;
+    prefs.save(&config_path).unwrap();
+
+    let db_path_str = db_path.display().to_string();
+    let key = DatabaseKey::new().with_password("testpassword");
+    let mut harness = {
+        let config_path = config_path.clone();
+        Harness::new_eframe(move |_cc| {
+            let mut app = kpxc_gui::App::with_open_database(&db_path_str, key);
+            app.prefs = kpxc_gui::config::Preferences::load(&config_path);
+            app.config_path = Some(config_path);
+            app
+        })
+    };
+    harness.set_size(egui::Vec2::new(1300.0, 900.0));
+    harness.run();
+
+    // Only the saved columns exist, in the saved order.
+    assert_eq!(harness.query_all_by_label("URL").count(), 0);
+    assert_eq!(harness.query_all_by_label("Notes").count(), 0);
+    let user_x = harness.get_by_label("UserName").rect().left();
+    let title_x = harness.get_by_label("Title ^").rect().left();
+    assert!(
+        user_x < title_x,
+        "UserName should precede Title (x {user_x} vs {title_x})"
+    );
+}
+
+#[test]
+fn recent_databases_are_remembered_across_launches() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("gui-config.json");
+    let db_path = fresh_sample(&dir);
+    let expected = std::fs::canonicalize(&db_path).unwrap().display().to_string();
+
+    // First launch: unlock normally.
+    let mut first = {
+        let config_path = config_path.clone();
+        let db_path = db_path.display().to_string();
+        Harness::new_eframe(move |_cc| {
+            let mut app = kpxc_gui::App::with_config_path(config_path);
+            app.db_path = db_path;
+            app.password = "testpassword".into();
+            app
+        })
+    };
+    first.set_size(egui::Vec2::new(1200.0, 900.0));
+    first.run();
+    assert!(first.state().prefs.recent.is_empty());
+    first.get_by_label("Unlock").click();
+    first.run();
+    assert!(first.state().db.is_some(), "database unlocked");
+
+    // The successful open was persisted.
+    let prefs = kpxc_gui::config::Preferences::load(&config_path);
+    assert_eq!(prefs.recent, vec![expected.clone()]);
+    assert_eq!(prefs.last_db.as_deref(), Some(expected.as_str()));
+    drop(first);
+
+    // Second launch: the last database is prefilled and listed as recent.
+    let mut second = {
+        let config_path = config_path.clone();
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_config_path(config_path))
+    };
+    second.set_size(egui::Vec2::new(1200.0, 900.0));
+    second.run();
+    assert!(second.state().db.is_none(), "still locked on startup");
+    assert_eq!(second.state().db_path, expected);
+    second.get_by_label("Recent databases");
+    second.get_by_label("sample4.kdbx");
+
+    // Clearing the path and clicking the remembered database refills it.
+    clear_text(&mut second, "Database file:");
+    assert!(second.state().db_path.is_empty());
+    second.get_by_label("sample4.kdbx").click();
+    second.run();
+    assert_eq!(second.state().db_path, expected);
+
+    // The remembered database then unlocks with its password.
+    replace_text(&mut second, "Password:", "testpassword");
+    second.get_by_label("Unlock").click();
+    second.run();
+    assert!(second.state().db.is_some(), "recent database unlocks");
+
+    // "Clear recent list" empties the list and persists that.
+    // (Lock first: the button is on the welcome screen.)
+    second.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::L);
+    second.run();
+    second.get_by_label("Clear recent list").click();
+    second.run();
+    assert!(second.state().prefs.recent.is_empty());
+    let prefs = kpxc_gui::config::Preferences::load(&config_path);
+    assert!(prefs.recent.is_empty(), "cleared list persisted");
+    assert!(prefs.last_db.is_none(), "clearing also forgets the startup prefill");
 }
 
 // ---------------------------------------------------------------------------

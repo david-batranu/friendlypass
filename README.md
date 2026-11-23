@@ -54,6 +54,17 @@ layers; this project is the behavior/compatibility layer on top:
   small platform shim; only the software `LocalChallenge` component is used
   (no USB transport), so behavior is unchanged.
 
+## Preferences
+
+Display preferences persist as JSON in the platform configuration directory
+(`~/Library/Application Support/kpxc-gui/config.json` on macOS,
+`%APPDATA%\kpxc-gui\config.json` on Windows,
+`$XDG_CONFIG_HOME/kpxc-gui/config.json` on Linux; override with the
+`KPXC_GUI_CONFIG` environment variable). It stores the column layout and the
+recent-database list — no passwords or key material. Column widths are also
+persisted through eframe's egui-memory storage. A missing or corrupt config
+file falls back to defaults, so the app always starts.
+
 ## Keyboard shortcuts
 
 | Keys | Action |
@@ -95,7 +106,7 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **53/53 checks, all workspace tests green.**
+Current result: **55/55 checks, all workspace tests green.**
 
 ## Layout
 
@@ -207,7 +218,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 53 checks; GUI kittest, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 55 checks; GUI kittest, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)
@@ -225,6 +236,8 @@ CLI test suites all green).
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |
 | Keyboard shortcuts (KeePassXC-style: Cmd/Ctrl+C/B/U/T copy password/username/URL/TOTP, Cmd+F search, Cmd+N new entry, Cmd+Shift+N new group, Cmd+E/Enter edit, Cmd+H history, Cmd+G generator, Cmd+S save, Cmd+Shift+S save as, Cmd+L lock, Delete recycle, F1 shortcut reference; dialogs: Enter confirm, Escape cancel, Cmd+Enter apply editor) | ✅ implemented + tested (kittest key events exercise the real bindings) |
+| Customizable entry columns | ✅ **Columns…** dialog: show/hide each column (Title, UserName, Password, URL, Notes, Tags), reorder with Up/Down, set starting width, reset to defaults; layout is persisted in the GUI config and restored on the next launch (`egui_extras` table widths additionally persisted by eframe) — tested |
+| Remember previously opened databases | ✅ recent list (last 10, deduplicated, most recent first) on the welcome screen with click-to-select and "Clear recent list"; the last successfully opened/created/saved-as database is prefilled on the next launch; persisted as JSON — tested across two simulated launches |
 | Custom attributes with protection toggles | ✅ tested + C++ cross-checked |
 | Auto-type editor (default sequence, obfuscation, window associations, placeholder preview) | ✅ tested + C++ cross-checked |
 | Entry references ({REF:…}) — insertion, resolution, persistence | ✅ tested + C++ cross-checked (keepassxc-cli resolves GUI-written references) |

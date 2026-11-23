@@ -14,6 +14,7 @@
 pub mod app;
 pub mod autotype;
 pub mod browser;
+pub mod config;
 pub mod dialogs;
 pub mod icons;
 pub mod refs;

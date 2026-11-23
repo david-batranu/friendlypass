@@ -3,6 +3,7 @@
 use eframe::egui;
 use eframe::egui::{Align, Layout};
 use egui_extras::{Column, TableBuilder};
+use crate::config::ColumnId;
 use keepass::db::{fields, Database, EntryId, GroupId};
 
 use crate::app::{App, SortColumn};
@@ -395,23 +396,41 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
     let mut select: Option<EntryId> = None;
     let mut edit: Option<EntryId> = None;
 
+    // User-configurable columns (visibility, order, width), persisted in
+    // the GUI preferences.
+    let mut columns = app.column_layout();
+    if columns.is_empty() {
+        columns.push(crate::config::ColumnConfig {
+            id: ColumnId::Title,
+            visible: true,
+            width: ColumnId::Title.default_width(),
+        });
+    }
+
     let mut builder = TableBuilder::new(ui)
         .striped(true)
         .cell_layout(Layout::left_to_right(Align::Center))
         .min_scrolled_height(0.0);
+    if app.reset_columns {
+        // The Columns dialog changed visibility/order/width: drop the
+        // table's remembered widths so the new configuration applies.
+        builder.reset();
+        app.reset_columns = false;
+    }
 
     if searching {
-        builder = builder.column(Column::auto().resizable(true).clip(true));
+        builder = builder.column(Column::initial(140.0).resizable(true).clip(true));
     }
-    builder = builder
-        .column(Column::initial(160.0).resizable(true).clip(true))
-        .column(Column::initial(140.0).resizable(true).clip(true))
-        .column(Column::initial(110.0).resizable(true).clip(true))
-        .column(Column::initial(180.0).resizable(true).clip(true))
-        .column(Column::remainder().clip(true))
-        .column(Column::auto().clip(true));
+    for (i, c) in columns.iter().enumerate() {
+        let col = if i + 1 == columns.len() {
+            // The last column fills the remaining width.
+            Column::remainder().clip(true)
+        } else {
+            Column::initial(c.width).resizable(true).clip(true)
+        };
+        builder = builder.column(col);
+    }
 
-    let mut sort_headers: Vec<(SortColumn, bool)> = Vec::new();
     builder
         .header(24.0, |mut header| {
             if searching {
@@ -419,15 +438,9 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
                     ui.strong("Group");
                 });
             }
-            for col in [
-                SortColumn::Title,
-                SortColumn::Username,
-                SortColumn::Password,
-                SortColumn::Url,
-                SortColumn::Notes,
-                SortColumn::Tags,
-            ] {
+            for c in &columns {
                 header.col(|ui| {
+                    let col = sort_column_of(c.id);
                     let mark = if sort_column == col {
                         if sort_desc { " v" } else { " ^" }
                     } else {
@@ -441,7 +454,6 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
                             sort_desc = false;
                         }
                     }
-                    sort_headers.push((col, false));
                 });
             }
         })
@@ -453,62 +465,11 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
                             weak_label(ui, row_data.group.clone().unwrap_or_default());
                         });
                     }
-                    row.col(|ui| {
-                        ui.horizontal(|ui| {
-                            crate::icons::draw_icon(ui, &mut app.icon_cache, Some(&row_data.icon));
-                            // Draggable source: drag an entry onto a group in
-                            // the tree to move it (KeePassXC parity). The
-                            // title is both clickable and draggable.
-                            let in_set = app.selected_entries.contains(&row_data.id);
-                            let is_selected = app.selected_entry == Some(row_data.id);
-                            let title_resp = ui
-                                .add(
-                                    egui::Button::new(&row_data.title)
-                                        .frame(false)
-                                        .selected(in_set || is_selected)
-                                        .sense(egui::Sense::click_and_drag()),
-                                )
-                                .on_hover_text("click to select, double-click to edit, drag onto a group to move; Cmd/Ctrl-click for multi-selection");
-                            if title_resp.dragged() {
-                                egui::DragAndDrop::set_payload(ui.ctx(), row_data.id);
-                            }
-                            let multi = ui.ctx().input(|i| i.modifiers.command);
-                            if title_resp.clicked() {
-                                if multi {
-                                    if !app.selected_entries.remove(&row_data.id) {
-                                        app.selected_entries.insert(row_data.id);
-                                    }
-                                } else {
-                                    app.selected_entries.clear();
-                                    app.selected_entries.insert(row_data.id);
-                                }
-                                select = Some(row_data.id);
-                            }
-                            if title_resp.double_clicked() {
-                                select = Some(row_data.id);
-                                edit = Some(row_data.id);
-                            }
+                    for c in &columns {
+                        row.col(|ui| {
+                            entry_cell(ui, app, c.id, row_data, &mut select, &mut edit);
                         });
-                    });
-                    row.col(|ui| {
-                        weak_label(ui, &row_data.username);
-                    });
-                    row.col(|ui| {
-                        if app.show_passwords {
-                            weak_label(ui, &row_data.password);
-                        } else if !row_data.password.is_empty() {
-                            weak_label(ui, "••••••••");
-                        }
-                    });
-                    row.col(|ui| {
-                        weak_label(ui, &row_data.url);
-                    });
-                    row.col(|ui| {
-                        weak_label(ui, &row_data.notes);
-                    });
-                    row.col(|ui| {
-                        weak_label(ui, &row_data.tags);
-                    });
+                    }
 
                     let response = row.response();
                     if response.clicked() {
@@ -531,7 +492,88 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
     if let Some(id) = edit {
         app.edit_entry_dialog(id);
     }
-    let _ = sort_headers;
+}
+
+/// Map a configured column to the sortable field it represents.
+fn sort_column_of(id: ColumnId) -> SortColumn {
+    match id {
+        ColumnId::Title => SortColumn::Title,
+        ColumnId::UserName => SortColumn::Username,
+        ColumnId::Password => SortColumn::Password,
+        ColumnId::Url => SortColumn::Url,
+        ColumnId::Notes => SortColumn::Notes,
+        ColumnId::Tags => SortColumn::Tags,
+    }
+}
+
+/// Draw one entry-table cell for the given configured column.
+fn entry_cell(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    column: ColumnId,
+    row_data: &EntryRow,
+    select: &mut Option<EntryId>,
+    edit: &mut Option<EntryId>,
+) {
+    match column {
+        ColumnId::Title => {
+            ui.horizontal(|ui| {
+                crate::icons::draw_icon(ui, &mut app.icon_cache, Some(&row_data.icon));
+                // Draggable source: drag an entry onto a group in the tree to
+                // move it. The title is both clickable and draggable.
+                let in_set = app.selected_entries.contains(&row_data.id);
+                let is_selected = app.selected_entry == Some(row_data.id);
+                let title_resp = ui
+                    .add(
+                        egui::Button::new(&row_data.title)
+                            .frame(false)
+                            .selected(in_set || is_selected)
+                            .sense(egui::Sense::click_and_drag()),
+                    )
+                    .on_hover_text(
+                        "click to select, double-click to edit, drag onto a group to move; Cmd/Ctrl-click for multi-selection",
+                    );
+                if title_resp.dragged() {
+                    egui::DragAndDrop::set_payload(ui.ctx(), row_data.id);
+                }
+                let multi = ui.ctx().input(|i| i.modifiers.command);
+                if title_resp.clicked() {
+                    if multi {
+                        if !app.selected_entries.remove(&row_data.id) {
+                            app.selected_entries.insert(row_data.id);
+                        }
+                    } else {
+                        app.selected_entries.clear();
+                        app.selected_entries.insert(row_data.id);
+                    }
+                    *select = Some(row_data.id);
+                }
+                if title_resp.double_clicked() {
+                    *select = Some(row_data.id);
+                    *edit = Some(row_data.id);
+                }
+            });
+        }
+        ColumnId::UserName => {
+            weak_label(ui, &row_data.username);
+        }
+        ColumnId::Password => {
+            if app.show_passwords {
+                weak_label(ui, &row_data.password);
+            } else if !row_data.password.is_empty() {
+                weak_label(ui, "••••••••");
+            }
+        }
+        ColumnId::Url => {
+            weak_label(ui, &row_data.url);
+        }
+        ColumnId::Notes => {
+            weak_label(ui, &row_data.notes);
+        }
+        ColumnId::Tags => {
+            weak_label(ui, &row_data.tags);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

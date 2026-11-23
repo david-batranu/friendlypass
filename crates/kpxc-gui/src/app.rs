@@ -8,6 +8,7 @@ use keepass::DatabaseKey;
 use std::path::PathBuf;
 
 use crate::browser;
+use crate::config::{self, ColumnId, Preferences};
 use crate::dialogs::{self, Dialog};
 use crate::icons::IconCache;
 use keepass::db::EntryId;
@@ -87,6 +88,16 @@ pub struct App {
     /// The running browser-protocol server (KeePassXC-Browser integration).
     pub browser_handle: Option<kpxc_browser::ServerHandle>,
     pub browser_state: Option<kpxc_browser::SharedState>,
+
+    // -- persisted preferences ------------------------------------------
+    /// Column layout and the recent-databases list.
+    pub prefs: Preferences,
+    /// Where `prefs` are stored; `None` keeps them in memory only
+    /// (constructed with `App::default()`, e.g. in tests).
+    pub config_path: Option<PathBuf>,
+    /// Reset the table's persisted column widths on the next frame (set when
+    /// the Columns dialog changes the layout, so the new widths apply).
+    pub reset_columns: bool,
 }
 
 impl Default for App {
@@ -117,17 +128,70 @@ impl Default for App {
             ssh_socket: kpxc_ssh_agent::default_socket_path().display().to_string(),
             browser_handle: None,
             browser_state: None,
+            prefs: Preferences::default(),
+            config_path: None,
+            reset_columns: false,
         }
     }
 }
 
 impl App {
+    /// Application entry point: loads persisted preferences (column layout,
+    /// recent databases) and prefills the last database when no path was
+    /// given on the command line.
     pub fn new(initial_db: Option<String>) -> Self {
-        let mut app = App::default();
+        let mut app = match config::config_path() {
+            Some(path) => App::with_config_path(path),
+            None => App::default(),
+        };
         if let Some(path) = initial_db {
             app.db_path = path;
         }
         app
+    }
+
+    /// Load preferences from an explicit config file (used by tests and by
+    /// `KPXC_GUI_CONFIG`-style portable setups).
+    pub fn with_config_path(path: PathBuf) -> Self {
+        let mut app = App::default();
+        app.prefs = Preferences::load(&path);
+        app.config_path = Some(path);
+        if app.db_path.is_empty() {
+            if let Some(last) = &app.prefs.last_db {
+                app.db_path = last.clone();
+            }
+        }
+        app
+    }
+
+    /// Persist the current preferences (no-op when no config path is set).
+    pub fn save_preferences(&mut self) {
+        if let Some(path) = &self.config_path {
+            let _ = self.prefs.save(path);
+        }
+    }
+
+    /// Remember a successfully opened database in the recent list.
+    pub fn record_recent_database(&mut self, path: &str) {
+        self.prefs.record_recent(path);
+        self.save_preferences();
+    }
+
+    /// The saved/merged column layout (visible columns in display order).
+    pub fn column_layout(&self) -> Vec<config::ColumnConfig> {
+        let mut prefs = self.prefs.clone();
+        prefs.normalize();
+        prefs.columns.iter().filter(|c| c.visible).cloned().collect()
+    }
+
+    /// Toggle/column width edits from the Columns dialog.
+    pub fn set_column_visible(&mut self, id: ColumnId, visible: bool) {
+        if self.prefs.set_visible(id, visible) {
+            self.reset_columns = true;
+            self.save_preferences();
+        } else {
+            self.status = "At least one column must stay visible".into();
+        }
     }
 
     /// Open a database directly (used by tests and scripting entry points).
@@ -199,6 +263,8 @@ impl App {
                 self.selected_group = None;
                 self.selected_entry = None;
                 self.status = format!("Opened {}", self.db_path);
+                let opened = self.db_path.clone();
+                self.record_recent_database(&opened);
             }
             Err(e) => {
                 self.unlock_error = format!("{e:#}");
@@ -250,6 +316,8 @@ impl App {
             Ok(()) => {
                 if let Some(p) = new_path {
                     self.db_path = p;
+                    let saved = self.db_path.clone();
+                    self.record_recent_database(&saved);
                 }
                 self.dirty = false;
                 self.upgrade_confirmed = true;
@@ -798,6 +866,56 @@ impl App {
                 ui.add_space(24.0);
             });
 
+            // Recently opened databases (persisted between launches).
+            if !self.prefs.recent.is_empty() {
+                let mut chosen: Option<String> = None;
+                let mut clear = false;
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Recent databases").strong());
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            for path in self.prefs.recent.clone() {
+                                let p = std::path::Path::new(&path);
+                                let name = p
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.clone());
+                                let exists = p.exists();
+                                let label = if exists {
+                                    name
+                                } else {
+                                    format!("{name} (missing)")
+                                };
+                                if ui
+                                    .add_enabled(
+                                        exists,
+                                        egui::Button::new(label).frame(false),
+                                    )
+                                    .on_hover_text(&path)
+                                    .clicked()
+                                {
+                                    chosen = Some(path.clone());
+                                }
+                            }
+                        });
+                    });
+                    if ui.small_button("Clear recent list").clicked() {
+                        clear = true;
+                    }
+                });
+                if let Some(path) = chosen {
+                    self.db_path = path;
+                    self.password.clear();
+                    self.unlock_error.clear();
+                }
+                if clear {
+                    self.prefs.recent.clear();
+                    self.prefs.last_db = None;
+                    self.save_preferences();
+                }
+                ui.add_space(16.0);
+            }
+
             // Manual rows (egui 0.37 Grid clamps TextEdit widths to the tiny
             // previous column width; see `form_row` in dialogs.rs).
             unlock_row(ui, "Database file:", |ui, id| {
@@ -935,6 +1053,9 @@ impl App {
                     }
                     if ui.button("Shortcuts…").clicked() {
                         self.dialog = Dialog::Shortcuts;
+                    }
+                    if ui.button("Columns…").clicked() {
+                        self.dialog = Dialog::Columns;
                     }
                     if ui.button("SSH Agent…").clicked() {
                         self.dialog = Dialog::SshAgent;
