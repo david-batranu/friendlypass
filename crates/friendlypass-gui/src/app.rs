@@ -33,6 +33,17 @@ pub const COPIED_TTL: std::time::Duration = std::time::Duration::from_millis(120
 /// How long a toast notification stays on screen.
 pub const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(2600);
 
+/// What the idle auto-lock decided this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleLock {
+    /// Not idle long enough (or auto-lock is off / nothing is open).
+    Wait,
+    /// Idle and nothing would be lost: lock.
+    Lock,
+    /// Idle, but there are unsaved changes or an open editor: do not lock.
+    Postpone,
+}
+
 /// A transient toast notification (bottom-right corner of the window).
 pub struct Toast {
     pub text: String,
@@ -48,18 +59,38 @@ pub enum SortColumn {
     Url,
     Notes,
     Tags,
+    /// Last modification time (falls back to the creation time).
+    Modified,
 }
 
 impl SortColumn {
+    /// Every sortable column, in Sort-menu order.
+    pub const ALL: [SortColumn; 7] = [
+        SortColumn::Title,
+        SortColumn::Username,
+        SortColumn::Url,
+        SortColumn::Modified,
+        SortColumn::Tags,
+        SortColumn::Notes,
+        SortColumn::Password,
+    ];
+
     pub fn label(&self) -> &'static str {
         match self {
             SortColumn::Title => "Title",
-            SortColumn::Username => "UserName",
+            SortColumn::Username => "Username",
             SortColumn::Password => "Password",
             SortColumn::Url => "URL",
             SortColumn::Notes => "Notes",
             SortColumn::Tags => "Tags",
+            SortColumn::Modified => "Modified",
         }
+    }
+
+    /// The direction a fresh sort on this column starts with: newest first
+    /// for dates, A to Z for text.
+    pub fn default_desc(&self) -> bool {
+        matches!(self, SortColumn::Modified)
     }
 }
 
@@ -72,7 +103,17 @@ pub struct App {
     /// Optional local challenge-response secret (hex) — the software
     /// equivalent of a YubiKey HMAC-SHA1 response.
     pub challenge_response: String,
+    /// Short, human message shown under the password field after a failed
+    /// unlock ("Wrong password or key file.").
     pub unlock_error: String,
+    /// The full technical error behind `unlock_error` (hover text).
+    pub unlock_error_detail: String,
+    /// Focus (and select) the unlock password field on the next frame: set on
+    /// startup with a database path, after locking, and after a failed unlock.
+    pub focus_password: bool,
+    /// The unlock screen's "More options" (key file, challenge-response) are
+    /// expanded.
+    pub unlock_more_options: bool,
     /// Store the unlock key in the OS keychain and auto-unlock this database
     /// on startup.
     pub remember_unlock: bool,
@@ -124,6 +165,12 @@ pub struct App {
     pub selected_entry: Option<keepass::db::EntryId>,
     /// Multi-selection (Ctrl/Cmd-click) for batch operations.
     pub selected_entries: std::collections::HashSet<EntryId>,
+    /// Where a Shift-click range selection starts (the last plain or
+    /// Cmd-click).
+    pub selection_anchor: Option<EntryId>,
+    /// Scroll the list/table so the selected entry is visible (set by arrow
+    /// key navigation).
+    pub scroll_to_selected: bool,
     pub sort_column: SortColumn,
     pub sort_desc: bool,
     pub show_passwords: bool,
@@ -154,6 +201,17 @@ pub struct App {
     /// Reset the table's persisted column widths on the next frame (set when
     /// the Columns dialog changes the layout, so the new widths apply).
     pub reset_columns: bool,
+
+    // -- security ---------------------------------------------------------
+    /// Where copies go (the system clipboard; tests use a memory clipboard).
+    pub clipboard: Arc<dyn crate::clipboard::ClipboardBackend>,
+    /// The scheduled clipboard clear for the last copied value.
+    pub clipboard_pending: Option<crate::clipboard::PendingClear>,
+    /// Last time the user did anything (drives the idle auto-lock).
+    pub last_activity: std::time::Instant,
+    /// The idle auto-lock came due while there were unsaved changes and was
+    /// postponed (shown in the status bar until the user acts or saves).
+    pub auto_lock_postponed: bool,
 }
 
 impl Default for App {
@@ -164,6 +222,10 @@ impl Default for App {
             key_file: String::new(),
             challenge_response: String::new(),
             unlock_error: String::new(),
+            unlock_error_detail: String::new(),
+            // Startup: focus the password when a database is preselected.
+            focus_password: true,
+            unlock_more_options: false,
             remember_unlock: false,
             auto_unlock: false,
             inline_edit: None,
@@ -188,6 +250,8 @@ impl Default for App {
             sidebar_override: None,
             selected_entry: None,
             selected_entries: std::collections::HashSet::new(),
+            selection_anchor: None,
+            scroll_to_selected: false,
             sort_column: SortColumn::Title,
             sort_desc: false,
             show_passwords: false,
@@ -204,6 +268,10 @@ impl Default for App {
             prefs: Preferences::default(),
             config_path: None,
             reset_columns: false,
+            clipboard: Arc::new(crate::clipboard::SystemClipboard),
+            clipboard_pending: None,
+            last_activity: std::time::Instant::now(),
+            auto_lock_postponed: false,
         }
     }
 }
@@ -302,7 +370,7 @@ impl App {
             }
         }
 
-        match open_database(&path, &key) {
+        match open_database_checked(&path, &key) {
             Ok(db) => {
                 self.db = Some(db);
                 self.db_key = Some(key);
@@ -313,11 +381,14 @@ impl App {
                 self.selected_entry = None;
                 self.auto_unlock = true;
                 self.remember_unlock = true;
+                self.last_activity = std::time::Instant::now();
                 self.status = format!("Unlocked {path} automatically");
                 true
             }
             Err(e) => {
-                self.unlock_error = format!("Auto-unlock failed: {e}");
+                self.unlock_error = format!("Auto-unlock failed: {}", e.message());
+                self.unlock_error_detail = e.detail;
+                self.focus_password = true;
                 false
             }
         }
@@ -371,6 +442,16 @@ impl App {
     /// Attempt to unlock using the fields on the welcome screen.
     pub fn try_unlock(&mut self) {
         self.unlock_error.clear();
+        self.unlock_error_detail.clear();
+        self.try_unlock_inner();
+        if !self.unlock_error.is_empty() {
+            // Put the cursor back in the password field with the text
+            // selected, so the user can simply retype it.
+            self.focus_password = true;
+        }
+    }
+
+    fn try_unlock_inner(&mut self) {
 
         if self.db_path.trim().is_empty() {
             self.unlock_error = "Select a database file first.".into();
@@ -390,12 +471,18 @@ impl App {
                 Ok(mut f) => match key.with_keyfile(&mut f) {
                     Ok(k) => key = k,
                     Err(e) => {
-                        self.unlock_error = format!("unable to read key file: {e}");
+                        self.unlock_error = "The key file can't be used.".into();
+                        self.unlock_error_detail = format!("unable to read key file: {e}");
                         return;
                     }
                 },
                 Err(e) => {
-                    self.unlock_error = format!("unable to open key file: {e}");
+                    self.unlock_error = if e.kind() == std::io::ErrorKind::NotFound {
+                        "Key file not found.".into()
+                    } else {
+                        "The key file can't be read.".into()
+                    };
+                    self.unlock_error_detail = format!("unable to open key file {}: {e}", self.key_file);
                     return;
                 }
             }
@@ -405,13 +492,14 @@ impl App {
             match friendlypass::key::with_challenge_response(key, &self.challenge_response) {
                 Ok(k) => key = k,
                 Err(e) => {
-                    self.unlock_error = format!("{e:#}");
+                    self.unlock_error = "The challenge-response secret is not valid hex.".into();
+                    self.unlock_error_detail = format!("{e:#}");
                     return;
                 }
             }
         }
 
-        match open_database(&self.db_path, &key) {
+        match open_database_checked(&self.db_path, &key) {
             Ok(db) => {
                 self.db = Some(db);
                 self.db_key = Some(key);
@@ -421,13 +509,16 @@ impl App {
                 self.selected_group = None;
                 self.selected_entry = None;
                 self.status = format!("Opened {}", self.db_path);
+                self.last_activity = std::time::Instant::now();
+                self.auto_lock_postponed = false;
                 let opened = self.db_path.clone();
                 self.record_recent_database(&opened);
                 self.update_saved_secret(&opened);
                 self.password.clear();
             }
             Err(e) => {
-                self.unlock_error = format!("{e:#}");
+                self.unlock_error = e.message().to_owned();
+                self.unlock_error_detail = e.detail;
             }
         }
     }
@@ -486,7 +577,17 @@ impl App {
     }
 
     /// Lock the database and return to the unlock screen.
+    ///
+    /// Unsaved changes are discarded (the explicit Lock action and Cmd+L
+    /// always behaved this way); the idle auto-lock never calls this while
+    /// there are unsaved changes, see [`App::tick_idle_lock`].
     pub fn lock(&mut self) {
+        // A copied password must not outlive the unlocked session.
+        self.clear_clipboard_now();
+        self.focus_password = true;
+        self.auto_lock_postponed = false;
+        self.selection_anchor = None;
+        self.selected_entries.clear();
         self.db = None;
         self.db_key = None;
         self.dirty = false;
@@ -551,12 +652,103 @@ impl App {
         }
     }
 
-    /// Copy text to the system clipboard; reports failures in the status bar.
+    /// Copy text to the clipboard; reports failures in the status bar. With
+    /// auto-clear on (the default), the value is removed again after the
+    /// configured delay if the clipboard still holds it.
     pub fn copy_to_clipboard(&mut self, text: String) {
-        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-            Ok(()) => self.status = "Copied to clipboard".into(),
+        match self.clipboard.set_text(&text) {
+            Ok(()) => {
+                self.status = "Copied to clipboard".into();
+                self.clipboard_pending = self.prefs.clipboard_clear.then(|| {
+                    crate::clipboard::PendingClear::new(
+                        &text,
+                        std::time::Instant::now(),
+                        self.clipboard_clear_after(),
+                    )
+                });
+            }
             Err(e) => self.status = format!("clipboard unavailable: {e}"),
         }
+    }
+
+    /// How long a copied value stays on the clipboard.
+    pub fn clipboard_clear_after(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.prefs.clipboard_clear_secs.max(1)))
+    }
+
+    /// Clear the clipboard once the pending deadline passes (called every
+    /// frame, on the unlock screen too, so it also happens after locking).
+    /// Returns the outcome when a pending clear was resolved.
+    pub fn tick_clipboard(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<crate::clipboard::ClearOutcome> {
+        use crate::clipboard::{clear_if_due, ClearOutcome};
+        let pending = self.clipboard_pending.as_ref()?;
+        let outcome = clear_if_due(self.clipboard.as_ref(), pending, now, false);
+        match outcome {
+            ClearOutcome::NotDue => return None,
+            ClearOutcome::Cleared => self.status = "Clipboard cleared".into(),
+            ClearOutcome::Replaced | ClearOutcome::Failed => {}
+        }
+        self.clipboard_pending = None;
+        Some(outcome)
+    }
+
+    /// Clear our value from the clipboard right away (on lock).
+    fn clear_clipboard_now(&mut self) {
+        if let Some(pending) = self.clipboard_pending.take() {
+            let _ = crate::clipboard::clear_if_due(
+                self.clipboard.as_ref(),
+                &pending,
+                std::time::Instant::now(),
+                true,
+            );
+        }
+    }
+
+    /// What the idle auto-lock should do at `now`.
+    pub fn idle_lock_action(&self, now: std::time::Instant) -> IdleLock {
+        if self.db.is_none() || !self.prefs.auto_lock {
+            return IdleLock::Wait;
+        }
+        let limit = std::time::Duration::from_secs(u64::from(self.prefs.auto_lock_minutes) * 60);
+        if now.saturating_duration_since(self.last_activity) < limit {
+            return IdleLock::Wait;
+        }
+        if self.dirty || self.inline_edit.is_some() {
+            IdleLock::Postpone
+        } else {
+            IdleLock::Lock
+        }
+    }
+
+    /// Lock after the configured inactivity, unless that would throw away
+    /// work: with unsaved changes (or an open editor) the lock is postponed
+    /// and the status bar says so; it happens on the next idle period after
+    /// the changes are saved.
+    pub fn tick_idle_lock(&mut self, now: std::time::Instant) -> IdleLock {
+        let action = self.idle_lock_action(now);
+        match action {
+            IdleLock::Wait => {}
+            IdleLock::Lock => {
+                self.lock();
+                self.status = "Locked after inactivity".into();
+            }
+            IdleLock::Postpone => {
+                if !self.auto_lock_postponed {
+                    self.auto_lock_postponed = true;
+                    self.status =
+                        "Auto-lock postponed: save or discard your changes to allow it".into();
+                }
+            }
+        }
+        action
+    }
+
+    /// Record user activity (resets the idle timer).
+    pub fn note_activity(&mut self, now: std::time::Instant) {
+        self.last_activity = now;
     }
 
     /// True while `field_key` is showing its "Copied" confirmation.
@@ -571,17 +763,30 @@ impl App {
     /// details panel and queues a toast notification.
     pub fn note_copied(&mut self, field_key: &str, label: &str, text: String) {
         self.copy_to_clipboard(text);
-        if !self.status.starts_with("clipboard unavailable") {
-            self.status = format!("Copied {label} to clipboard");
+        if self.status.starts_with("clipboard unavailable") {
+            return;
         }
+        self.status = format!("Copied {label} to clipboard");
         self.copied_fields
             .insert(field_key.to_string(), std::time::Instant::now());
         self.toasts.push(Toast {
-            text: format!("{label} copied to clipboard"),
+            text: self.copy_toast_text(label),
             created: std::time::Instant::now(),
         });
         if self.toasts.len() > 3 {
             self.toasts.remove(0);
+        }
+    }
+
+    /// "Password copied — clears in 30 s" (or without the countdown when
+    /// auto-clear is off).
+    pub fn copy_toast_text(&self, label: &str) -> String {
+        match &self.clipboard_pending {
+            Some(_) => format!(
+                "{label} copied \u{2014} clears in {} s",
+                self.prefs.clipboard_clear_secs
+            ),
+            None => format!("{label} copied to clipboard"),
         }
     }
 
@@ -607,10 +812,10 @@ impl App {
                                 / TOAST_TTL.as_secs_f32();
                         let a = frac.clamp(0.0, 1.0);
                         egui::Frame::new()
-                            .fill(crate::theme::PANEL.gamma_multiply(a))
+                            .fill(crate::theme::p().panel.gamma_multiply(a))
                             .stroke(egui::Stroke::new(
                                 1.0,
-                                crate::theme::BORDER.gamma_multiply(a),
+                                crate::theme::p().border.gamma_multiply(a),
                             ))
                             .corner_radius(10)
                             .inner_margin(egui::Margin::symmetric(12, 8))
@@ -623,13 +828,13 @@ impl App {
                                     crate::theme::draw_check_icon(
                                         ui.painter(),
                                         r.center(),
-                                        crate::theme::GOOD.gamma_multiply(a),
+                                        crate::theme::p().good.gamma_multiply(a),
                                     );
                                     ui.add_space(4.0);
                                     ui.label(
                                         egui::RichText::new(&toast.text)
                                             .size(13.0)
-                                            .color(crate::theme::TEXT.gamma_multiply(a)),
+                                            .color(crate::theme::p().text.gamma_multiply(a)),
                                     );
                                 });
                             });
@@ -665,8 +870,59 @@ impl App {
             self.status = format!("This entry has no {label}");
             return;
         }
-        self.copy_to_clipboard(value);
-        self.status = format!("Copied {label} to clipboard");
+        let key = match field {
+            CopyField::Password => "password",
+            CopyField::Username => "username",
+            CopyField::Url => "url",
+            CopyField::Totp => "totp",
+        };
+        let pretty = match field {
+            CopyField::Password => "Password",
+            CopyField::Username => "Username",
+            CopyField::Url => "URL",
+            CopyField::Totp => "TOTP",
+        };
+        self.note_copied(key, pretty, value);
+        if !self.status.starts_with("clipboard unavailable") {
+            self.status = format!("Copied {label} to clipboard");
+        }
+    }
+
+    /// Whether entry `id` is a favorite (the `FRIENDLYPASS_FAVORITE` field,
+    /// or a "favorite"-style tag from other apps).
+    pub fn is_favorite(&self, id: EntryId) -> bool {
+        self.db
+            .as_ref()
+            .and_then(|db| db.entry(id))
+            .is_some_and(|e| crate::browser::entry_is_favorite(&e))
+    }
+
+    /// Star or unstar an entry. Stored as the `FRIENDLYPASS_FAVORITE` custom
+    /// field; unstarring also drops "favorite"-style tags, which would
+    /// otherwise keep the entry starred. Recorded in the entry history like
+    /// every other edit.
+    pub fn toggle_favorite(&mut self, id: EntryId) {
+        let now_favorite = !self.is_favorite(id);
+        let Some(db) = self.db.as_mut() else { return };
+        let Some(mut entry) = db.entry_mut(id) else { return };
+        let title = entry.as_ref().get(keepass::db::fields::TITLE).unwrap_or_default().to_owned();
+        entry.track_changes().as_mut().edit(|e| {
+            if now_favorite {
+                e.fields.insert(
+                    crate::browser::FAVORITE_FIELD.to_owned(),
+                    keepass::db::Value::unprotected("1".to_owned()),
+                );
+            } else {
+                e.fields.remove(crate::browser::FAVORITE_FIELD);
+                e.tags.retain(|t| !crate::browser::is_favorite_tag(t));
+            }
+        });
+        self.dirty = true;
+        self.status = if now_favorite {
+            format!("Added '{title}' to Favorites")
+        } else {
+            format!("Removed '{title}' from Favorites")
+        };
     }
 
     /// Handle global keyboard shortcuts on the database screen.
@@ -704,15 +960,17 @@ impl App {
             self.new_entry_dialog(self.selected_group);
         }
         if ctx.input_mut(|i| i.consume_key(shift, Key::N)) {
-            let parent = self
-                .selected_group
-                .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
-            self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
+            self.open_new_group_dialog();
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
             self.dialog = Dialog::Shortcuts;
         }
         if typing {
+            return;
+        }
+        // While the inline editor is open, Escape / Cmd+Enter belong to it
+        // and plain keys must not act on the list behind it.
+        if self.inline_edit.is_some() {
             return;
         }
         // Entry commands: only when no text field is focused, so Cmd+C in
@@ -739,6 +997,13 @@ impl App {
                 self.dialog = Dialog::History(id);
             }
         }
+        // Up/Down walk through the entries the list currently shows.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+            self.select_adjacent_entry(1);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+            self.select_adjacent_entry(-1);
+        }
         // Delete key (macOS Backspace) recycles the selected entry.
         let delete = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete))
             || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
@@ -754,9 +1019,63 @@ impl App {
             }
         }
         // Escape clears an active search.
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) && !self.search.is_empty() {
+        if !self.search.is_empty() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.search.clear();
         }
+    }
+
+    /// Move the selection `step` rows through the visible entries (arrow
+    /// keys). With nothing selected, Down picks the first entry and Up the
+    /// last. The list scrolls to keep the selection visible.
+    pub fn select_adjacent_entry(&mut self, step: isize) {
+        let ids = crate::browser::visible_entry_ids(self);
+        if ids.is_empty() {
+            return;
+        }
+        let current = self
+            .selected_entry
+            .and_then(|id| ids.iter().position(|e| *e == id));
+        let next = match current {
+            Some(i) => (i as isize + step).clamp(0, ids.len() as isize - 1) as usize,
+            None if step >= 0 => 0,
+            None => ids.len() - 1,
+        };
+        let id = ids[next];
+        self.selected_entry = Some(id);
+        self.selected_entries.clear();
+        self.selected_entries.insert(id);
+        self.selection_anchor = Some(id);
+        self.scroll_to_selected = true;
+    }
+
+    /// Apply a click on entry `id` in the list or table: plain click selects
+    /// it alone, Cmd/Ctrl toggles it in the multi-selection, Shift selects the
+    /// range from the anchor (the last plain/Cmd click) in list order.
+    pub fn click_entry(&mut self, id: EntryId, modifiers: egui::Modifiers) {
+        if modifiers.shift {
+            let ids = crate::browser::visible_entry_ids(self);
+            let anchor = self.selection_anchor.or(self.selected_entry).unwrap_or(id);
+            let a = ids.iter().position(|e| *e == anchor);
+            let b = ids.iter().position(|e| *e == id);
+            if let (Some(a), Some(b)) = (a, b) {
+                let (lo, hi) = (a.min(b), a.max(b));
+                self.selected_entries = ids[lo..=hi].iter().copied().collect();
+                self.selected_entry = Some(id);
+                // The anchor stays put so the range can be adjusted.
+                self.selection_anchor = Some(anchor);
+                return;
+            }
+        }
+        if modifiers.command {
+            if !self.selected_entries.remove(&id) {
+                self.selected_entries.insert(id);
+            }
+        } else {
+            self.selected_entries.clear();
+            self.selected_entries.insert(id);
+        }
+        self.selected_entry = Some(id);
+        self.selection_anchor = Some(id);
     }
 
     /// Open the entry editor for a new entry in the given group.
@@ -770,7 +1089,14 @@ impl App {
             .map(|db| crate::refs::ref_targets(db, None))
             .unwrap_or_default();
         let custom_icons = self.custom_icon_snapshot();
-        self.dialog = Dialog::EntryEdit(Box::new(dialogs::EntryEdit::new(parent, targets, custom_icons)));
+        // New entries use the same inline editor as edits (right column, or
+        // under the list in the stacked layout).
+        self.inline_edit = Some(Box::new(dialogs::EntryEdit::new(parent, targets, custom_icons)));
+        if !self.prefs.list_view {
+            self.prefs.list_view = true;
+            self.save_preferences();
+        }
+        self.dialog = Dialog::None;
     }
 
     /// Open the entry editor for an existing entry (loads its fields).
@@ -1130,76 +1456,95 @@ impl App {
         self.sidebar_override.unwrap_or(window_w >= SIDEBAR_AUTO_HIDE_WIDTH)
     }
 
-    /// The toolbar's action buttons (right to left): New Entry, Lock, Save and
-    /// the "More…" overflow menu.
+    /// The toolbar's action buttons (right to left): New Entry, the "+" menu
+    /// (other things to add), Lock, Save, and the gear menu (settings and
+    /// tools).
     fn toolbar_actions(&mut self, ui: &mut Ui) {
-        if ui.add(crate::theme::primary_button("New Entry")).clicked() {
+        if ui
+            .add(crate::theme::primary_button("New Entry"))
+            .on_hover_text("New entry (Cmd/Ctrl+N)")
+            .clicked()
+        {
             self.new_entry_dialog(self.selected_group);
         }
-        if ui.button("Lock").clicked() {
-            self.lock();
-        }
-        let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));
-        if save.clicked() {
-            self.request_save();
-        }
-        ui.menu_button("More…", |ui| {
-            if ui.button("New Group").clicked() {
-                let parent = self
-                    .selected_group
-                    .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
-                self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
+        crate::theme::icon_menu(ui, "add-menu", "Add", crate::theme::draw_plus_icon, |ui| {
+            if ui.button("New Group…").clicked() {
+                self.open_new_group_dialog();
                 ui.close();
             }
-            if ui.button("Password Generator…").clicked() {
-                self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
-                ui.close();
-            }
-            ui.separator();
             if ui.button("Import…").clicked() {
                 self.dialog = Dialog::Import(Box::default());
                 ui.close();
             }
-            if ui.button("Export…").clicked() {
-                self.dialog = Dialog::Export(Box::new(dialogs::ExportDialog::new(
-                    &self.db_path,
-                    "XML",
-                )));
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("Columns…").clicked() {
-                self.dialog = Dialog::Columns;
-                ui.close();
-            }
-            if ui.button("Database Info…").clicked() {
-                self.dialog = Dialog::DbInfo;
-                ui.close();
-            }
-            if ui.button("SSH Agent…").clicked() {
-                self.dialog = Dialog::SshAgent;
-                ui.close();
-            }
-            if ui.button("Browser…").clicked() {
-                self.dialog = Dialog::Browser;
-                ui.close();
-            }
-            ui.separator();
-            ui.checkbox(&mut self.show_passwords, "Show passwords");
-            if ui.button("Save As…").clicked() {
-                self.dialog = Dialog::SaveAs(self.db_path.clone());
-                ui.close();
-            }
-            if ui.button("Settings…").clicked() {
-                self.launch_at_login = startup::launch_at_login_enabled();
-                self.dialog = Dialog::Settings;
-                ui.close();
-            }
-            if ui.button("Shortcuts…").clicked() {
-                self.dialog = Dialog::Shortcuts;
-                ui.close();
-            }
         });
+        if ui
+            .button("Lock")
+            .on_hover_text("Lock the database (Cmd/Ctrl+L)")
+            .clicked()
+        {
+            self.lock();
+        }
+        if save_button(ui, self.dirty).clicked() {
+            self.request_save();
+        }
+        crate::theme::icon_menu(
+            ui,
+            "settings-menu",
+            "Settings and tools",
+            crate::theme::draw_gear_icon,
+            |ui| {
+                if ui.button("Settings…").clicked() {
+                    self.launch_at_login = startup::launch_at_login_enabled();
+                    self.dialog = Dialog::Settings;
+                    ui.close();
+                }
+                if ui.button("Columns…").clicked() {
+                    self.dialog = Dialog::Columns;
+                    ui.close();
+                }
+                if ui.button("Database Info…").clicked() {
+                    self.dialog = Dialog::DbInfo;
+                    ui.close();
+                }
+                if ui.button("SSH Agent…").clicked() {
+                    self.dialog = Dialog::SshAgent;
+                    ui.close();
+                }
+                if ui.button("Browser…").clicked() {
+                    self.dialog = Dialog::Browser;
+                    ui.close();
+                }
+                if ui.button("Shortcuts…").clicked() {
+                    self.dialog = Dialog::Shortcuts;
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Export…").clicked() {
+                    self.dialog = Dialog::Export(Box::new(dialogs::ExportDialog::new(
+                        &self.db_path,
+                        "XML",
+                    )));
+                    ui.close();
+                }
+                if ui.button("Save As…").clicked() {
+                    self.dialog = Dialog::SaveAs(self.db_path.clone());
+                    ui.close();
+                }
+                if ui.button("Password Generator…").clicked() {
+                    self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
+                    ui.close();
+                }
+                ui.separator();
+                ui.checkbox(&mut self.show_passwords, "Show passwords");
+            },
+        );
+    }
+
+    /// Open the New Group dialog under the selected group (or the root).
+    pub fn open_new_group_dialog(&mut self) {
+        let Some(db) = self.db.as_ref() else { return };
+        let parent = self.selected_group.unwrap_or_else(|| db.root().id());
+        self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
     }
 
     /// Record a user navigation step whenever the selected entry changes, so
@@ -1350,14 +1695,73 @@ pub fn format_size(bytes: usize) -> String {
     }
 }
 
+/// Why a database could not be opened, in terms a person can act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenFailure {
+    /// No file at that path.
+    Missing,
+    /// The file exists but cannot be read (permissions, I/O error).
+    Unreadable,
+    /// The password, key file or challenge-response secret is wrong.
+    Credentials,
+    /// Not a KeePass database (or a damaged / unsupported one).
+    NotADatabase,
+}
+
+/// A failed open: the category plus the full technical error.
+#[derive(Debug, Clone)]
+pub struct OpenError {
+    pub kind: OpenFailure,
+    pub detail: String,
+}
+
+impl OpenError {
+    /// The short message shown on the unlock screen.
+    pub fn message(&self) -> &'static str {
+        match self.kind {
+            OpenFailure::Missing => "Database file not found.",
+            OpenFailure::Unreadable => "The database file can't be read.",
+            OpenFailure::Credentials => "Wrong password or key file.",
+            OpenFailure::NotADatabase => "This file isn't a KeePass database, or it is damaged.",
+        }
+    }
+}
+
+/// Sort a `keepass` open error into an [`OpenFailure`]. KDBX 4 reports a wrong
+/// key as `IncorrectKey`; KDBX 3 only notices when decryption produces bad
+/// padding, so both mean "wrong credentials".
+fn classify_open_error(e: &keepass::db::DatabaseOpenError) -> OpenFailure {
+    use keepass::db::DatabaseOpenError as E;
+    let debug = format!("{e:?}").to_ascii_lowercase();
+    if debug.contains("incorrectkey") || debug.contains("padding") {
+        return OpenFailure::Credentials;
+    }
+    match e {
+        E::Key(_) | E::Cryptography(_) => OpenFailure::Credentials,
+        E::Io(_) => OpenFailure::Unreadable,
+        _ => OpenFailure::NotADatabase,
+    }
+}
+
+/// Open a database, classifying failures for the unlock screen.
+pub fn open_database_checked(path: &str, key: &DatabaseKey) -> Result<Database, OpenError> {
+    let mut file = std::fs::File::open(path).map_err(|e| OpenError {
+        kind: if e.kind() == std::io::ErrorKind::NotFound {
+            OpenFailure::Missing
+        } else {
+            OpenFailure::Unreadable
+        },
+        detail: format!("unable to open database file {path}: {e}"),
+    })?;
+    Database::open(&mut file, key.clone()).map_err(|e| OpenError {
+        kind: classify_open_error(&e),
+        detail: format!("unable to open database {path}: {e}"),
+    })
+}
+
 /// Open a database with friendly error mapping (shared with the CLI layer).
 pub fn open_database(path: &str, key: &DatabaseKey) -> anyhow::Result<Database> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| anyhow::anyhow!("unable to open database file {path}: {e}"))?;
-    match Database::open(&mut file, key.clone()) {
-        Ok(db) => Ok(db),
-        Err(e) => anyhow::bail!("unable to open database {path} (wrong password or key file?): {e}"),
-    }
+    open_database_checked(path, key).map_err(|e| anyhow::anyhow!("{} ({})", e.message(), e.detail))
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,7 +1770,33 @@ pub fn open_database(path: &str, key: &DatabaseKey) -> anyhow::Result<Database> 
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        crate::theme::setup(ui.ctx());
+        let ctx = ui.ctx().clone();
+        crate::theme::setup(&ctx, self.prefs.theme);
+        let now = std::time::Instant::now();
+
+        // Clipboard auto-clear runs on every screen, so a copied password is
+        // removed even after the database was locked.
+        self.tick_clipboard(now);
+        if let Some(pending) = &self.clipboard_pending {
+            ctx.request_repaint_after(pending.deadline.saturating_duration_since(now));
+        }
+
+        if self.db.is_some() {
+            // Any input counts as activity for the idle auto-lock.
+            if ctx.input(|i| !i.events.is_empty() || i.pointer.any_down()) {
+                self.note_activity(now);
+                self.auto_lock_postponed = false;
+            }
+            self.tick_idle_lock(now);
+            if self.db.is_some() && self.prefs.auto_lock {
+                let limit = std::time::Duration::from_secs(
+                    u64::from(self.prefs.auto_lock_minutes) * 60,
+                );
+                let due = (self.last_activity + limit).saturating_duration_since(now);
+                ctx.request_repaint_after(due.max(std::time::Duration::from_secs(1)));
+            }
+        }
+
         if self.db.is_none() {
             self.unlock_screen(ui);
         } else {
@@ -1375,27 +1805,120 @@ impl eframe::App for App {
     }
 }
 
+/// Width of the label column on the unlock card.
+const UNLOCK_LABEL_W: f32 = 130.0;
+
 /// A form row on the unlock screen: fixed-width label + field content.
 /// (egui 0.37's Grid clamps TextEdit widths to the previous column width,
 /// leaving the fields tiny; manual rows honor `desired_width`.)
 fn unlock_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui::Id)) {
     ui.horizontal(|ui| {
         let label_resp = ui.add_sized(
-            [270.0, ui.spacing().interact_size.y],
+            [UNLOCK_LABEL_W, ui.spacing().interact_size.y],
             egui::Label::new(
                 egui::RichText::new(label)
                     .size(13.5)
-                    .color(crate::theme::MUTED),
+                    .color(crate::theme::p().muted),
             ),
         );
         add(ui, label_resp.id);
     });
 }
 
+/// The toolbar Save button. With unsaved changes it is tinted with the
+/// accent colour and carries a dot; without, it is disabled. Its accessible
+/// name is "Save database" (the entry editor has its own "Save").
+fn save_button(ui: &mut egui::Ui, dirty: bool) -> egui::Response {
+    let pal = crate::theme::p();
+    let text = if dirty {
+        egui::RichText::new("     Save").color(pal.accent).strong()
+    } else {
+        egui::RichText::new("Save")
+    };
+    let mut button = egui::Button::new(text);
+    if dirty {
+        button = button
+            .fill(pal.accent_soft)
+            .stroke(egui::Stroke::new(1.0, pal.list_selected_stroke));
+    }
+    let resp = ui.add_enabled(dirty, button);
+    if dirty {
+        let dot = egui::pos2(resp.rect.left() + 14.0, resp.rect.center().y);
+        ui.painter().circle_filled(dot, 3.5, pal.accent);
+    }
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, dirty, "Save database")
+    });
+    if dirty {
+        resp.on_hover_text("Unsaved changes \u{2014} save the database (Cmd/Ctrl+S)")
+    } else {
+        resp.on_disabled_hover_text("No unsaved changes")
+    }
+}
+
+/// One recent-database row on the unlock screen: file name over the muted
+/// full path, the whole row clickable. Missing files are shown dimmed and
+/// cannot be picked.
+fn recent_database_row(ui: &mut egui::Ui, path: &str, selected: bool) -> bool {
+    let pal = crate::theme::p();
+    let p = std::path::Path::new(path);
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned());
+    let exists = p.exists();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 46.0),
+        egui::Sense::hover(),
+    );
+    let hovered = exists && ui.rect_contains_pointer(rect);
+    let fill = if selected {
+        pal.list_selected
+    } else if hovered {
+        pal.list_hover
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if fill != egui::Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(8), fill);
+    }
+    let mut content = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(12.0, 5.0)))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    content.spacing_mut().item_spacing.y = 1.0;
+    let name_color = if exists { pal.text } else { pal.muted };
+    content.add(
+        egui::Label::new(egui::RichText::new(&name).size(14.0).strong().color(name_color))
+            .truncate(),
+    );
+    let sub = if exists {
+        path.to_owned()
+    } else {
+        format!("Missing \u{2014} {path}")
+    };
+    content.add(
+        egui::Label::new(egui::RichText::new(sub).size(11.5).color(pal.muted)).truncate(),
+    );
+    let resp = ui.interact(
+        rect,
+        ui.scope_id().with(("recent-db", path)),
+        if exists { egui::Sense::click() } else { egui::Sense::hover() },
+    );
+    let resp = if exists {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp.on_hover_text("This file no longer exists")
+    };
+    exists && resp.clicked()
+}
+
 impl App {
     /// The unlock / welcome screen.
     fn unlock_screen(&mut self, root: &mut Ui) {
         let ctx = root.ctx().clone();
+        let pal = crate::theme::p();
         egui::CentralPanel::default().show(root, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("unlock-scroll")
@@ -1406,10 +1929,10 @@ impl App {
                 let key_icon =
                     crate::icons::IconSpec::Standard(crate::icons::DEFAULT_ENTRY_ICON);
                 egui::Frame::new()
-                    .fill(crate::theme::PANEL)
+                    .fill(pal.panel)
                     .corner_radius(16)
                     .inner_margin(egui::Margin::same(10))
-                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+                    .stroke(egui::Stroke::new(1.0, pal.border))
                     .show(ui, |ui| {
                         ui.set_width(44.0);
                         crate::icons::draw_icon_sized(
@@ -1424,81 +1947,38 @@ impl App {
                     egui::RichText::new(crate::brand::NAME)
                         .size(28.0)
                         .strong()
-                        .color(crate::theme::TEXT),
+                        .color(pal.text),
                 );
                 ui.label(
                     egui::RichText::new(crate::brand::TAGLINE)
                         .size(13.0)
-                        .color(crate::theme::MUTED),
+                        .color(pal.muted),
                 );
                 ui.add_space(22.0);
             });
 
-            // Recently opened databases (persisted between launches).
-            if !self.prefs.recent.is_empty() {
-                let mut chosen: Option<String> = None;
-                let mut clear = false;
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("Recent databases").strong());
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            for path in self.prefs.recent.clone() {
-                                let p = std::path::Path::new(&path);
-                                let name = p
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| path.clone());
-                                let exists = p.exists();
-                                let label = if exists {
-                                    name
-                                } else {
-                                    format!("{name} (missing)")
-                                };
-                                if ui
-                                    .add_enabled(
-                                        exists,
-                                        egui::Button::new(label).frame(false),
-                                    )
-                                    .on_hover_text(&path)
-                                    .clicked()
-                                {
-                                    chosen = Some(path.clone());
-                                }
-                            }
-                        });
-                    });
-                    if ui.small_button("Clear recent list").clicked() {
-                        clear = true;
-                    }
-                });
-                if let Some(path) = chosen {
-                    self.db_path = path;
-                    self.password.clear();
-                    self.unlock_error.clear();
-                }
-                if clear {
-                    self.prefs.recent.clear();
-                    self.prefs.last_db = None;
-                    self.save_preferences();
-                }
-                ui.add_space(16.0);
+            // Key file / challenge-response stay out of the way unless used.
+            if !self.key_file.trim().is_empty() || !self.challenge_response.trim().is_empty() {
+                self.unlock_more_options = true;
             }
 
+            let mut chosen: Option<String> = None;
+            let mut clear_recent = false;
             ui.vertical_centered(|ui| {
-                let card_w = (ui.available_width() - 32.0).clamp(520.0, 760.0);
+                let card_w = (ui.available_width() - 32.0).clamp(420.0, 620.0);
                 ui.allocate_ui_with_layout(
                     egui::vec2(card_w, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                 egui::Frame::new()
-                    .fill(crate::theme::PANEL)
+                    .fill(pal.panel)
                     .corner_radius(16)
                     .inner_margin(egui::Margin::symmetric(24, 22))
-                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+                    .stroke(egui::Stroke::new(1.0, pal.border))
                     .show(ui, |ui| {
-                        let inner_w = (card_w - 48.0).max(460.0);
+                        let inner_w = (card_w - 48.0).max(360.0);
                         ui.set_width(inner_w);
-                        let field_w = (inner_w - 270.0 - 92.0).max(180.0);
+                        let field_w = (inner_w - UNLOCK_LABEL_W - 92.0).max(180.0);
             // Manual rows (egui 0.37 Grid clamps TextEdit widths to the tiny
             // previous column width; see `form_row` in dialogs.rs).
             unlock_row(ui, "Database file:", |ui, id| {
@@ -1514,52 +1994,99 @@ impl App {
                         .pick_file()
                     {
                         self.db_path = p.display().to_string();
+                        self.focus_password = true;
                     }
                 }
             });
 
             let mut unlock_on_enter = false;
+            let mut password_changed = false;
             unlock_row(ui, "Password:", |ui, id| {
-                let pw_resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.password)
-                        .password(true)
-                        .hint_text("password")
-                        .desired_width(field_w),
-                );
+                let output = egui::TextEdit::singleline(&mut self.password)
+                    .password(true)
+                    .hint_text("password")
+                    .desired_width(field_w)
+                    .show(ui);
+                let pw_resp: egui::Response = output.response.response.clone();
+                // Autofocus when a database is already chosen (startup with a
+                // remembered database, after locking, after a failed unlock),
+                // with the old text selected so typing replaces it.
+                if self.focus_password {
+                    self.focus_password = false;
+                    if !self.db_path.trim().is_empty() {
+                        pw_resp.request_focus();
+                        let mut state = output.state;
+                        state.cursor.set_char_range(Some(
+                            egui::text::CCursorRange::select_all_str(&self.password),
+                        ));
+                        state.store(ui.ctx(), pw_resp.id);
+                    }
+                }
                 // Enter in the password field unlocks.
                 unlock_on_enter =
                     pw_resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                password_changed = pw_resp.changed();
                 pw_resp.labelled_by(id);
             });
+            if password_changed {
+                // Typing again dismisses the previous error.
+                self.unlock_error.clear();
+                self.unlock_error_detail.clear();
+            }
+            // The error sits right under the field it is about.
+            if !self.unlock_error.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(UNLOCK_LABEL_W + ui.spacing().item_spacing.x);
+                    let resp = ui.label(
+                        egui::RichText::new(&self.unlock_error)
+                            .size(13.0)
+                            .color(pal.danger),
+                    );
+                    if !self.unlock_error_detail.is_empty() {
+                        resp.on_hover_text(&self.unlock_error_detail);
+                    }
+                });
+            }
             if unlock_on_enter {
                 self.try_unlock();
             }
 
-            unlock_row(ui, "Key file (optional):", |ui, id| {
-                let kf_resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.key_file)
-                        .hint_text("/path/to/keyfile.keyx")
-                        .desired_width(field_w),
-                );
-                kf_resp.labelled_by(id);
-                if ui.button("Browse…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new()
-                        .add_filter("Key file", &["keyx", "key"])
-                        .pick_file()
-                    {
-                        self.key_file = p.display().to_string();
+            ui.add_space(4.0);
+            let mut more = self.unlock_more_options;
+            crate::theme::disclosure(ui, "unlock-more", "More options", &mut more);
+            self.unlock_more_options = more;
+            if more {
+                unlock_row(ui, "Key file:", |ui, id| {
+                    let kf_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.key_file)
+                            .hint_text("/path/to/keyfile.keyx (optional)")
+                            .desired_width(field_w),
+                    );
+                    kf_resp.labelled_by(id);
+                    if ui.button("Browse…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("Key file", &["keyx", "key"])
+                            .pick_file()
+                        {
+                            self.key_file = p.display().to_string();
+                        }
                     }
-                }
-            });
+                });
 
-            unlock_row(ui, "Challenge-response secret (hex, optional):", |ui, id| {
-                let cr_resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.challenge_response)
-                        .hint_text("YubiKey-equivalent HMAC-SHA1 secret")
-                        .desired_width(field_w),
-                );
-                cr_resp.labelled_by(id);
-            });
+                unlock_row(ui, "Challenge-response:", |ui, id| {
+                    let cr_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.challenge_response)
+                            .hint_text("HMAC-SHA1 secret in hex (optional)")
+                            .desired_width(field_w),
+                    );
+                    cr_resp
+                        .on_hover_text(
+                            "The YubiKey-equivalent HMAC-SHA1 secret, as hex. Leave empty \
+                             unless the database was protected with challenge-response.",
+                        )
+                        .labelled_by(id);
+                });
+            }
 
             ui.add_space(8.0);
             let mut remember = self.remember_unlock;
@@ -1602,7 +2129,7 @@ impl App {
                     egui::Button::new(
                         egui::RichText::new("Create new database…")
                             .size(13.0)
-                            .color(crate::theme::MUTED),
+                            .color(pal.muted),
                     )
                     .frame(false),
                 )
@@ -1610,22 +2137,123 @@ impl App {
             {
                 self.dialog = Dialog::NewDb(Box::new(dialogs::NewDb::default()));
             }
-
-            if !self.unlock_error.is_empty() {
-                ui.add_space(12.0);
-                ui.colored_label(crate::theme::DANGER, &self.unlock_error);
-            }
                     });
-                });
+
+                // Recently opened databases (persisted between launches).
+                if !self.prefs.recent.is_empty() {
+                    ui.add_space(18.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Recent databases")
+                                .size(12.0)
+                                .strong()
+                                .color(pal.muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(crate::theme::subtle_button("Clear recent list")).clicked() {
+                                clear_recent = true;
+                            }
+                        });
+                    });
+                    ui.add_space(2.0);
+                    egui::Frame::new()
+                        .fill(pal.panel)
+                        .corner_radius(12)
+                        .inner_margin(egui::Margin::same(6))
+                        .stroke(egui::Stroke::new(1.0, pal.border))
+                        .show(ui, |ui| {
+                            ui.set_width(card_w - 14.0);
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            for path in self.prefs.recent.clone() {
+                                let selected = path == self.db_path;
+                                if recent_database_row(ui, &path, selected) {
+                                    chosen = Some(path.clone());
+                                }
+                            }
+                        });
+                }
+                    },
+                );
             });
+            if let Some(path) = chosen {
+                self.db_path = path;
+                self.password.clear();
+                self.unlock_error.clear();
+                self.unlock_error_detail.clear();
+                self.focus_password = true;
+            }
+            if clear_recent {
+                self.prefs.recent.clear();
+                self.prefs.last_db = None;
+                self.save_preferences();
+            }
                 });
             dialogs::show(self, &ctx);
         });
     }
 
+    /// The search field (shared by the wide one-row and the narrow two-row
+    /// toolbar). It has no visible caption; the magnifier icon carries the
+    /// accessible name "Search" and labels the field.
+    fn search_field(&mut self, ui: &mut Ui, width: f32) {
+        let pal = crate::theme::p();
+        let (icon_rect, icon_resp) =
+            ui.allocate_exact_size(egui::vec2(15.0, 15.0), egui::Sense::hover());
+        let c = icon_rect.center() + egui::vec2(-1.0, -1.0);
+        ui.painter().circle_stroke(c, 4.3, egui::Stroke::new(1.5, pal.muted));
+        ui.painter().line_segment(
+            [c + egui::vec2(3.1, 3.1), c + egui::vec2(6.2, 6.2)],
+            egui::Stroke::new(1.6, pal.muted),
+        );
+        icon_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "Search"));
+        let search_resp = ui.add(
+            egui::TextEdit::singleline(&mut self.search)
+                .hint_text("Search all entries (Cmd/Ctrl+F)")
+                .desired_width(width),
+        );
+        if self.focus_search {
+            search_resp.request_focus();
+            self.focus_search = false;
+        }
+        search_resp.labelled_by(icon_resp.id);
+        if !self.search.is_empty() && ui.add(crate::theme::subtle_button("Clear")).clicked() {
+            self.search.clear();
+        }
+    }
+
+    /// The entry editor (new or existing entry) with its pinned header:
+    /// returns after applying or cancelling, which clears `inline_edit`.
+    fn inline_editor(&mut self, ui: &mut Ui, max_width: f32) {
+        let Some(mut d) = self.inline_edit.take() else { return };
+        let (mut apply, mut cancel) = dialogs::entry_edit_inline_header(ui, d.entry_id.is_none());
+        apply |= ui.ctx().input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+        });
+        cancel |= ui.ctx().input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+        });
+        if apply {
+            d.apply(self);
+            self.inline_edit = None;
+        } else if cancel {
+            self.inline_edit = None;
+            self.status = "Cancelled".into();
+        } else {
+            egui::ScrollArea::vertical()
+                .id_salt("inline-edit-scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_max_width((max_width - 14.0).max(220.0));
+                    dialogs::entry_edit_body(ui, self, &mut d);
+                });
+            self.inline_edit = Some(d);
+        }
+    }
+
     /// The main database screen: toolbar, group tree, entry list, details.
     fn database_screen(&mut self, root: &mut Ui) {
         let ctx = root.ctx().clone();
+        let pal = crate::theme::p();
 
         // Global keyboard shortcuts (skipped while dialogs or text fields
         // have focus).
@@ -1646,9 +2274,9 @@ impl App {
             .show_separator_line(false)
             .frame(
                 egui::Frame::new()
-                    .fill(crate::theme::PANEL)
+                    .fill(pal.panel)
                     .inner_margin(egui::Margin::symmetric(18, 10))
-                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+                    .stroke(egui::Stroke::new(1.0, pal.border)),
             )
             .show(root, |ui| {
                 // The toolbar has two arrangements: everything on one row when
@@ -1656,10 +2284,6 @@ impl App {
                 // narrow (otherwise the fixed-width search box was drawn over
                 // the action buttons).
                 let narrow = ui.available_width() < 860.0;
-                let db_name = std::path::Path::new(&self.db_path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "database".into());
 
                 ui.horizontal(|ui| {
                     let sidebar_visible = self.sidebar_visible(window_w);
@@ -1678,22 +2302,14 @@ impl App {
                         self.sidebar_override = Some(!sidebar_visible);
                     }
                     ui.add_space(6.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(crate::brand::NAME)
-                                .size(16.0)
-                                .strong()
-                                .color(crate::theme::TEXT),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{db_name}{}",
-                                if self.dirty { "  *" } else { "" }
-                            ))
-                            .size(11.0)
-                            .color(crate::theme::MUTED),
-                        );
-                    });
+                    // The app name only: the database name lives in the
+                    // sidebar header.
+                    ui.label(
+                        egui::RichText::new(crate::brand::NAME)
+                            .size(16.0)
+                            .strong()
+                            .color(pal.text),
+                    );
                     ui.add_space(16.0);
                     let can_back = !self.nav_back.is_empty();
                     let can_forward = !self.nav_forward.is_empty();
@@ -1707,27 +2323,7 @@ impl App {
                     }
                     if !narrow {
                         ui.add_space(6.0);
-                        crate::theme::draw_search_icon(ui, crate::theme::MUTED);
-                        let search_label = ui.label(
-                            egui::RichText::new("Search:")
-                                .size(11.0)
-                                .color(crate::theme::MUTED),
-                        );
-                        let search_resp = ui.add(
-                            egui::TextEdit::singleline(&mut self.search)
-                                .hint_text(format!("Search in {db_name}"))
-                                .desired_width(260.0),
-                        );
-                        if self.focus_search {
-                            search_resp.request_focus();
-                            self.focus_search = false;
-                        }
-                        search_resp.labelled_by(search_label.id);
-                        if !self.search.is_empty()
-                            && ui.add(crate::theme::subtle_button("Clear")).clicked()
-                        {
-                            self.search.clear();
-                        }
+                        self.search_field(ui, 260.0);
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1740,28 +2336,8 @@ impl App {
                 if narrow {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        crate::theme::draw_search_icon(ui, crate::theme::MUTED);
-                        let search_label = ui.label(
-                            egui::RichText::new("Search:")
-                                .size(11.0)
-                                .color(crate::theme::MUTED),
-                        );
-                        let width = (ui.available_width() - 8.0).max(120.0);
-                        let search_resp = ui.add(
-                            egui::TextEdit::singleline(&mut self.search)
-                                .hint_text(format!("Search in {db_name}"))
-                                .desired_width(width),
-                        );
-                        if self.focus_search {
-                            search_resp.request_focus();
-                            self.focus_search = false;
-                        }
-                        search_resp.labelled_by(search_label.id);
-                        if !self.search.is_empty()
-                            && ui.add(crate::theme::subtle_button("Clear")).clicked()
-                        {
-                            self.search.clear();
-                        }
+                        let width = (ui.available_width() - 40.0).max(120.0);
+                        self.search_field(ui, width);
                     });
                 }
 
@@ -1790,22 +2366,59 @@ impl App {
             });
 
         // Status bar ------------------------------------------------------
+        // Left: the last status message. Right: how many entries the list
+        // shows and whether there are unsaved changes, so the strip always
+        // says something useful.
+        let visible_count = browser::visible_entry_count(self);
         egui::Panel::bottom("statusbar")
             .resizable(false)
             .exact_size(30.0)
             .frame(
                 egui::Frame::new()
-                    .fill(crate::theme::SIDEBAR)
+                    .fill(pal.sidebar)
                     .inner_margin(egui::Margin::symmetric(14, 5))
-                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+                    .stroke(egui::Stroke::new(1.0, pal.border)),
             )
             .show(root, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(&self.status)
-                            .size(12.0)
-                            .color(crate::theme::MUTED),
+                    let right_w = 260.0;
+                    let left_w = (ui.available_width() - right_w).max(60.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_w, ui.available_height()),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&self.status)
+                                        .size(12.0)
+                                        .color(pal.muted),
+                                )
+                                .truncate(),
+                            );
+                        },
                     );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.dirty {
+                            ui.label(
+                                egui::RichText::new("Unsaved changes")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(pal.warn_fg),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new("All changes saved")
+                                    .size(12.0)
+                                    .color(pal.muted),
+                            );
+                        }
+                        ui.label(egui::RichText::new("·").size(12.0).color(pal.muted));
+                        ui.label(
+                            egui::RichText::new(browser::pluralize(visible_count, "entry", "entries"))
+                                .size(12.0)
+                                .color(pal.muted),
+                        );
+                    });
                 });
             });
 
@@ -1825,9 +2438,9 @@ impl App {
                 .size_range(170.0..=320.0)
                 .frame(
                     egui::Frame::new()
-                        .fill(crate::theme::SIDEBAR)
+                        .fill(pal.sidebar)
                         .inner_margin(egui::Margin::symmetric(14, 14))
-                        .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+                        .stroke(egui::Stroke::new(1.0, pal.border)),
                 )
                 .show(root, |ui| {
                     egui::ScrollArea::vertical()
@@ -1847,9 +2460,9 @@ impl App {
                 .size_range(240.0..=520.0)
                 .frame(
                     egui::Frame::new()
-                        .fill(crate::theme::PANEL)
+                        .fill(pal.panel)
                         .inner_margin(egui::Margin::symmetric(16, 12))
-                        .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+                        .stroke(egui::Stroke::new(1.0, pal.border)),
                 )
                 .show(root, |ui| {
                     browser::entry_view(ui, self);
@@ -1858,35 +2471,13 @@ impl App {
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()
-                        .fill(crate::theme::PANEL)
+                        .fill(pal.panel)
                         .inner_margin(egui::Margin::symmetric(24, 18)),
                 )
                 .show(root, |ui| {
                     let width = ui.available_width().min(820.0);
-                    if let Some(mut d) = self.inline_edit.take() {
-                        let (mut apply, mut cancel) =
-                            dialogs::entry_edit_inline_header(ui);
-                        apply |= ui.ctx().input_mut(|i| {
-                            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
-                        });
-                        cancel |= ui.ctx().input_mut(|i| {
-                            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
-                        });
-                        if apply {
-                            d.apply(self);
-                            self.inline_edit = None;
-                        } else if cancel {
-                            self.inline_edit = None;
-                        } else {
-                            egui::ScrollArea::vertical()
-                                .id_salt("inline-edit-scroll")
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.set_max_width((width - 14.0).max(220.0));
-                                    dialogs::entry_edit_body(ui, self, &mut d);
-                                });
-                            self.inline_edit = Some(d);
-                        }
+                    if self.inline_edit.is_some() {
+                        self.inline_editor(ui, width);
                     } else {
                         egui::ScrollArea::vertical()
                             .id_salt("details-scroll")
@@ -1899,32 +2490,39 @@ impl App {
                 });
         } else {
             // The table needs the whole width (six configurable columns).
-            // Details then sit under the table, still inside the central
-            // column, with the table clipped above them.
+            // Details (or the entry editor) then sit under the table, still
+            // inside the central column, with the table clipped above them.
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()
-                        .fill(crate::theme::PANEL)
+                        .fill(pal.panel)
                         .inner_margin(egui::Margin::symmetric(16, 12)),
                 )
                 .show(root, |ui| {
-                    if let Some(selected) = self.selected_entry {
+                    let editing = self.inline_edit.is_some();
+                    if editing || self.selected_entry.is_some() {
+                        let selected = self.selected_entry;
                         egui::Panel::bottom("details-table")
                             .resizable(true)
-                            .default_size(300.0)
+                            .default_size(if editing { 420.0 } else { 300.0 })
                             .show_inside(ui, |ui| {
                                 // Cap the reading width but never exceed the
                                 // pane: a hard 900 px used to overflow (and get
                                 // clipped) in narrow windows.
                                 let pane_w = (ui.available_width() - 16.0).max(240.0);
-                                egui::ScrollArea::vertical()
-                                    .id_salt("details-table-scroll")
-                                    .auto_shrink([false, false])
-                                    .show(ui, |ui| {
-                                        ui.set_max_width(pane_w.min(900.0));
-                                        ui.set_width(pane_w.min(900.0));
-                                        browser::entry_details(ui, self, Some(selected));
-                                    });
+                                if editing {
+                                    ui.add_space(8.0);
+                                    self.inline_editor(ui, pane_w.min(900.0));
+                                } else {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("details-table-scroll")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            ui.set_max_width(pane_w.min(900.0));
+                                            ui.set_width(pane_w.min(900.0));
+                                            browser::entry_details(ui, self, selected);
+                                        });
+                                }
                             });
                     }
                     browser::entry_view(ui, self);
@@ -1939,5 +2537,4 @@ impl App {
         // Transient copy-confirmation toasts (bottom-right overlay).
         self.render_toasts(&ctx);
     }
-
 }

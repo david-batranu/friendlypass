@@ -290,8 +290,8 @@ fn details_have_a_working_overflow_menu() {
     kebab.click();
     harness.run();
 
-    // The menu opens with its actions (they duplicate the toolbar/footer
-    // labels, so the popup is identified by position near the top).
+    // The menu opens with its actions (Edit… duplicates the action bar's
+    // label, so the popup is identified by position near the top).
     let popup_item = |harness: &Harness<'_, friendlypass_gui::App>, label: &str| {
         labelled_nodes(harness)
             .into_iter()
@@ -325,8 +325,8 @@ fn details_have_a_working_overflow_menu() {
 #[test]
 fn list_title_menu_switches_what_the_list_shows() {
     let (_dir, mut harness) = open_sample();
-    // The title is a menu button ("All Categories" by default).
-    harness.get_by_label("All Categories").click();
+    // The title is a menu button ("All Items" by default).
+    harness.get_by_label("All Items").click();
     harness.run();
     assert!(
         harness.query_by_label("With Attachments").is_some(),
@@ -390,7 +390,7 @@ fn toolbar_actions_never_overlap_the_search_box() {
             .map(|n| n.rect())
             .find(|r| r.width() > 80.0)
             .unwrap_or_else(|| panic!("search field at {w}"));
-        for label in ["More…", "Save", "Lock", "New Entry"] {
+        for label in ["Settings and tools", "Add", "Save database", "Lock", "New Entry"] {
             let btn = find_node(&harness, |l| l == label);
             if let Some(btn) = btn {
                 assert!(

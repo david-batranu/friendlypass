@@ -51,7 +51,7 @@ fn ssh_agent_window_serves_real_keys() {
     harness.run();
 
     // Open the SSH Agent window; the key is detected and listed.
-    harness.get_by_label("More…").click();
+    harness.get_by_label("Settings and tools").click();
     harness.run();
     harness.get_by_label("SSH Agent…").click();
     harness.run();

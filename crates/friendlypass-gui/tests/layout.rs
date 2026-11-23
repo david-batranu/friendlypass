@@ -27,7 +27,7 @@ fn form_fields_are_wide() {
     // Open the entry editor and measure the fields.
     harness.get_by_label("New Entry").click();
     harness.run();
-    for label in ["Title:", "UserName:", "URL:"] {
+    for label in ["Title:", "Username:", "URL:"] {
         let width = harness.get_by_label(label).rect().width();
         assert!(
             width >= 400.0,

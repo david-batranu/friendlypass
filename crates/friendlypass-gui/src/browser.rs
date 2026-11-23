@@ -24,9 +24,9 @@ fn sidebar_row_background(ui: &mut egui::Ui, selected: bool, height: f32) -> egu
     );
     let hovered = ui.rect_contains_pointer(rect);
     let fill = if selected {
-        crate::theme::SIDEBAR_SELECTED
+        crate::theme::p().sidebar_selected
     } else if hovered {
-        crate::theme::SIDEBAR_HOVER
+        crate::theme::p().sidebar_hover
     } else {
         egui::Color32::TRANSPARENT
     };
@@ -38,7 +38,7 @@ fn sidebar_row_background(ui: &mut egui::Ui, selected: bool, height: f32) -> egu
         ui.painter().rect_stroke(
             rect,
             egui::CornerRadius::same(8),
-            egui::Stroke::new(1.0, crate::theme::LIST_SELECTED_STROKE),
+            egui::Stroke::new(1.0, crate::theme::p().list_selected_stroke),
             egui::StrokeKind::Inside,
         );
         let bar = egui::Rect::from_min_max(
@@ -46,7 +46,7 @@ fn sidebar_row_background(ui: &mut egui::Ui, selected: bool, height: f32) -> egu
             egui::pos2(rect.left() + 5.5, rect.bottom() - 5.0),
         );
         ui.painter()
-            .rect_filled(bar, egui::CornerRadius::same(2), crate::theme::ACCENT);
+            .rect_filled(bar, egui::CornerRadius::same(2), crate::theme::p().accent);
     }
     rect
 }
@@ -108,28 +108,48 @@ pub struct EntryRow {
     /// How many files are attached to the entry (drives the paperclip badge
     /// and the "Attachments" filter).
     pub attachments: usize,
-    pub month_header: Option<String>,
+    /// Last modification (or creation) time; drives the Modified sort.
+    pub modified: Option<chrono::NaiveDateTime>,
 }
 
-fn entry_is_favorite(entry: &keepass::db::EntryRef<'_>) -> bool {
-    entry.tags.iter().any(|t| {
-        let lower = t.trim().to_ascii_lowercase();
-        lower == "favorite" || lower == "favorites" || lower == "fav" || lower == "star"
-    }) || entry
-        .fields
-        .get("FRIENDLYPASS_FAVORITE")
-        .map(|v| v.get() == "1" || v.get().eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+impl EntryRow {
+    /// The month heading this row falls under when sorting by date
+    /// ("MARCH 2025"), or "NO DATE" for entries without timestamps.
+    pub fn month_header(&self) -> String {
+        month_header(self.modified)
+    }
+}
+
+/// The list's month heading for a timestamp.
+pub fn month_header(t: Option<chrono::NaiveDateTime>) -> String {
+    match t {
+        Some(t) => t.format("%B %Y").to_string().to_uppercase(),
+        None => "NO DATE".to_owned(),
+    }
+}
+
+/// The custom field that marks an entry as a favorite ("1" or "true").
+pub const FAVORITE_FIELD: &str = "FRIENDLYPASS_FAVORITE";
+
+/// Tags other apps use to star entries; treated as favorites too.
+pub fn is_favorite_tag(tag: &str) -> bool {
+    let lower = tag.trim().to_ascii_lowercase();
+    lower == "favorite" || lower == "favorites" || lower == "fav" || lower == "star"
+}
+
+pub fn entry_is_favorite(entry: &keepass::db::EntryRef<'_>) -> bool {
+    entry.tags.iter().any(|t| is_favorite_tag(t))
+        || entry
+            .fields
+            .get(FAVORITE_FIELD)
+            .map(|v| v.get() == "1" || v.get().eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
 }
 
 fn entry_row(db: &Database, id: EntryId, with_group: bool) -> EntryRow {
     let entry = db.entry(id).expect("entry exists");
     let group = if with_group { Some(group_path(db, entry.parent().id())) } else { None };
-    let month_header = entry
-        .times
-        .last_modification
-        .or(entry.times.creation)
-        .map(|t| t.format("%B %Y").to_string().to_uppercase());
+    let modified = entry.times.last_modification.or(entry.times.creation);
     let url = entry.get(fields::URL).unwrap_or_default().to_owned();
     let resolved_url = crate::refs::resolve_references(db, &url);
     EntryRow {
@@ -144,7 +164,7 @@ fn entry_row(db: &Database, id: EntryId, with_group: bool) -> EntryRow {
         tags: entry.tags.join(", "),
         is_favorite: entry_is_favorite(&entry),
         attachments: entry.attachments_named().count(),
-        month_header,
+        modified,
     }
 }
 
@@ -167,14 +187,15 @@ fn group_path(db: &Database, group: GroupId) -> String {
     parts.join("/")
 }
 
-/// The entries to display: search results across the database, or the
-/// entries of the selected group / tag / favorites / attachments filter.
-fn visible_entries(app: &App) -> Vec<EntryRow> {
-    let Some(db) = app.db.as_ref() else { return Vec::new() };
+/// The ids of the entries matching the current search / filter / group,
+/// unsorted, plus whether they come from several groups (search and the
+/// filters span the whole database, so rows then show their group).
+fn matching_ids(app: &App) -> (Vec<EntryId>, bool) {
+    let Some(db) = app.db.as_ref() else { return (Vec::new(), false) };
 
     if !app.search.trim().is_empty() {
         let needle = app.search.to_lowercase();
-        let mut rows: Vec<EntryRow> = db
+        let ids = db
             .iter_all_entries()
             .filter(|e| {
                 let hay = [
@@ -188,46 +209,50 @@ fn visible_entries(app: &App) -> Vec<EntryRow> {
                 .to_lowercase();
                 hay.contains(&needle)
             })
-            .map(|e| entry_row(db, e.id(), true))
+            .map(|e| e.id())
             .collect();
-        sort_rows(&mut rows, app);
-        rows
+        (ids, true)
     } else if app.filter_attachments {
-        let mut rows: Vec<EntryRow> = db
+        let ids = db
             .iter_all_entries()
             .filter(|e| e.attachments_named().next().is_some())
-            .map(|e| entry_row(db, e.id(), true))
+            .map(|e| e.id())
             .collect();
-        sort_rows(&mut rows, app);
-        rows
+        (ids, true)
     } else if app.filter_favorites {
-        let mut rows: Vec<EntryRow> = db
+        let ids = db
             .iter_all_entries()
             .filter(|e| entry_is_favorite(e))
-            .map(|e| entry_row(db, e.id(), true))
+            .map(|e| e.id())
             .collect();
-        sort_rows(&mut rows, app);
-        rows
+        (ids, true)
     } else if let Some(tag) = &app.selected_tag {
-        let mut rows: Vec<EntryRow> = db
+        let ids = db
             .iter_all_entries()
             .filter(|e| e.tags.iter().any(|t| t.trim() == tag))
-            .map(|e| entry_row(db, e.id(), true))
+            .map(|e| e.id())
             .collect();
-        sort_rows(&mut rows, app);
-        rows
+        (ids, true)
     } else {
         let group = app
             .selected_group
             .unwrap_or_else(|| db.root().id());
-        let Some(g) = db.group(group) else { return Vec::new() };
-        let mut rows: Vec<EntryRow> = g
-            .entries()
-            .map(|e| entry_row(db, e.id(), false))
-            .collect();
-        sort_rows(&mut rows, app);
-        rows
+        let Some(g) = db.group(group) else { return (Vec::new(), false) };
+        (g.entries().map(|e| e.id()).collect(), false)
     }
+}
+
+/// The entries to display: search results across the database, or the
+/// entries of the selected group / tag / favorites / attachments filter.
+fn visible_entries(app: &App) -> Vec<EntryRow> {
+    let Some(db) = app.db.as_ref() else { return Vec::new() };
+    let (ids, with_group) = matching_ids(app);
+    let mut rows: Vec<EntryRow> = ids
+        .into_iter()
+        .map(|id| entry_row(db, id, with_group))
+        .collect();
+    sort_rows(&mut rows, app);
+    rows
 }
 
 /// The ids of the entries the list currently shows, in list order. Handy for
@@ -236,18 +261,42 @@ pub fn visible_entry_ids(app: &App) -> Vec<EntryId> {
     visible_entries(app).into_iter().map(|r| r.id).collect()
 }
 
+/// How many entries the list shows (cheap: no sorting or row building).
+pub fn visible_entry_count(app: &App) -> usize {
+    matching_ids(app).0.len()
+}
+
 fn sort_rows(rows: &mut [EntryRow], app: &App) {
-    let key = |r: &EntryRow| match app.sort_column {
-        SortColumn::Title => r.title.clone(),
-        SortColumn::Username => r.username.clone(),
-        SortColumn::Password => r.password.clone(),
-        SortColumn::Url => r.url.clone(),
-        SortColumn::Notes => r.notes.clone(),
-        SortColumn::Tags => r.tags.clone(),
-    };
-    rows.sort_by_key(key);
+    match app.sort_column {
+        SortColumn::Modified => rows.sort_by(|a, b| {
+            a.modified
+                .cmp(&b.modified)
+                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+        }),
+        col => {
+            let key = |r: &EntryRow| match col {
+                SortColumn::Title => r.title.clone(),
+                SortColumn::Username => r.username.clone(),
+                SortColumn::Password => r.password.clone(),
+                SortColumn::Url => r.url.clone(),
+                SortColumn::Notes => r.notes.clone(),
+                SortColumn::Tags => r.tags.clone(),
+                SortColumn::Modified => unreachable!(),
+            };
+            rows.sort_by_key(key);
+        }
+    }
     if app.sort_desc {
         rows.reverse();
+    }
+}
+
+/// "1 entry" / "3 entries".
+pub fn pluralize(n: usize, singular: &str, plural: &str) -> String {
+    if n == 1 {
+        format!("{n} {singular}")
+    } else {
+        format!("{n} {plural}")
     }
 }
 
@@ -256,7 +305,6 @@ fn sort_rows(rows: &mut [EntryRow], app: &App) {
 // ---------------------------------------------------------------------------
 
 pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
-    use keepass::db::GroupRef;
 
     // Split borrows: render from an immutable snapshot of the tree, mutate
     // selection/dialog fields freely.
@@ -285,7 +333,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     // Library header: icon + database name.
     ui.horizontal(|ui| {
         egui::Frame::new()
-            .fill(crate::theme::ACCENT_SOFT)
+            .fill(crate::theme::p().accent_soft)
             .corner_radius(10)
             .inner_margin(egui::Margin::same(4))
             .show(ui, |ui| {
@@ -302,14 +350,14 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
                     egui::RichText::new(&root_name)
                         .size(16.0)
                         .strong()
-                        .color(crate::theme::TEXT),
+                        .color(crate::theme::p().text),
                 )
                 .truncate(),
             );
             ui.label(
                 egui::RichText::new(crate::brand::NAME)
                     .size(11.0)
-                    .color(crate::theme::MUTED),
+                    .color(crate::theme::p().muted),
             );
         });
     });
@@ -318,7 +366,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         egui::RichText::new("LIBRARY")
             .size(11.0)
             .strong()
-            .color(crate::theme::MUTED),
+            .color(crate::theme::p().muted),
     );
     ui.add_space(4.0);
 
@@ -327,12 +375,15 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     let mut filter_favorites: bool = app.filter_favorites;
     let mut filter_attachments: bool = app.filter_attachments;
     let mut new_dialog: Option<crate::dialogs::Dialog> = None;
-    let mut rename_dialog: Option<crate::dialogs::Dialog> = None;
-    let mut delete_target: Option<GroupId> = None;
-    let mut share_target: Option<GroupId> = None;
+    // What a group row's context menu asked for.
+    let mut group_action: Option<GroupAction> = None;
     // Group-scoped export chosen from a row's context menu.
     let mut export_request: Option<(Option<GroupId>, &'static str)> = None;
-    let mut empty_bin_clicked = false;
+    let bin_id = app
+        .db
+        .as_ref()
+        .and_then(|db| db.recycle_bin())
+        .map(|b| b.id());
     // Entry dropped from the entry table onto a group row: (entry, target).
     let mut dropped: Option<(EntryId, Option<GroupId>)> = None;
     // Group dropped onto another group row: (group, target).
@@ -396,9 +447,9 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         let mut text = egui::RichText::new(label)
             .size(13.5)
             .color(if selected {
-                crate::theme::ACCENT
+                crate::theme::p().accent
             } else {
-                crate::theme::TEXT
+                crate::theme::p().text
             });
         if selected {
             text = text.strong();
@@ -416,7 +467,47 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
             row_clicked = Some(if is_root { None } else { row.id });
         }
         resp.context_menu(|ui| {
-            ui.label(if is_root { "Database export" } else { "Group export" });
+            ui.set_min_width(210.0);
+            let target = if is_root { root_id } else { row.id };
+            if let Some(target) = target {
+                if ui.button("New subgroup…").clicked() {
+                    group_action = Some(GroupAction::NewSubgroup(target));
+                    ui.close();
+                }
+            }
+            // The root group cannot be renamed, shared or deleted.
+            if let (false, Some(id)) = (is_root, row.id) {
+                if ui.button("Rename group…").clicked() {
+                    group_action = Some(GroupAction::Rename(id));
+                    ui.close();
+                }
+                if ui.button("Share group…").clicked() {
+                    group_action = Some(GroupAction::Share(id));
+                    ui.close();
+                }
+                if Some(id) == bin_id {
+                    if ui
+                        .button(egui::RichText::new("Empty Recycle Bin…").color(crate::theme::p().danger))
+                        .clicked()
+                    {
+                        group_action = Some(GroupAction::EmptyBin);
+                        ui.close();
+                    }
+                }
+                if ui
+                    .button(egui::RichText::new("Delete group…").color(crate::theme::p().danger))
+                    .clicked()
+                {
+                    group_action = Some(GroupAction::Delete(id));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            ui.label(
+                egui::RichText::new(if is_root { "Database export" } else { "Group export" })
+                    .size(12.0)
+                    .color(crate::theme::p().muted),
+            );
             for (label, format) in [
                 ("Export as KeePass 2 XML…", "XML"),
                 ("Export as CSV…", "CSV"),
@@ -479,9 +570,9 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         let mut text = egui::RichText::new("Favorites")
             .size(13.5)
             .color(if fav_selected {
-                crate::theme::ACCENT
+                crate::theme::p().accent
             } else {
-                crate::theme::TEXT
+                crate::theme::p().text
             });
         if fav_selected {
             text = text.strong();
@@ -524,17 +615,17 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
             clip_rect.center(),
             15.0,
             if sel {
-                crate::theme::ACCENT
+                crate::theme::p().accent
             } else {
-                crate::theme::MUTED
+                crate::theme::p().muted
             },
         );
         let mut text = egui::RichText::new(format!("Attachments ({with_attachments})"))
             .size(13.5)
             .color(if sel {
-                crate::theme::ACCENT
+                crate::theme::p().accent
             } else {
-                crate::theme::TEXT
+                crate::theme::p().text
             });
         if sel {
             text = text.strong();
@@ -556,7 +647,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(12.0);
     let mut groups_collapsed = app.groups_collapsed;
     ui.horizontal(|ui| {
-        if crate::theme::chevron_toggle(ui, "groups-section", !groups_collapsed, crate::theme::MUTED)
+        if crate::theme::chevron_toggle(ui, "groups-section", !groups_collapsed, crate::theme::p().muted)
             .on_hover_text(if groups_collapsed { "Expand groups" } else { "Collapse groups" })
             .clicked()
         {
@@ -566,7 +657,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
             egui::RichText::new("GROUPS")
                 .size(11.0)
                 .strong()
-                .color(crate::theme::MUTED),
+                .color(crate::theme::p().muted),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
@@ -575,7 +666,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
                         egui::RichText::new("+")
                             .size(15.0)
                             .strong()
-                            .color(crate::theme::MUTED),
+                            .color(crate::theme::p().muted),
                     )
                     .frame(false),
                 )
@@ -625,7 +716,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     if !all_tags.is_empty() {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if crate::theme::chevron_toggle(ui, "tags-section", !tags_collapsed, crate::theme::MUTED)
+            if crate::theme::chevron_toggle(ui, "tags-section", !tags_collapsed, crate::theme::p().muted)
                 .on_hover_text(if tags_collapsed { "Expand tags" } else { "Collapse tags" })
                 .clicked()
             {
@@ -635,7 +726,7 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
                 egui::RichText::new("TAGS")
                     .size(11.0)
                     .strong()
-                    .color(crate::theme::MUTED),
+                    .color(crate::theme::p().muted),
             );
         });
         ui.add_space(2.0);
@@ -649,13 +740,13 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
                     .max_rect(rect.shrink2(egui::vec2(10.0, 4.0)))
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
-            crate::theme::draw_tag_pill(&mut content, crate::theme::TAG_GREEN);
+            crate::theme::draw_tag_pill(&mut content, crate::theme::p().tag_green);
             let mut text = egui::RichText::new(tag)
                 .size(13.5)
                 .color(if is_sel {
-                    crate::theme::ACCENT
+                    crate::theme::p().accent
                 } else {
-                    crate::theme::TEXT
+                    crate::theme::p().text
                 });
             if is_sel {
                 text = text.strong();
@@ -701,67 +792,14 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
         )));
     }
 
-    ui.separator();
-    ui.horizontal_wrapped(|ui| {
-        let has_selection = selected_group.is_some();
-        if ui
-            .add_enabled(has_selection, egui::Button::new("Rename group…"))
-            .on_disabled_hover_text("Select a group first")
-            .clicked()
-        {
-            if let Some(id) = selected_group {
-                let name = app
-                    .db
-                    .as_ref()
-                    .and_then(|db| db.group(id))
-                    .map(|g: GroupRef<'_>| g.name.clone())
-                    .unwrap_or_default();
-                rename_dialog = Some(crate::dialogs::Dialog::GroupRename(Box::new(
-                    crate::dialogs::GroupEdit { id: Some(id), parent: id, name },
-                )));
-            }
-        }
-        if ui
-            .add_enabled(has_selection, egui::Button::new("Delete group…"))
-            .on_disabled_hover_text("Select a group first (the root group cannot be deleted)")
-            .clicked()
-        {
-            if let Some(id) = selected_group {
-                delete_target = Some(id);
-            }
-        }
-        if ui
-            .add_enabled(has_selection, egui::Button::new("Share group…"))
-            .on_disabled_hover_text("Select a group first")
-            .clicked()
-        {
-            if let Some(id) = selected_group {
-                share_target = Some(id);
-            }
-        }
-    });
-
-    // Recycle bin management: shown when the database has a recycle bin.
-    let bin_id = app
-        .db
-        .as_ref()
-        .and_then(|db| db.recycle_bin())
-        .map(|b| b.id());
-    if bin_id.is_some() {
-        let bin_selected = selected_group == bin_id;
-        if ui
-            .add_enabled(bin_selected, egui::Button::new("Empty Recycle Bin…"))
-            .on_disabled_hover_text("Select the Recycle Bin group first")
-            .clicked()
-        {
-            empty_bin_clicked = true;
-        }
-        if bin_selected {
-            weak_label(
-                ui,
-                "This group is the Recycle Bin: deleting from here is permanent.",
-            );
-        }
+    // A hint while the Recycle Bin is open (its actions live in the row's
+    // context menu).
+    if bin_id.is_some() && selected_group == bin_id {
+        ui.add_space(8.0);
+        weak_label(
+            ui,
+            "Recycle Bin: deleting from here is permanent. Right-click it to empty it.",
+        );
     }
 
     // Apply pending mutations now that the immutable borrows are over.
@@ -784,21 +822,66 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     if let Some(d) = new_dialog {
         app.dialog = d;
     }
-    if let Some(d) = rename_dialog {
-        app.dialog = d;
-    }
-    if let Some(id) = delete_target {
-        app.dialog = crate::dialogs::Dialog::ConfirmDeleteGroup(id);
-    }
-    if let Some(id) = share_target {
-        if let Some(db) = app.db.as_ref() {
-            app.dialog = crate::dialogs::Dialog::ShareGroup(Box::new(
-                crate::dialogs::ShareDialog::for_group(db, id),
+    match group_action {
+        Some(GroupAction::NewSubgroup(parent)) => {
+            app.dialog = crate::dialogs::Dialog::GroupNew(Box::new(
+                crate::dialogs::GroupEdit::new(parent),
             ));
         }
+        Some(GroupAction::Rename(id)) => {
+            let name = app
+                .db
+                .as_ref()
+                .and_then(|db| db.group(id))
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            app.dialog = crate::dialogs::Dialog::GroupRename(Box::new(
+                crate::dialogs::GroupEdit { id: Some(id), parent: id, name },
+            ));
+        }
+        Some(GroupAction::Delete(id)) => {
+            app.dialog = crate::dialogs::Dialog::ConfirmDeleteGroup(id);
+        }
+        Some(GroupAction::Share(id)) => {
+            if let Some(db) = app.db.as_ref() {
+                app.dialog = crate::dialogs::Dialog::ShareGroup(Box::new(
+                    crate::dialogs::ShareDialog::for_group(db, id),
+                ));
+            }
+        }
+        Some(GroupAction::EmptyBin) => {
+            app.dialog = crate::dialogs::Dialog::ConfirmEmptyRecycleBin;
+        }
+        None => {}
     }
-    if empty_bin_clicked {
-        app.dialog = crate::dialogs::Dialog::ConfirmEmptyRecycleBin;
+}
+
+/// A group row context-menu action.
+enum GroupAction {
+    NewSubgroup(GroupId),
+    Rename(GroupId),
+    Delete(GroupId),
+    Share(GroupId),
+    EmptyBin,
+}
+
+/// The sort direction in words, for the Sort button ("A–Z", "newest
+/// first"). The bundled UI font has no arrow glyphs, so no "↑".
+pub fn sort_direction_label(col: SortColumn, desc: bool) -> &'static str {
+    match (col, desc) {
+        (SortColumn::Modified, true) => "newest first",
+        (SortColumn::Modified, false) => "oldest first",
+        (_, false) => "A\u{2013}Z",
+        (_, true) => "Z\u{2013}A",
+    }
+}
+
+/// The table header's sort marker (ASCII: the UI font has no arrows).
+fn sort_marker(desc: bool) -> &'static str {
+    if desc {
+        "v"
+    } else {
+        "^"
     }
 }
 
@@ -881,7 +964,7 @@ pub fn entry_view(ui: &mut egui::Ui, app: &mut App) {
     } else {
         app.selected_group
             .and_then(|id| app.db.as_ref().and_then(|db| db.group(id)).map(|g| g.name.clone()))
-            .unwrap_or_else(|| "All Categories".into())
+            .unwrap_or_else(|| "All Items".into())
     };
     // Snapshot the picker entries before the closure borrows `app`.
     let picker_groups: Vec<(GroupId, String, usize, usize)> = app
@@ -945,7 +1028,7 @@ pub fn entry_view(ui: &mut egui::Ui, app: &mut App) {
                     egui::Button::new(
                         egui::RichText::new("×")
                             .size(15.0)
-                            .color(crate::theme::MUTED),
+                            .color(crate::theme::p().muted),
                     )
                     .frame(false),
                 )
@@ -957,6 +1040,36 @@ pub fn entry_view(ui: &mut egui::Ui, app: &mut App) {
                 app.filter_attachments = false;
             }
         }
+    });
+    // Second row: the current sort (a menu) on the left, list/table on the
+    // right. On one row with the title they collided in the narrow column.
+    ui.horizontal(|ui| {
+        let sort_label = format!(
+            "Sort: {} ({})",
+            app.sort_column.label(),
+            sort_direction_label(app.sort_column, app.sort_desc)
+        );
+        ui.menu_button(sort_label, |ui| {
+            for col in SortColumn::ALL {
+                if ui
+                    .selectable_label(app.sort_column == col, col.label())
+                    .clicked()
+                {
+                    app.sort_column = col;
+                    app.sort_desc = col.default_desc();
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.selectable_label(!app.sort_desc, "Ascending").clicked() {
+                app.sort_desc = false;
+                ui.close();
+            }
+            if ui.selectable_label(app.sort_desc, "Descending").clicked() {
+                app.sort_desc = true;
+                ui.close();
+            }
+        });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let table = !app.prefs.list_view;
             if ui.selectable_label(table, "Table").clicked() {
@@ -967,34 +1080,6 @@ pub fn entry_view(ui: &mut egui::Ui, app: &mut App) {
                 app.prefs.list_view = true;
                 app.save_preferences();
             }
-            ui.menu_button("Sort", |ui| {
-                for col in [
-                    SortColumn::Title,
-                    SortColumn::Username,
-                    SortColumn::Password,
-                    SortColumn::Url,
-                    SortColumn::Notes,
-                    SortColumn::Tags,
-                ] {
-                    if ui
-                        .selectable_label(app.sort_column == col, col.label())
-                        .clicked()
-                    {
-                        app.sort_column = col;
-                        app.sort_desc = false;
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.selectable_label(!app.sort_desc, "Ascending").clicked() {
-                    app.sort_desc = false;
-                    ui.close();
-                }
-                if ui.selectable_label(app.sort_desc, "Descending").clicked() {
-                    app.sort_desc = true;
-                    ui.close();
-                }
-            });
         });
     });
     if let Some(pick) = pick {
@@ -1054,24 +1139,30 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
+            // Month headings only make sense when the list is in date order;
+            // in any other order they would repeat and fragment the list.
+            let by_date = app.sort_column == SortColumn::Modified;
             let mut last_month: Option<String> = None;
+            let mut action: Option<(EntryId, RowAction)> = None;
+            let scroll_to = std::mem::take(&mut app.scroll_to_selected)
+                .then_some(app.selected_entry)
+                .flatten();
             for row in rows {
-                let month = row
-                    .month_header
-                    .clone()
-                    .unwrap_or_else(|| "MARCH 2025".to_owned());
-                if last_month.as_deref() != Some(month.as_str()) {
-                    if last_month.is_some() {
-                        ui.add_space(12.0);
+                if by_date {
+                    let month = row.month_header();
+                    if last_month.as_deref() != Some(month.as_str()) {
+                        if last_month.is_some() {
+                            ui.add_space(12.0);
+                        }
+                        ui.label(
+                            egui::RichText::new(&month)
+                                .size(11.0)
+                                .strong()
+                                .color(crate::theme::p().muted),
+                        );
+                        ui.add_space(4.0);
+                        last_month = Some(month);
                     }
-                    ui.label(
-                        egui::RichText::new(&month)
-                            .size(11.0)
-                            .strong()
-                            .color(crate::theme::MUTED),
-                    );
-                    ui.add_space(4.0);
-                    last_month = Some(month);
                 }
 
                 let selected = app.selected_entry == Some(row.id)
@@ -1082,9 +1173,9 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                 );
                 let hovered = ui.rect_contains_pointer(rect);
                 let fill = if selected {
-                    crate::theme::LIST_SELECTED
+                    crate::theme::p().list_selected
                 } else if hovered {
-                    crate::theme::LIST_HOVER
+                    crate::theme::p().list_hover
                 } else {
                     egui::Color32::TRANSPARENT
                 };
@@ -1096,7 +1187,7 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                     ui.painter().rect_stroke(
                         rect,
                         egui::CornerRadius::same(10),
-                        egui::Stroke::new(1.0, crate::theme::LIST_SELECTED_STROKE),
+                        egui::Stroke::new(1.0, crate::theme::p().list_selected_stroke),
                         egui::StrokeKind::Inside,
                     );
                     let bar = egui::Rect::from_min_max(
@@ -1104,7 +1195,7 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                         egui::pos2(rect.left() + 6.5, rect.bottom() - 10.0),
                     );
                     ui.painter()
-                        .rect_filled(bar, egui::CornerRadius::same(2), crate::theme::ACCENT);
+                        .rect_filled(bar, egui::CornerRadius::same(2), crate::theme::p().accent);
                 }
                 let mut content = ui.new_child(
                     egui::UiBuilder::new()
@@ -1112,13 +1203,13 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
                 let icon_fill = if selected {
-                    crate::theme::PANEL
+                    crate::theme::p().panel
                 } else {
-                    crate::theme::BG
+                    crate::theme::p().bg
                 };
                 let icon_resp = egui::Frame::new()
                     .fill(icon_fill)
-                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::p().border))
                     .corner_radius(8)
                     .inner_margin(egui::Margin::same(4))
                     .show(&mut content, |ui| {
@@ -1158,9 +1249,9 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                     let mut title_text = egui::RichText::new(&row.title)
                         .size(15.0)
                         .color(if selected {
-                            crate::theme::ACCENT
+                            crate::theme::p().accent
                         } else {
-                            crate::theme::TEXT
+                            crate::theme::p().text
                         });
                     if selected {
                         title_text = title_text.strong();
@@ -1171,7 +1262,7 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                             egui::Label::new(
                                 egui::RichText::new(secondary)
                                     .size(12.5)
-                                    .color(crate::theme::MUTED),
+                                    .color(crate::theme::p().muted),
                             )
                             .truncate(),
                         );
@@ -1187,9 +1278,9 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                                 ui,
                                 row.attachments,
                                 if selected {
-                                    crate::theme::ACCENT
+                                    crate::theme::p().accent
                                 } else {
-                                    crate::theme::MUTED
+                                    crate::theme::p().muted
                                 },
                             );
                         },
@@ -1204,17 +1295,12 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                     ui.id().with(("entry-row", row.id)),
                     egui::Sense::click_and_drag(),
                 );
+                if scroll_to == Some(row.id) {
+                    ui.scroll_to_rect(rect, None);
+                }
                 if resp.clicked() {
-                    let multi = ui.ctx().input(|i| i.modifiers.command);
-                    if multi {
-                        if !app.selected_entries.remove(&row.id) {
-                            app.selected_entries.insert(row.id);
-                        }
-                    } else {
-                        app.selected_entries.clear();
-                        app.selected_entries.insert(row.id);
-                    }
-                    app.selected_entry = Some(row.id);
+                    let modifiers = ui.ctx().input(|i| i.modifiers);
+                    app.click_entry(row.id, modifiers);
                 }
                 if resp.double_clicked() {
                     app.selected_entry = Some(row.id);
@@ -1223,10 +1309,102 @@ fn entry_list(ui: &mut egui::Ui, app: &mut App, rows: &[EntryRow]) {
                 if resp.dragged() {
                     egui::DragAndDrop::set_payload(ui.ctx(), row.id);
                 }
+                entry_context_menu(&resp, row, &mut action);
                 resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            }
+            if let Some((id, act)) = action {
+                apply_row_action(app, id, act);
             }
         });
 }
+
+/// What an entry row's context menu asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowAction {
+    /// Right-click: select the row the menu belongs to.
+    Select,
+    CopyUsername,
+    CopyPassword,
+    CopyUrl,
+    Edit,
+    Move,
+    Delete,
+}
+
+/// Attach the entry context menu (right-click) to a list row or table row.
+fn entry_context_menu(
+    resp: &egui::Response,
+    row: &EntryRow,
+    action: &mut Option<(EntryId, RowAction)>,
+) {
+    if resp.secondary_clicked() {
+        *action = Some((row.id, RowAction::Select));
+    }
+    resp.context_menu(|ui| {
+        ui.set_min_width(190.0);
+        let mut pick = |ui: &mut egui::Ui, label: &str, enabled: bool, act: RowAction| {
+            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                *action = Some((row.id, act));
+                ui.close();
+            }
+        };
+        pick(ui, "Copy username", !row.username.is_empty(), RowAction::CopyUsername);
+        pick(ui, "Copy password", !row.password.is_empty(), RowAction::CopyPassword);
+        pick(ui, "Copy URL", !row.url.is_empty(), RowAction::CopyUrl);
+        ui.separator();
+        pick(ui, "Edit…", true, RowAction::Edit);
+        pick(ui, "Move to group…", true, RowAction::Move);
+        ui.separator();
+        if ui
+            .button(egui::RichText::new("Delete…").color(crate::theme::p().danger))
+            .clicked()
+        {
+            *action = Some((row.id, RowAction::Delete));
+            ui.close();
+        }
+    });
+}
+
+/// Carry out an entry context-menu action (after the list is drawn).
+fn apply_row_action(app: &mut App, id: EntryId, action: RowAction) {
+    // Every action is about the row that was right-clicked: make it the
+    // selection (unless it is already part of it).
+    if !app.selected_entries.contains(&id) || app.selected_entry != Some(id) {
+        app.click_entry(id, egui::Modifiers::NONE);
+    }
+    let field = |app: &App, key: &str| -> String {
+        let Some(db) = app.db.as_ref() else { return String::new() };
+        db.entry(id)
+            .map(|e| crate::refs::resolve_references(db, e.get(key).unwrap_or_default()))
+            .unwrap_or_default()
+    };
+    match action {
+        RowAction::Select => {}
+        RowAction::CopyUsername => {
+            let v = field(app, fields::USERNAME);
+            app.note_copied("username", "Username", v);
+        }
+        RowAction::CopyPassword => {
+            let v = field(app, fields::PASSWORD);
+            app.note_copied("password", "Password", v);
+        }
+        RowAction::CopyUrl => {
+            let v = field(app, fields::URL);
+            app.note_copied("url", "URL", v);
+        }
+        RowAction::Edit => app.edit_entry_dialog(id),
+        RowAction::Move => {
+            let groups = app.group_snapshot();
+            app.dialog = crate::dialogs::Dialog::BatchMove(Box::new(crate::dialogs::BatchMove {
+                entries: vec![id],
+                groups,
+                target: None,
+            }));
+        }
+        RowAction::Delete => app.dialog = crate::dialogs::Dialog::ConfirmDeleteEntry(id),
+    }
+}
+
 
 pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
     let rows = visible_entries(app);
@@ -1245,6 +1423,7 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
     }
 
     let searching = !app.search.trim().is_empty();
+    let ui_modifiers = ui.ctx().input(|i| i.modifiers);
     let mut sort_column = app.sort_column;
     let mut sort_desc = app.sort_desc;
     let mut select: Option<EntryId> = None;
@@ -1263,8 +1442,18 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
 
     let mut builder = TableBuilder::new(ui)
         .striped(true)
+        .sense(egui::Sense::click())
         .cell_layout(Layout::left_to_right(Align::Center))
         .min_scrolled_height(0.0);
+    if std::mem::take(&mut app.scroll_to_selected) {
+        if let Some(index) = app
+            .selected_entry
+            .and_then(|id| rows.iter().position(|r| r.id == id))
+        {
+            builder = builder.scroll_to_row(index, None);
+        }
+    }
+    let mut action: Option<(EntryId, RowAction)> = None;
     if app.reset_columns {
         // The Columns dialog changed visibility/order/width: drop the
         // table's remembered widths so the new configuration applies.
@@ -1296,9 +1485,9 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
                 header.col(|ui| {
                     let col = sort_column_of(c.id);
                     let mark = if sort_column == col {
-                        if sort_desc { " v" } else { " ^" }
+                        format!(" {}", sort_marker(sort_desc))
                     } else {
-                        ""
+                        String::new()
                     };
                     if ui.button(format!("{}{mark}", col.label())).clicked() {
                         if sort_column == col {
@@ -1321,7 +1510,7 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                     for c in &columns {
                         row.col(|ui| {
-                            entry_cell(ui, app, c.id, row_data, &mut select, &mut edit);
+                            entry_cell(ui, app, c.id, row_data, &mut action, &mut edit);
                         });
                     }
 
@@ -1333,6 +1522,7 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
                         select = Some(row_data.id);
                         edit = Some(row_data.id);
                     }
+                    entry_context_menu(&response, row_data, &mut action);
                 });
             }
         });
@@ -1341,10 +1531,16 @@ pub fn entry_table(ui: &mut egui::Ui, app: &mut App) {
     app.sort_column = sort_column;
     app.sort_desc = sort_desc;
     if let Some(id) = select {
-        app.selected_entry = Some(id);
+        if app.selected_entry != Some(id) {
+            let modifiers = ui_modifiers;
+            app.click_entry(id, modifiers);
+        }
     }
     if let Some(id) = edit {
         app.edit_entry_dialog(id);
+    }
+    if let Some((id, act)) = action {
+        apply_row_action(app, id, act);
     }
 }
 
@@ -1366,7 +1562,7 @@ fn entry_cell(
     app: &mut App,
     column: ColumnId,
     row_data: &EntryRow,
-    select: &mut Option<EntryId>,
+    action: &mut Option<(EntryId, RowAction)>,
     edit: &mut Option<EntryId>,
 ) {
     match column {
@@ -1385,32 +1581,24 @@ fn entry_cell(
                             .sense(egui::Sense::click_and_drag()),
                     )
                     .on_hover_text(
-                        "click to select, double-click to edit, drag onto a group to move; Cmd/Ctrl-click for multi-selection",
+                        "Click to select, double-click to edit, drag onto a group to move; Cmd/Ctrl-click or Shift-click to select several; right-click for actions",
                     );
                 if title_resp.dragged() {
                     egui::DragAndDrop::set_payload(ui.ctx(), row_data.id);
                 }
-                let multi = ui.ctx().input(|i| i.modifiers.command);
                 if title_resp.clicked() {
-                    if multi {
-                        if !app.selected_entries.remove(&row_data.id) {
-                            app.selected_entries.insert(row_data.id);
-                        }
-                    } else {
-                        app.selected_entries.clear();
-                        app.selected_entries.insert(row_data.id);
-                    }
-                    *select = Some(row_data.id);
+                    let modifiers = ui.ctx().input(|i| i.modifiers);
+                    app.click_entry(row_data.id, modifiers);
                 }
                 if title_resp.double_clicked() {
-                    *select = Some(row_data.id);
                     *edit = Some(row_data.id);
                 }
+                entry_context_menu(&title_resp, row_data, action);
                 if row_data.attachments > 0 {
                     crate::theme::draw_attachment_badge(
                         ui,
                         row_data.attachments,
-                        crate::theme::MUTED,
+                        crate::theme::p().muted,
                     );
                 }
             });
@@ -1449,12 +1637,12 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 egui::RichText::new("Select an item")
                     .size(20.0)
                     .strong()
-                    .color(crate::theme::TEXT),
+                    .color(crate::theme::p().text),
             );
             ui.label(
                 egui::RichText::new("Choose an entry to see its details.")
                     .size(13.0)
-                    .color(crate::theme::MUTED),
+                    .color(crate::theme::p().muted),
             );
         });
         return;
@@ -1472,6 +1660,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             tags: e.tags.join(", "),
             otp: crate::totp::current_code(&e),
             has_passkey: e.fields.keys().any(|k| is_passkey_field(k)),
+            is_favorite: entry_is_favorite(&e),
             parent_group_id: e.parent().id(),
             icon: {
                 let resolved_url =
@@ -1479,13 +1668,13 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 crate::icons::entry_icon_spec(db, e.icon(), &resolved_url)
             },
             last_modified: e.times.last_modification,
-            attributes: e
+            attributes: sorted_attributes(e
                 .fields
                 .iter()
                 .filter(|(k, _)| {
                     !fields::KNOWN_FIELDS.contains(&k.as_str())
                         && !is_passkey_field(k)
-                        && *k != "FRIENDLYPASS_FAVORITE"
+                        && *k != FAVORITE_FIELD
                 })
                 .map(|(k, v)| {
                     (
@@ -1494,7 +1683,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                         v.is_protected(),
                     )
                 })
-                .collect(),
+                .collect()),
             autotype: e.autotype.as_ref().map(|a| AutoTypeSummary {
                 enabled: a.enabled,
                 default_sequence: a.default_sequence.clone().unwrap_or_default(),
@@ -1512,35 +1701,20 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     });
     let Some(d) = data else { return };
 
-    let db_name = std::path::Path::new(&app.db_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "database".into());
-
     let mut edit_clicked = false;
     let mut delete_clicked = false;
     let mut history_clicked = false;
     let mut autotype_clicked = false;
-    let mut share_clicked = false;
+    let mut favorite_clicked = false;
     let mut show_password = app.show_passwords;
     let mut attach: Option<AttachmentAction> = None;
 
     // 1Password-style top breadcrumb & action bar -----------------------
     // Every control here actually does something: the group name is a
-    // picker, and Edit / Share / the ⋮ overflow menu carry their own icons
-    // instead of the detached glyphs this bar used to draw.
+    // picker, and Edit / the ⋮ overflow menu carry their own icons. (The
+    // database name lives in the sidebar header only.)
     let mut group_pick: Option<Option<GroupId>> = None;
     ui.horizontal(|ui| {
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(&db_name)
-                    .size(13.5)
-                    .color(crate::theme::TEXT),
-            )
-            .truncate(),
-        )
-        .on_hover_text(app.db_path.clone());
-        ui.label(egui::RichText::new("|").size(13.0).color(crate::theme::BORDER));
         if let Some(picked) = group_picker(ui, app, Some(d.parent_group_id), "details-group") {
             group_pick = Some(picked);
         }
@@ -1559,10 +1733,18 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     autotype_clicked = true;
                     ui.close();
                 }
+                if ui
+                    .button(if d.is_favorite { "Unstar" } else { "Star" })
+                    .on_hover_text("Add to or remove from Favorites")
+                    .clicked()
+                {
+                    favorite_clicked = true;
+                    ui.close();
+                }
                 ui.separator();
                 if ui
                     .add(egui::Button::new(
-                        egui::RichText::new("Delete…").color(crate::theme::DANGER),
+                        egui::RichText::new("Delete…").color(crate::theme::p().danger),
                     ))
                     .clicked()
                 {
@@ -1570,17 +1752,6 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     ui.close();
                 }
             });
-            if crate::theme::action_button(
-                ui,
-                "top-share",
-                "Share",
-                crate::theme::ActionIcon::Share,
-                "Share group via KeeShare",
-            )
-            .clicked()
-            {
-                share_clicked = true;
-            }
             if crate::theme::action_button(
                 ui,
                 "top-edit",
@@ -1599,8 +1770,8 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     // Header: Large icon + Favorite star + Title ------------------------
     ui.horizontal(|ui| {
         let icon_resp = egui::Frame::new()
-            .fill(crate::theme::BG)
-            .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+            .fill(crate::theme::p().bg)
+            .stroke(egui::Stroke::new(1.0, crate::theme::p().border))
             .corner_radius(14)
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
@@ -1611,23 +1782,37 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     52.0,
                 );
             });
-        crate::theme::draw_star_badge(
-            ui.painter(),
-            icon_resp.response.rect.right_bottom() + egui::vec2(-3.0, -3.0),
-            9.0,
-        );
+        if d.is_favorite {
+            crate::theme::draw_star_badge(
+                ui.painter(),
+                icon_resp.response.rect.right_bottom() + egui::vec2(-3.0, -3.0),
+                9.0,
+            );
+        }
         ui.add_space(14.0);
         ui.vertical(|ui| {
             ui.add_space(6.0);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&d.title)
-                        .size(23.0)
-                        .strong()
-                        .color(crate::theme::TEXT),
-                )
-                .wrap(),
-            );
+            ui.horizontal(|ui| {
+                // Keep room for the star so a long title wraps before it.
+                ui.allocate_ui_with_layout(
+                    egui::vec2((ui.available_width() - 40.0).max(80.0), 0.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&d.title)
+                                    .size(23.0)
+                                    .strong()
+                                    .color(crate::theme::p().text),
+                            )
+                            .wrap(),
+                        );
+                    },
+                );
+                if crate::theme::favorite_toggle(ui, "details-favorite", d.is_favorite).clicked() {
+                    favorite_clicked = true;
+                }
+            });
             // Collect badges on a single row, deduplicating any user tag named
             // "Passkey" / "Passkeys" when the entry already shows the Passkey
             // indicator chip from KPEX_PASSKEY* / FRIENDLYPASS_PASSKEY* fields.
@@ -1648,8 +1833,8 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                     if d.has_passkey {
                         egui::Frame::new()
-                            .fill(crate::theme::ACCENT_SOFT)
-                            .stroke(egui::Stroke::new(1.0, crate::theme::LIST_SELECTED_STROKE))
+                            .fill(crate::theme::p().accent_soft)
+                            .stroke(egui::Stroke::new(1.0, crate::theme::p().list_selected_stroke))
                             .corner_radius(6)
                             .inner_margin(egui::Margin::symmetric(8, 3))
                             .show(ui, |ui| {
@@ -1657,21 +1842,21 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                                     egui::RichText::new("Passkey")
                                         .size(12.0)
                                         .strong()
-                                        .color(crate::theme::ACCENT),
+                                        .color(crate::theme::p().accent),
                                 );
                             });
                     }
                     for tag in non_passkey_tags {
                         egui::Frame::new()
-                            .fill(crate::theme::BG)
-                            .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+                            .fill(crate::theme::p().bg)
+                            .stroke(egui::Stroke::new(1.0, crate::theme::p().border))
                             .corner_radius(6)
                             .inner_margin(egui::Margin::symmetric(8, 3))
                             .show(ui, |ui| {
                                 ui.label(
                                     egui::RichText::new(tag)
                                         .size(11.5)
-                                        .color(crate::theme::MUTED),
+                                        .color(crate::theme::p().muted),
                                 );
                             });
                     }
@@ -1682,25 +1867,38 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     ui.add_space(16.0);
 
     // The main field card ------------------------------------------------
+    // Only the fields the entry actually has: an empty username or password
+    // gets no row (and no copy button for nothing).
+    let has_main = !d.username.is_empty() || !d.password.is_empty() || d.otp.is_some();
+    if has_main {
     detail_card(ui, |ui| {
-        field_block(
-            ui,
-            app,
-            "username",
-            "username",
-            &d.username,
-            &d.username,
-            "UserName",
-            "Copy UserName",
-            "Copy UserName (Cmd/Ctrl+B) — or click the field",
-        );
-        ui.add(egui::Separator::default().spacing(6.0));
-        let masked = if show_password || d.password.is_empty() {
+        let mut first = true;
+        if !d.username.is_empty() {
+            field_block(
+                ui,
+                app,
+                "username",
+                "username",
+                &d.username,
+                &d.username,
+                "Username",
+                "Copy Username",
+                "Copy username (Cmd/Ctrl+B) — or click the field",
+            );
+            first = false;
+        }
+        if !d.password.is_empty() {
+        if !first {
+            ui.add(egui::Separator::default().spacing(6.0));
+        }
+        first = false;
+        let masked = if show_password {
             d.password.clone()
         } else {
             "••••••••••".to_owned()
         };
-        let (strength_label, strength_frac, strength_color) = password_strength(&d.password);
+        let (strength_label, strength_frac, strength_color) =
+            password_strength(&d.password, &[&d.title, &d.username, &d.url]);
         let row_width = ui.available_width();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
@@ -1713,7 +1911,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 "password",
                 &masked,
                 true,
-                crate::theme::TEXT,
+                crate::theme::p().text,
                 "Click to copy the password (Cmd/Ctrl+C)",
                 |app| app.note_copied("password", "Password", d.password.clone()),
             );
@@ -1738,20 +1936,22 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 {
                     show_password = !show_password;
                 }
-                if !d.password.is_empty() {
-                    crate::theme::draw_progress_ring(ui, 7.0, strength_frac, strength_color);
-                    ui.label(
-                        egui::RichText::new(strength_label)
-                            .size(13.0)
-                            .color(crate::theme::MUTED),
-                    );
-                }
+                crate::theme::draw_progress_ring(ui, 7.0, strength_frac, strength_color);
+                ui.label(
+                    egui::RichText::new(strength_label)
+                        .size(13.0)
+                        .color(crate::theme::p().muted),
+                )
+                .on_hover_text("Estimated strength (zxcvbn)");
             });
         });
+        }
         if let Some((code, valid_for)) = &d.otp {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_secs(1));
-            ui.add(egui::Separator::default().spacing(6.0));
+            if !first {
+                ui.add(egui::Separator::default().spacing(6.0));
+            }
             let row_width = ui.available_width();
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
@@ -1764,7 +1964,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                     "one-time password (TOTP)",
                     &spaced_code(code),
                     true,
-                    crate::theme::TEXT,
+                    crate::theme::p().text,
                     "Click to copy the TOTP code (Cmd/Ctrl+T)",
                     |app| app.note_copied("totp", "TOTP", code.clone()),
                 );
@@ -1779,20 +1979,23 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                         "Copy TOTP (Cmd/Ctrl+T)",
                     );
                     let frac = (*valid_for as f32 / 30.0).clamp(0.05, 1.0);
-                    crate::theme::draw_progress_ring(ui, 6.5, frac, crate::theme::GOOD);
+                    crate::theme::draw_progress_ring(ui, 6.5, frac, crate::theme::p().good);
                     ui.label(
                         egui::RichText::new(format!("{valid_for}"))
                             .size(13.0)
-                            .color(crate::theme::MUTED),
+                            .color(crate::theme::p().muted),
                     );
                 });
             });
         }
     });
+    }
 
     // Website ------------------------------------------------------------
     if !d.url.is_empty() {
-        ui.add_space(16.0);
+        if has_main {
+            ui.add_space(16.0);
+        }
         detail_card(ui, |ui| {
             let width = ui.available_width();
             ui.horizontal(|ui| {
@@ -1807,7 +2010,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 let lg = ui.painter().layout_no_wrap(
                     "website".to_owned(),
                     egui::FontId::new(12.5, egui::FontFamily::Proportional),
-                    crate::theme::ACCENT,
+                    crate::theme::p().accent,
                 );
                 let lg_size = lg.size();
                 let cap = ui.interact(
@@ -1821,15 +2024,15 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 if ui.is_rect_visible(rect) {
                     let painter = ui.painter();
                     if hovered {
-                        painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::HOVER);
+                        painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::p().hover);
                     }
-                    painter.galley(egui::pos2(inner.left(), inner.top()), lg, crate::theme::ACCENT);
+                    painter.galley(egui::pos2(inner.left(), inner.top()), lg, crate::theme::p().accent);
                     let (head, tail) = split_url_domain(&d.url);
                     let vfont = egui::FontId::new(15.5, egui::FontFamily::Proportional);
                     let vcolor = if hovered {
-                        crate::theme::ACCENT
+                        crate::theme::p().accent
                     } else {
-                        crate::theme::TEXT
+                        crate::theme::p().text
                     };
                     let y = inner.top() + 17.0;
                     let mut x = inner.left();
@@ -1838,11 +2041,11 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                             painter,
                             head,
                             vfont.clone(),
-                            crate::theme::MUTED,
+                            crate::theme::p().muted,
                             inner.width(),
                         );
                         let hw = hg.size().x;
-                        painter.galley(egui::pos2(x, y), hg, crate::theme::MUTED);
+                        painter.galley(egui::pos2(x, y), hg, crate::theme::p().muted);
                         x += hw;
                     }
                     let tg = layout_truncated(painter, tail, vfont, vcolor, inner.right() - x);
@@ -1883,7 +2086,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             egui::RichText::new("SECURITY")
                 .size(11.0)
                 .strong()
-                .color(crate::theme::MUTED),
+                .color(crate::theme::p().muted),
         );
         ui.add_space(4.0);
         detail_card(ui, |ui| {
@@ -1927,52 +2130,67 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             egui::RichText::new("NOTES")
                 .size(11.0)
                 .strong()
-                .color(crate::theme::MUTED),
+                .color(crate::theme::p().muted),
         );
         ui.add_space(4.0);
         detail_card(ui, |ui| {
             ui.label(
                 egui::RichText::new(&d.notes)
                     .size(14.0)
-                    .color(crate::theme::TEXT),
+                    .color(crate::theme::p().text),
             );
         });
     }
 
     // Auto-Type summary --------------------------------------------------
+    // The common case (enabled, default sequence, no window associations) is
+    // one muted line; a card only when there is something specific to show.
     if let Some(at) = &d.autotype {
+        let custom = !at.default_sequence.is_empty() || !at.associations.is_empty();
         ui.add_space(18.0);
-        ui.label(
-            egui::RichText::new("AUTO-TYPE")
-                .size(11.0)
-                .strong()
-                .color(crate::theme::MUTED),
-        );
-        ui.add_space(4.0);
-        detail_card(ui, |ui| {
+        if !custom {
             ui.label(
-                egui::RichText::new(if at.enabled { "Enabled" } else { "Disabled" })
-                    .size(14.0)
-                    .strong(),
+                egui::RichText::new(if at.enabled {
+                    "Auto-Type: enabled, default sequence"
+                } else {
+                    "Auto-Type: disabled"
+                })
+                .size(12.5)
+                .color(crate::theme::p().muted),
             );
-            if !at.default_sequence.is_empty() {
+        } else {
+            ui.label(
+                egui::RichText::new("AUTO-TYPE")
+                    .size(11.0)
+                    .strong()
+                    .color(crate::theme::p().muted),
+            );
+            ui.add_space(4.0);
+            detail_card(ui, |ui| {
                 ui.label(
-                    egui::RichText::new(format!("Sequence: {}", at.default_sequence))
+                    egui::RichText::new(if at.enabled { "Enabled" } else { "Disabled" })
+                        .size(14.0)
+                        .strong(),
+                );
+                if !at.default_sequence.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("Sequence: {}", at.default_sequence))
+                            .size(13.0)
+                            .color(crate::theme::p().muted),
+                    );
+                }
+                for (window, sequence) in &at.associations {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{window} -> {}",
+                            if sequence.is_empty() { "(default)" } else { sequence }
+                        ))
                         .size(13.0)
-                        .color(crate::theme::MUTED),
-                );
-            }
-            for (window, sequence) in &at.associations {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{window} -> {}",
-                        if sequence.is_empty() { "(default)" } else { sequence }
-                    ))
-                    .size(13.0)
-                    .color(crate::theme::MUTED),
-                );
-            }
-        });
+                        .color(crate::theme::p().muted),
+                    );
+                }
+            });
+        }
     }
 
     // Attachments --------------------------------------------------------
@@ -1984,7 +2202,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             egui::RichText::new("ATTACHMENTS")
                 .size(11.0)
                 .strong()
-                .color(crate::theme::MUTED),
+                .color(crate::theme::p().muted),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if crate::theme::action_button(
@@ -2006,7 +2224,7 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             ui.label(
                 egui::RichText::new("No attachments")
                     .size(13.0)
-                    .color(crate::theme::MUTED),
+                    .color(crate::theme::p().muted),
             );
             return;
         }
@@ -2021,11 +2239,11 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         ui.label(
             egui::RichText::new(format!(
                 "{} · {} in total",
-                pluralize(d.attachments.len(), "attachment"),
+                pluralize(d.attachments.len(), "attachment", "attachments"),
                 crate::app::format_size(total)
             ))
             .size(11.0)
-            .color(crate::theme::MUTED),
+            .color(crate::theme::p().muted),
         );
     });
 
@@ -2033,55 +2251,18 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     ui.add_space(20.0);
     if let Some(t) = d.last_modified {
         ui.horizontal(|ui| {
-            crate::theme::draw_chevron_right(ui, crate::theme::MUTED);
+            crate::theme::draw_chevron_right(ui, crate::theme::p().muted);
             ui.label(
                 egui::RichText::new(format!(
                     "Last edited {}",
                     t.format("%A, %B %-d, %Y at %-I:%M:%S %p")
                 ))
                 .size(13.0)
-                .color(crate::theme::TEXT),
+                .color(crate::theme::p().text),
             );
         });
         ui.add_space(8.0);
     }
-    ui.horizontal(|ui| {
-        if crate::theme::action_button(
-            ui,
-            "footer-history",
-            "History…",
-            crate::theme::ActionIcon::None,
-            "Browse and restore previous versions",
-        )
-        .clicked()
-        {
-            history_clicked = true;
-        }
-        if crate::theme::action_button(
-            ui,
-            "footer-autotype",
-            "Auto-Type",
-            crate::theme::ActionIcon::None,
-            "Type the entry's sequence (macOS needs Accessibility permission)",
-        )
-        .clicked()
-        {
-            autotype_clicked = true;
-        }
-        if crate::theme::action_button_ex(
-            ui,
-            "footer-delete",
-            "Delete…",
-            crate::theme::ActionIcon::None,
-            "Move the entry to the Recycle Bin",
-            Some(crate::theme::DANGER),
-        )
-        .clicked()
-        {
-            delete_clicked = true;
-        }
-    });
-
     // Keep repainting while a "Copied" confirmation is visible.
     if app
         .copied_fields
@@ -2105,12 +2286,8 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     if delete_clicked {
         app.dialog = crate::dialogs::Dialog::ConfirmDeleteEntry(id);
     }
-    if share_clicked {
-        if let Some(db) = app.db.as_ref() {
-            app.dialog = crate::dialogs::Dialog::ShareGroup(Box::new(
-                crate::dialogs::ShareDialog::for_group(db, d.parent_group_id),
-            ));
-        }
+    if favorite_clicked {
+        app.toggle_favorite(id);
     }
     if let Some(group) = group_pick {
         app.selected_group = group;
@@ -2170,15 +2347,6 @@ pub enum AttachmentAction {
     Delete(String),
 }
 
-/// "1 attachment" / "3 attachments".
-fn pluralize(n: usize, singular: &str) -> String {
-    if n == 1 {
-        format!("{n} {singular}")
-    } else {
-        format!("{n} {singular}s")
-    }
-}
-
 /// The least room a file name gets before the row stacks its buttons below.
 pub const ATTACHMENT_MIN_NAME_WIDTH: f32 = 150.0;
 
@@ -2218,7 +2386,7 @@ fn attachment_row(
             egui::Label::new(
                 egui::RichText::new(crate::app::format_size(size))
                     .size(11.0)
-                    .color(crate::theme::MUTED),
+                    .color(crate::theme::p().muted),
             )
             .truncate(),
         );
@@ -2278,8 +2446,8 @@ fn attachment_row(
 
 fn detail_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(crate::theme::CARD)
-        .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+        .fill(crate::theme::p().card)
+        .stroke(egui::Stroke::new(1.0, crate::theme::p().border))
         .corner_radius(10)
         .inner_margin(egui::Margin::symmetric(16, 12))
         .show(ui, |ui| {
@@ -2336,17 +2504,17 @@ fn value_cell(
     let lg = ui.painter().layout_no_wrap(
         label.to_owned(),
         egui::FontId::new(12.5, egui::FontFamily::Proportional),
-        crate::theme::ACCENT,
+        crate::theme::p().accent,
     );
     let lg_size = lg.size();
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if copied {
-            painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::ACCENT_SOFT);
+            painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::p().accent_soft);
         } else if hovered {
-            painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::HOVER);
+            painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::p().hover);
         }
-        painter.galley(egui::pos2(inner.left(), inner.top()), lg, crate::theme::ACCENT);
+        painter.galley(egui::pos2(inner.left(), inner.top()), lg, crate::theme::p().accent);
         let family = if mono {
             egui::FontFamily::Monospace
         } else {
@@ -2401,7 +2569,7 @@ fn copy_action(
             "Copied",
             crate::theme::ActionIcon::Check,
             "Copied to clipboard",
-            Some(crate::theme::GOOD),
+            Some(crate::theme::p().good),
         )
     } else {
         crate::theme::action_button(
@@ -2444,7 +2612,7 @@ fn field_block(
             label,
             shown,
             false,
-            crate::theme::TEXT,
+            crate::theme::p().text,
             &format!("Click to copy {copy_label}"),
             |app| app.note_copied(key, copy_label, copy_value.to_owned()),
         );
@@ -2471,24 +2639,58 @@ fn open_url(url: &str) {
     });
 }
 
-fn password_strength(pw: &str) -> (&'static str, f32, egui::Color32) {
-    let len = pw.chars().count();
-    let has_upper = pw.chars().any(|c| c.is_ascii_uppercase());
-    let has_lower = pw.chars().any(|c| c.is_ascii_lowercase());
-    let has_digit = pw.chars().any(|c| c.is_ascii_digit());
-    let has_sym = pw.chars().any(|c| !c.is_ascii_alphanumeric());
-    let classes =
-        has_upper as usize + has_lower as usize + has_digit as usize + has_sym as usize;
-    let score = len.saturating_mul(2) + classes * 4;
-    if score >= 36 {
-        ("Fantastic", 0.96, crate::theme::GOOD)
-    } else if score >= 20 {
-        ("Very Good", 0.80, crate::theme::GOOD)
-    } else if score >= 12 {
-        ("Good", 0.55, crate::theme::WARN)
-    } else {
-        ("Weak", 0.25, crate::theme::DANGER)
+/// A password strength estimate for display: label, ring fraction and colour.
+///
+/// Uses zxcvbn (dictionary words, keyboard patterns, dates, repeats and
+/// l33t substitutions), so "Password1!" rates as weak instead of the old
+/// length-plus-character-classes score's "Very Good". `user_inputs` (title,
+/// username, URL) count as guessable words too. Results are cached because
+/// the details pane is redrawn every frame and zxcvbn is not free.
+pub fn password_strength(pw: &str, user_inputs: &[&str]) -> (&'static str, f32, egui::Color32) {
+    let score = password_score(pw, user_inputs);
+    let pal = crate::theme::p();
+    match score {
+        0 => ("Very weak", 0.12, pal.danger),
+        1 => ("Weak", 0.3, pal.danger),
+        2 => ("Fair", 0.55, pal.warn),
+        3 => ("Good", 0.8, pal.good),
+        _ => ("Strong", 1.0, pal.good),
     }
+}
+
+/// The zxcvbn score (0 = trivially guessable … 4 = very strong), cached.
+pub fn password_score(pw: &str, user_inputs: &[&str]) -> u8 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    thread_local! {
+        static CACHE: std::cell::RefCell<std::collections::HashMap<u64, u8>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    if pw.is_empty() {
+        return 0;
+    }
+    let mut h = DefaultHasher::new();
+    pw.hash(&mut h);
+    user_inputs.hash(&mut h);
+    let key = h.finish();
+    if let Some(score) = CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return score;
+    }
+    // zxcvbn's work grows with length; past 100 characters nothing is weak.
+    let score = if pw.chars().count() > 100 {
+        4
+    } else {
+        let inputs: Vec<&str> = user_inputs.iter().copied().filter(|s| !s.is_empty()).collect();
+        u8::from(zxcvbn::zxcvbn(pw, &inputs).score())
+    };
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 512 {
+            c.clear();
+        }
+        c.insert(key, score);
+    });
+    score
 }
 
 /// Split a URL into `(scheme_prefix, domain_and_path)` so we can dim `https://`
@@ -2520,6 +2722,7 @@ fn is_passkey_field(key: &str) -> bool {
 
 struct EntryDetailsData {
     has_passkey: bool,
+    is_favorite: bool,
     parent_group_id: GroupId,
     title: String,
     username: String,
@@ -2533,6 +2736,13 @@ struct EntryDetailsData {
     attributes: Vec<(String, String, bool)>,
     autotype: Option<AutoTypeSummary>,
     attachments: Vec<(String, usize)>,
+}
+
+/// Sort custom attributes by name: the entry's fields live in a `HashMap`,
+/// so without this the order changed from one launch to the next.
+fn sorted_attributes(mut attrs: Vec<(String, String, bool)>) -> Vec<(String, String, bool)> {
+    attrs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then(a.0.cmp(&b.0)));
+    attrs
 }
 
 struct AutoTypeSummary {

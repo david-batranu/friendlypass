@@ -38,7 +38,7 @@ impl ColumnId {
     pub fn label(self) -> &'static str {
         match self {
             ColumnId::Title => "Title",
-            ColumnId::UserName => "UserName",
+            ColumnId::UserName => "Username",
             ColumnId::Password => "Password",
             ColumnId::Url => "URL",
             ColumnId::Notes => "Notes",
@@ -97,7 +97,25 @@ pub struct Preferences {
     /// Windows only: store the auto-unlock secret in a DPAPI-protected file
     /// instead of Credential Manager (for accounts without a login password).
     pub windows_dpapi_fallback: bool,
+    /// Light, dark, or follow the operating system.
+    pub theme: crate::theme::ThemeChoice,
+    /// Clear the clipboard a while after copying a value into it (only if it
+    /// still holds what we put there).
+    pub clipboard_clear: bool,
+    /// Seconds before a copied value is cleared from the clipboard.
+    pub clipboard_clear_secs: u32,
+    /// Lock the database after a period without user input.
+    pub auto_lock: bool,
+    /// Minutes of inactivity before the database locks.
+    pub auto_lock_minutes: u32,
 }
+
+/// Default seconds before a copied value is cleared from the clipboard.
+pub const DEFAULT_CLIPBOARD_CLEAR_SECS: u32 = 30;
+/// Default idle minutes before auto-lock (when the user turns it on).
+pub const DEFAULT_AUTO_LOCK_MINUTES: u32 = 10;
+/// The idle timeouts offered in Settings, in minutes.
+pub const AUTO_LOCK_CHOICES: [u32; 7] = [1, 2, 5, 10, 15, 30, 60];
 
 impl Default for Preferences {
     fn default() -> Self {
@@ -107,6 +125,11 @@ impl Default for Preferences {
             last_db: None,
             list_view: true,
             windows_dpapi_fallback: false,
+            theme: crate::theme::ThemeChoice::System,
+            clipboard_clear: true,
+            clipboard_clear_secs: DEFAULT_CLIPBOARD_CLEAR_SECS,
+            auto_lock: false,
+            auto_lock_minutes: DEFAULT_AUTO_LOCK_MINUTES,
         }
     }
 }
@@ -131,6 +154,8 @@ impl Preferences {
             }
         }
         self.recent.truncate(MAX_RECENT);
+        self.clipboard_clear_secs = self.clipboard_clear_secs.clamp(5, 600);
+        self.auto_lock_minutes = self.auto_lock_minutes.clamp(1, 24 * 60);
     }
 
     /// Canonical display path (resolves symlinks when possible).
@@ -304,6 +329,31 @@ mod tests {
         let loaded = Preferences::load(&file);
         assert_eq!(loaded.visible_columns().count(), 1);
         assert_eq!(loaded.visible_columns().next().unwrap().id, ColumnId::Title);
+    }
+
+    #[test]
+    fn security_and_theme_preferences_default_and_roundtrip() {
+        let prefs = Preferences::default();
+        assert!(prefs.clipboard_clear, "clipboard auto-clear is on by default");
+        assert_eq!(prefs.clipboard_clear_secs, 30);
+        assert!(!prefs.auto_lock, "idle auto-lock is off by default");
+        assert_eq!(prefs.theme, crate::theme::ThemeChoice::System);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        let mut prefs = Preferences::default();
+        prefs.clipboard_clear = false;
+        prefs.clipboard_clear_secs = 45;
+        prefs.auto_lock = true;
+        prefs.auto_lock_minutes = 5;
+        prefs.theme = crate::theme::ThemeChoice::Dark;
+        prefs.save(&file).unwrap();
+        assert_eq!(Preferences::load(&file), prefs);
+
+        // Files written before these settings existed get the defaults.
+        std::fs::write(&file, br#"{"recent":[]}"#).unwrap();
+        let old = Preferences::load(&file);
+        assert!(old.clipboard_clear && old.clipboard_clear_secs == 30 && !old.auto_lock);
     }
 
     #[test]

@@ -12,8 +12,6 @@ use crate::refs::{self, RefTarget};
 /// Which modal window (if any) is currently open.
 pub enum Dialog {
     None,
-    /// `entry_id == None` creates a new entry in `group`.
-    EntryEdit(Box<EntryEdit>),
     GroupNew(Box<GroupEdit>),
     GroupRename(Box<GroupEdit>),
     Generator(Box<Generator>),
@@ -318,7 +316,7 @@ fn form_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui
             egui::Label::new(
                 egui::RichText::new(label)
                     .size(13.5)
-                    .color(crate::theme::MUTED),
+                    .color(crate::theme::p().muted),
             ),
         );
         add(ui, label_resp.id);
@@ -385,6 +383,15 @@ pub struct EntryEdit {
     pub ref_target: Option<usize>,
     pub ref_field: char,
     pub ref_into: char,
+    /// Collapsible editor sections (collapsed by default).
+    pub show_autotype: bool,
+    pub show_references: bool,
+    pub show_icon: bool,
+    /// Focus the Title field on the next frame (new entries).
+    pub focus_title: bool,
+    /// The favorite marker, kept out of the attribute list (it is toggled
+    /// with the star) but preserved when the edit is applied.
+    pub favorite_marker: Option<keepass::db::Value<String>>,
 }
 
 impl EntryEdit {
@@ -415,6 +422,11 @@ impl EntryEdit {
             ref_target: None,
             ref_field: refs::CODE_PASSWORD,
             ref_into: refs::CODE_NOTES,
+            show_autotype: false,
+            show_references: false,
+            show_icon: false,
+            focus_title: true,
+            favorite_marker: None,
         }
     }
 
@@ -427,7 +439,10 @@ impl EntryEdit {
         let mut attributes: Vec<AttributeRow> = entry
             .fields
             .iter()
-            .filter(|(k, _)| !fields::KNOWN_FIELDS.contains(&k.as_str()))
+            .filter(|(k, _)| {
+                !fields::KNOWN_FIELDS.contains(&k.as_str())
+                    && k.as_str() != crate::browser::FAVORITE_FIELD
+            })
             .map(|(k, v)| AttributeRow {
                 key: k.clone(),
                 value: v.get().clone(),
@@ -481,6 +496,11 @@ impl EntryEdit {
             ref_target: None,
             ref_field: refs::CODE_PASSWORD,
             ref_into: refs::CODE_NOTES,
+            show_autotype: false,
+            show_references: false,
+            show_icon: false,
+            focus_title: false,
+            favorite_marker: entry.fields.get(crate::browser::FAVORITE_FIELD).cloned(),
         }
     }
 
@@ -504,6 +524,9 @@ impl EntryEdit {
                 Value::unprotected(a.value.clone())
             };
             out.insert(key.to_owned(), value);
+        }
+        if let Some(marker) = &self.favorite_marker {
+            out.insert(crate::browser::FAVORITE_FIELD.to_owned(), marker.clone());
         }
         out
     }
@@ -582,9 +605,13 @@ pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
                     let field_width = (ui.available_width() - 125.0).max(160.0);
                     form_row(ui, "Title:", |ui, id| {
                         let r = ui.add(egui::TextEdit::singleline(&mut d.title).desired_width(field_width));
+                        // A new entry starts with the cursor in the title.
+                        if std::mem::take(&mut d.focus_title) {
+                            r.request_focus();
+                        }
                         r.labelled_by(id);
                     });
-                    form_row(ui, "UserName:", |ui, id| {
+                    form_row(ui, "Username:", |ui, id| {
                         let r = ui.add(egui::TextEdit::singleline(&mut d.username).desired_width(field_width));
                         r.labelled_by(id);
                     });
@@ -634,7 +661,7 @@ pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
                     let mut remove_attr: Option<usize> = None;
                     for (i, a) in d.attributes.iter_mut().enumerate() {
                         egui::Frame::new()
-                            .fill(crate::theme::BG)
+                            .fill(crate::theme::p().bg)
                             .corner_radius(8)
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
@@ -673,8 +700,11 @@ pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
                     }
 
                     // --- auto-type --------------------------------------------
+                    // Auto-Type, References and Icon are rarely needed, so
+                    // they sit behind collapsed disclosures.
                     ui.separator();
-                    ui.strong("Auto-Type");
+                    crate::theme::disclosure(ui, "edit-autotype", "Auto-Type settings", &mut d.show_autotype);
+                    if d.show_autotype {
                     ui.checkbox(&mut d.at_enabled, "Auto-Type enabled");
                     ui.horizontal(|ui| {
                         let l = ui.label("Default sequence:");
@@ -689,7 +719,7 @@ pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
                     let mut remove_assoc: Option<usize> = None;
                     for (i, a) in d.at_associations.iter_mut().enumerate() {
                         egui::Frame::new()
-                            .fill(crate::theme::BG)
+                            .fill(crate::theme::p().bg)
                             .corner_radius(8)
                             .inner_margin(egui::Margin::symmetric(8, 6))
                             .show(ui, |ui| {
@@ -739,9 +769,11 @@ pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
                         }
                     }
 
+                    }
+
                     // --- entry references -------------------------------------
-                    ui.separator();
-                    ui.strong("References");
+                    crate::theme::disclosure(ui, "edit-references", "References", &mut d.show_references);
+                    if d.show_references {
                     ui.label("Insert a field reference to another entry ({REF:…}) into one of this entry's fields.");
                     ui.horizontal(|ui| {
                         let selected_text = d
@@ -797,32 +829,46 @@ pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
                         }
                     }
 
+                    }
+
                     // --- icon picker ---------------------------------------------
-                    ui.separator();
-                    ui.strong("Icon");
-                    icon_picker(ui, app, &mut d.icon, &d.custom_icons, &mut d.icon_path);
+                    crate::theme::disclosure(ui, "edit-icon", "Icon", &mut d.show_icon);
+                    if d.show_icon {
+                        icon_picker(ui, app, &mut d.icon, &d.custom_icons, &mut d.icon_path);
+                    }
 
 }
 
-/// The fixed header of the inline entry editor (title + OK/Cancel).
-/// The body is rendered separately inside a scroll area.
-pub fn entry_edit_inline_header(ui: &mut egui::Ui) -> (bool, bool) {
+/// The pinned header of the inline entry editor: the title on the left,
+/// Cancel and the primary button ("Create" for a new entry, "Save" for an
+/// edit) on the right. It stays put while the form below scrolls.
+/// Returns `(apply, cancel)`.
+pub fn entry_edit_inline_header(ui: &mut egui::Ui, is_new: bool) -> (bool, bool) {
     let mut apply = false;
     let mut cancelled = false;
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("Edit Item")
+            egui::RichText::new(if is_new { "New Item" } else { "Edit Item" })
                 .size(24.0)
                 .strong()
-                .color(crate::theme::TEXT),
+                .color(crate::theme::p().text),
         );
-        ui.add_space(10.0);
-        if ui.add(crate::theme::primary_button("OK")).clicked() {
-            apply = true;
-        }
-        if ui.add(crate::theme::subtle_button("Cancel")).clicked() {
-            cancelled = true;
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(crate::theme::primary_button(if is_new { "Create" } else { "Save" }))
+                .on_hover_text("Cmd/Ctrl+Enter")
+                .clicked()
+            {
+                apply = true;
+            }
+            if ui
+                .button("Cancel")
+                .on_hover_text("Discard the changes (Escape)")
+                .clicked()
+            {
+                cancelled = true;
+            }
+        });
     });
     ui.add(egui::Separator::default().spacing(8.0));
     (apply, cancelled)
@@ -939,16 +985,83 @@ impl NewDb {
 // rendering
 // ---------------------------------------------------------------------------
 
+/// Show a dialog: centred over a dimmed backdrop that blocks the rest of the
+/// window (egui's [`egui::Modal`]), with a title row and a close button.
+/// Tall content scrolls inside the dialog. Returns `false` once the close
+/// button was clicked. (Escape and Enter are handled by [`show`].)
+fn modal_window(
+    ctx: &egui::Context,
+    id_salt: &str,
+    title: &str,
+    width: f32,
+    add: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let pal = crate::theme::p();
+    let screen = ctx.content_rect();
+    let width = width.min(screen.width() - 48.0).max(240.0);
+    let max_h = (screen.height() - 140.0).max(160.0);
+    let mut open = true;
+    let frame = egui::Frame::window(&ctx.global_style())
+        .fill(pal.panel)
+        .inner_margin(egui::Margin::symmetric(20, 16));
+    egui::Modal::new(egui::Id::new(("friendlypass-dialog", id_salt)))
+        .backdrop_color(pal.backdrop)
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(title).size(17.0).strong().color(pal.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::theme::icon_button(
+                        ui,
+                        "dialog-close",
+                        "Close dialog",
+                        false,
+                        crate::theme::draw_close_icon,
+                    )
+                    .clicked()
+                    {
+                        open = false;
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            // The modal is centred using last frame's size, so the space
+            // below its top edge can be smaller than its content. Asking for
+            // at least the content height (capped at `max_h`) lets it grow
+            // and re-centre instead of staying clipped.
+            let key = egui::Id::new(("dialog-content-h", id_salt));
+            let prev = ui.ctx().data(|d| d.get_temp::<f32>(key));
+            let out = egui::ScrollArea::vertical()
+                .id_salt(("dialog-scroll", id_salt))
+                .max_height(max_h)
+                .min_scrolled_height(prev.unwrap_or(0.0).min(max_h))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_width(width - 4.0);
+                    add(ui);
+                });
+            // The scroll area sizes itself from the previous frame's content;
+            // when the content grows or shrinks (e.g. "Start serving" adds
+            // rows), ask for one more frame so the dialog never stays clipped.
+            let h = out.content_size.y;
+            if prev.is_none_or(|p| (p - h).abs() > 0.5) {
+                ui.ctx().data_mut(|d| d.insert_temp(key, h));
+                ui.ctx().request_repaint();
+            }
+        });
+    open
+}
+
 /// Render whatever dialog is currently open.
 pub fn show(app: &mut App, ctx: &egui::Context) {
     // Universal dialog keys: Escape cancels, Enter confirms single-line
-    // dialogs (the entry editor uses Cmd+Enter because of its multiline
-    // notes field).
+    // dialogs. (The entry editor is not a dialog: it lives inline in the
+    // details pane and handles Cmd+Enter / Escape itself.)
     let dialog_open = !matches!(app.dialog, Dialog::None);
     let escape_key = dialog_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     // Enter confirms these dialogs. It is deliberately not consumed in
-    // dialogs that don't use it (the entry editor needs Enter in its
-    // multiline notes field; it uses Cmd+Enter to apply instead).
+    // dialogs that don't use it.
     let enter_applies = matches!(
         app.dialog,
         Dialog::ConfirmUpgrade
@@ -972,8 +1085,6 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             | Dialog::Settings
     );
     let enter_key = dialog_open && enter_applies && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-    let cmd_enter_key = matches!(app.dialog, Dialog::EntryEdit(_))
-        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
 
     if dialog_open && escape_key {
         app.dialog = Dialog::None;
@@ -1028,43 +1139,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let dialog = std::mem::replace(&mut app.dialog, Dialog::None);
     match dialog {
         Dialog::None => {}
-        Dialog::EntryEdit(mut d) => {
-            let mut open = true;
-            let mut apply = false;
-            let mut cancelled = false;
-            egui::Window::new(if d.entry_id.is_some() { "Edit Entry" } else { "New Entry" })
-                .open(&mut open)
-                .collapsible(false)
-                .default_width(740.0)
-                .show(ctx, |ui| {
-                    entry_edit_body(ui, app, &mut d);
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            cancelled = true;
-                        }
-                        if ui.add(crate::theme::primary_button("OK")).clicked() {
-                            apply = true;
-                        }
-                    });
-                });
-            if cmd_enter_key {
-                apply = true;
-            }
-            if apply {
-                d.apply(app);
-            } else if !cancelled && open {
-                app.dialog = Dialog::EntryEdit(d);
-            }
-        }
         Dialog::GroupNew(mut d) => {
-            let mut open = true;
+            let open: bool;
             let mut apply = false;
             let mut cancelled = false;
-            egui::Window::new("New Group")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "new-group", "New Group", 460.0, |ui| {
                     let l = ui.label("Group name:");
                     let r = ui.text_edit_singleline(&mut d.name);
                     r.labelled_by(l.id);
@@ -1073,7 +1152,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Create").clicked() {
+                        if ui.add(crate::theme::primary_button("Create")).clicked() {
                             apply = true;
                         }
                     });
@@ -1097,13 +1176,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 app.dialog = Dialog::GroupNew(d);
             }
         }
-        Dialog::GroupRename(mut d) => {            let mut open = true;
+        Dialog::GroupRename(mut d) => {            let open: bool;
             let mut apply = false;
             let mut cancelled = false;
-            egui::Window::new("Rename Group")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "rename-group", "Rename Group", 460.0, |ui| {
                     let l = ui.label("Group name:");
                     let r = ui.text_edit_singleline(&mut d.name);
                     r.labelled_by(l.id);
@@ -1112,7 +1188,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Rename").clicked() {
+                        if ui.add(crate::theme::primary_button("Rename")).clicked() {
                             apply = true;
                         }
                     });
@@ -1129,17 +1205,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                 }
             }
-            if !cancelled && open {
+            if !apply && !cancelled && open {
                 app.dialog = Dialog::GroupRename(d);
             }
         }
         Dialog::Generator(mut g) => {
-            let mut open = true;
+            let open: bool;
             let mut copy = false;
-            egui::Window::new("Password Generator")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "password-generator", "Password Generator", 460.0, |ui| {
                     let l = ui.label("Length:");
                     let r = ui.add(egui::Slider::new(&mut g.length, 8..=64).text("characters"));
                     r.labelled_by(l.id);
@@ -1171,12 +1244,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::DbInfo => {
-            let mut open = true;
+            let open: bool;
             let mut close_clicked = false;
-            egui::Window::new("Database Information")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "database-information", "Database Information", 460.0, |ui| {
                     if let Some(db) = app.db.as_ref() {
                         egui::Grid::new("db-info").num_columns(2).show(ui, |ui| {
                             for (k, v) in [
@@ -1218,13 +1288,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::SaveAs(mut path) => {
-            let mut open = true;
+            let open: bool;
             let mut save = false;
             let mut cancelled = false;
-            egui::Window::new("Save Database As")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "save-database-as", "Save Database As", 460.0, |ui| {
                     let l = ui.label("File path:");
                     let r = ui.add(egui::TextEdit::singleline(&mut path).hint_text("/path/to/database.kdbx"));
                     r.labelled_by(l.id);
@@ -1242,7 +1309,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Save").clicked() {
+                        if ui.add(crate::theme::primary_button("Save")).clicked() {
                             save = true;
                         }
                     });
@@ -1258,13 +1325,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::NewDb(mut d) => {
-            let mut open = true;
+            let open: bool;
             let mut create = false;
             let mut cancelled = false;
-            egui::Window::new("Create New Database")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "create-new-database", "Create New Database", 760.0, |ui| {
                     let mut validation_error = d.error.clone();
                     form_row(ui, "File path:", |ui, id| {
                         let r = ui.add(
@@ -1318,14 +1382,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         validation_error = e;
                     }
                     if !validation_error.is_empty() {
-                        ui.colored_label(egui::Color32::RED, &validation_error);
+                        ui.colored_label(crate::theme::p().danger, &validation_error);
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Create").clicked() {
+                        if ui.add(crate::theme::primary_button("Create")).clicked() {
                             match d.validate() {
                                 Ok(()) => {
                                     create = true;
@@ -1349,13 +1413,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::ConfirmUpgrade => {
-            let mut open = true;
+            let open: bool;
             let mut confirmed = false;
             let mut cancelled = false;
-            egui::Window::new("Upgrade Database Format")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "upgrade-database-format", "Upgrade Database Format", 460.0, |ui| {
                     ui.label("This database uses the older KDBX 3.1 format.");
                     ui.label("Saving requires upgrading it to KDBX 4.1 (KeePassXC's current format).");
                     ui.add_space(6.0);
@@ -1363,7 +1424,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Upgrade and Save").clicked() {
+                        if ui.add(crate::theme::primary_button("Upgrade and Save")).clicked() {
                             confirmed = true;
                         }
                     });
@@ -1376,15 +1437,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::ConfirmDeleteEntry(id) => {
-            let mut open = true;
+            let open: bool;
             let mut confirmed = false;
             let mut cancelled = false;
             // Word the confirmation like KeePassXC does.
             let to_recycle = app.deletes_to_recycle_bin_entry(id);
-            egui::Window::new("Delete Entry")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "delete-entry", "Delete Entry", 460.0, |ui| {
                     if to_recycle {
                         ui.label("Move this entry to the Recycle Bin?");
                         ui.weak("Entries in the Recycle Bin can be restored or deleted permanently later.");
@@ -1396,7 +1454,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button(if to_recycle { "Move to Recycle Bin" } else { "Delete" }).clicked() {
+                        if ui
+                            .add(crate::theme::danger_button(if to_recycle { "Move to Recycle Bin" } else { "Delete" }))
+                            .clicked()
+                        {
                             confirmed = true;
                         }
                     });
@@ -1408,7 +1469,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::ConfirmDeleteAttachment(id, name) => {
-            let mut open = true;
+            let open: bool;
             let mut confirmed = false;
             let mut cancelled = false;
             let size = app
@@ -1416,10 +1477,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .as_ref()
                 .and_then(|db| db.entry(id))
                 .and_then(|e| e.attachment_by_name(&name).map(|a| a.data.get().len()));
-            egui::Window::new("Delete Attachment")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "delete-attachment", "Delete Attachment", 460.0, |ui| {
                     ui.label(format!("Remove the attachment \"{name}\" from this entry?"));
                     if let Some(size) = size {
                         ui.weak(format!("{} of data.", crate::app::format_size(size)));
@@ -1433,7 +1491,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Delete").clicked() {
+                        if ui.add(crate::theme::danger_button("Delete")).clicked() {
                             confirmed = true;
                         }
                     });
@@ -1447,20 +1505,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::ConfirmDeleteGroup(id) => {
-            let mut open = true;
+            let open: bool;
             let mut confirmed = false;
             let mut cancelled = false;
-            egui::Window::new("Delete Group")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "delete-group", "Delete Group", 460.0, |ui| {
                     ui.label("Delete this group and all its contents? This cannot be undone.");
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Delete").clicked() {
+                        if ui.add(crate::theme::danger_button("Delete")).clicked() {
                             confirmed = true;
                         }
                     });
@@ -1499,13 +1554,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 })
                 .unwrap_or_default();
 
-            let mut open = true;
+            let open: bool;
             let mut cancelled = false;
             let mut restore: Option<usize> = None;
-            egui::Window::new("Entry History")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "entry-history", "Entry History", 600.0, |ui| {
                     if history.is_empty() {
                         ui.label("This entry has no recorded history.");
                     } else {
@@ -1516,7 +1568,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.strong("#");
                                 ui.strong("Modified");
                                 ui.strong("Title");
-                                ui.strong("UserName");
+                                ui.strong("Username");
                                 ui.strong("");
                                 ui.end_row();
                                 for (i, modified, title, username) in &history {
@@ -1552,13 +1604,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .map(|bin| bin.entries().count() + bin.groups().count())
                 .unwrap_or(0);
 
-            let mut open = true;
+            let open: bool;
             let mut confirmed = false;
             let mut cancelled = false;
-            egui::Window::new("Empty the Recycle Bin?")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "empty-the-recycle-bin", "Empty the Recycle Bin?", 460.0, |ui| {
                     ui.label(format!("Permanently remove all {count} objects from the Recycle Bin?"));
                     ui.weak("This cannot be undone.");
                     ui.add_space(6.0);
@@ -1566,7 +1615,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         if ui.button("Cancel").clicked() {
                             cancelled = true;
                         }
-                        if ui.button("Empty Recycle Bin").clicked() {
+                        if ui.add(crate::theme::danger_button("Empty Recycle Bin")).clicked() {
                             confirmed = true;
                         }
                     });
@@ -1578,13 +1627,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::BatchMove(mut bm) => {
-            let mut open = true;
+            let open: bool;
             let mut cancelled = false;
             let mut move_clicked = false;
-            egui::Window::new(format!("Move {} Entries to Group", bm.entries.len()))
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            let batch_title = if bm.entries.len() == 1 {
+                "Move Entry to Group".to_owned()
+            } else {
+                format!("Move {} Entries to Group", bm.entries.len())
+            };
+            open = modal_window(ctx, "batch-move", &batch_title, 460.0, |ui| {
                     ui.label("Choose the destination group:");
                     egui::ScrollArea::vertical()
                         .max_height(220.0)
@@ -1616,14 +1667,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::SshAgent => {
-            let mut open = true;
+            let open: bool;
             let mut close_clicked = false;
             let mut start_clicked = false;
             let mut stop_clicked = false;
-            egui::Window::new("SSH Agent")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "ssh-agent", "SSH Agent", 560.0, |ui| {
                     // Detect SSH keys in entry attachments (live, so new
                     // attachments appear without reopening the window).
                     let (identities, skipped) = app
@@ -1658,7 +1706,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         });
                     }
                     for note in &skipped {
-                        ui.colored_label(egui::Color32::RED, format!("skipped: {note}"));
+                        ui.colored_label(crate::theme::p().danger, format!("skipped: {note}"));
                     }
 
                     ui.separator();
@@ -1718,14 +1766,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::Browser => {
-            let mut open = true;
+            let open: bool;
             let mut close_clicked = false;
             let mut start_clicked = false;
             let mut stop_clicked = false;
-            egui::Window::new("Browser Integration")
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "browser-integration", "Browser Integration", 520.0, |ui| {
                     ui.label(
                         "Serve the KeePassXC-Browser protocol on the same socket the shipped \
                          keepassxc-proxy connects to, so the real browser extension can fill \
@@ -1800,15 +1845,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::ShareGroup(mut d) => {
-            let mut open = true;
+            let open: bool;
             let mut cancelled = false;
             let mut saved = false;
             let mut export_clicked = false;
             let mut import_clicked = false;
-            egui::Window::new(format!("Share Group “{}”", d.group_name))
-                .open(&mut open)
-                .collapsible(false)
-                .show(ctx, |ui| {
+            let share_title = format!("Share Group \u{201c}{}\u{201d}", d.group_name);
+            open = modal_window(ctx, "share-group", &share_title, 560.0, |ui| {
                     ui.label(
                         "KeeShare (classic shares): the group subtree is exported to a KDBX \
                          container protected by the share password, and can be imported back \
@@ -1982,13 +2025,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::Shortcuts => {
-            let mut open = true;
+            let open: bool;
             let mut close_clicked = false;
-            egui::Window::new("Keyboard Shortcuts")
-                .open(&mut open)
-                .collapsible(false)
-                .default_width(560.0)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "keyboard-shortcuts", "Keyboard Shortcuts", 560.0, |ui| {
                     egui::Grid::new("shortcuts-grid")
                         .num_columns(2)
                         .striped(true)
@@ -2012,15 +2051,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::Columns => {
-            let mut open = true;
+            let open: bool;
             let mut close_clicked = false;
             let mut changed = false;
             let mut cols = app.prefs.columns.clone();
-            egui::Window::new("Columns")
-                .open(&mut open)
-                .collapsible(false)
-                .default_width(600.0)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "columns", "Columns", 600.0, |ui| {
                     ui.label(
                         "Choose which columns are visible, reorder them, and set their width. \
                          The width is the starting width; column borders can also be dragged.",
@@ -2096,14 +2131,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::Import(mut d) => {
-            let mut open = true;
+            let open: bool;
             let mut import_clicked = false;
             let mut cancelled = false;
-            egui::Window::new("Import")
-                .open(&mut open)
-                .collapsible(false)
-                .default_width(860.0)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "import", "Import", 720.0, |ui| {
                     form_row(ui, "File to import:", |ui, id| {
                         let r = ui.add(
                             egui::TextEdit::singleline(&mut d.path)
@@ -2158,7 +2189,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                          XML, CSV, Bitwarden JSON and 1PUX are unencrypted; KDB/KDBX need their password.",
                     );
                     if !d.error.is_empty() {
-                        ui.colored_label(egui::Color32::RED, &d.error);
+                        ui.colored_label(crate::theme::p().danger, &d.error);
                     }
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -2195,7 +2226,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::Export(mut d) => {
-            let mut open = true;
+            let open: bool;
             let mut export_clicked = false;
             let mut cancelled = false;
             let title = if d.group.is_some() {
@@ -2203,11 +2234,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             } else {
                 "Export (unencrypted)"
             };
-            egui::Window::new(title)
-                .open(&mut open)
-                .collapsible(false)
-                .default_width(860.0)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "export", title, 720.0, |ui| {
                     if d.group.is_some() {
                         ui.label(format!("Group: {}", d.group_name));
                     }
@@ -2247,12 +2274,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     }
                     ui.colored_label(
-                        egui::Color32::from_rgb(0xe0, 0xa0, 0x40),
+                        crate::theme::p().warn_fg,
                         "You are about to export your database to an unencrypted file. \
                          This leaves passwords and sensitive information readable by anyone.",
                     );
                     if !d.error.is_empty() {
-                        ui.colored_label(egui::Color32::RED, &d.error);
+                        ui.colored_label(crate::theme::p().danger, &d.error);
                     }
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -2312,13 +2339,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::Settings => {
-            let mut open = true;
+            let open: bool;
             let mut close_clicked = false;
-            egui::Window::new("Settings")
-                .open(&mut open)
-                .collapsible(false)
-                .default_width(660.0)
-                .show(ctx, |ui| {
+            open = modal_window(ctx, "settings", "Settings", 660.0, |ui| {
                     ui.heading("Startup");
                     let supported = crate::startup::launch_at_login_supported();
                     let mut launch = app.launch_at_login;
@@ -2399,6 +2422,66 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                              and auto-unlock at startup” and unlock once.",
                         );
                     }
+
+                    ui.add_space(10.0);
+                    ui.heading("Security");
+                    let mut prefs_changed = false;
+                    ui.horizontal(|ui| {
+                        prefs_changed |= ui
+                            .checkbox(&mut app.prefs.clipboard_clear, "Clear the clipboard after")
+                            .on_hover_text(
+                                "Copied passwords and other values are removed from the \
+                                 clipboard after this delay, unless you copied something else \
+                                 in the meantime.",
+                            )
+                            .changed();
+                        let r = ui.add_enabled(
+                            app.prefs.clipboard_clear,
+                            egui::DragValue::new(&mut app.prefs.clipboard_clear_secs)
+                                .range(5..=600)
+                                .suffix(" s"),
+                        );
+                        prefs_changed |= r.changed();
+                    });
+                    ui.horizontal(|ui| {
+                        prefs_changed |= ui
+                            .checkbox(&mut app.prefs.auto_lock, "Lock after inactivity of")
+                            .on_hover_text(
+                                "Locks the database when there was no keyboard or mouse input \
+                                 for this long. With unsaved changes (or an open editor) the \
+                                 lock is postponed rather than discarding your work.",
+                            )
+                            .changed();
+                        ui.add_enabled_ui(app.prefs.auto_lock, |ui| {
+                            egui::ComboBox::new("auto-lock-minutes", "minutes")
+                                .selected_text(app.prefs.auto_lock_minutes.to_string())
+                                .show_ui(ui, |ui| {
+                                    for m in crate::config::AUTO_LOCK_CHOICES {
+                                        prefs_changed |= ui
+                                            .selectable_value(
+                                                &mut app.prefs.auto_lock_minutes,
+                                                m,
+                                                m.to_string(),
+                                            )
+                                            .changed();
+                                    }
+                                });
+                        });
+                    });
+
+                    ui.add_space(10.0);
+                    ui.heading("Appearance");
+                    ui.horizontal(|ui| {
+                        ui.label("Theme:");
+                        for choice in crate::theme::ThemeChoice::ALL {
+                            prefs_changed |= ui
+                                .radio_value(&mut app.prefs.theme, choice, choice.label())
+                                .changed();
+                        }
+                    });
+                    if prefs_changed {
+                        app.save_preferences();
+                    }
                     ui.add_space(8.0);
                     if ui.button("Close").clicked() {
                         close_clicked = true;
@@ -2421,6 +2504,9 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Cmd/Ctrl+N", "New entry"),
     ("Cmd/Ctrl+Shift+N", "New group"),
     ("Cmd/Ctrl+E or Enter", "Edit the selected entry"),
+    ("Up / Down", "Select the previous / next entry"),
+    ("Shift+click", "Select a range of entries"),
+    ("Cmd/Ctrl+click", "Add or remove an entry from the selection"),
     ("Cmd/Ctrl+H", "Entry history"),
     ("Cmd/Ctrl+G", "Password generator"),
     ("Delete / Backspace", "Recycle the selected entry"),
@@ -2428,8 +2514,9 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Cmd/Ctrl+Shift+S", "Save as…"),
     ("Cmd/Ctrl+L", "Lock the database"),
     ("F1", "Show this shortcut reference"),
-    ("Escape", "Close a dialog / clear the search"),
-    ("Enter", "Confirm a dialog (Cmd+Enter in the entry editor)"),
+    ("Escape", "Close a dialog, cancel the entry editor, clear the search"),
+    ("Enter", "Confirm a dialog"),
+    ("Cmd/Ctrl+Enter", "Create / save in the entry editor"),
 ];
 
 /// Create (and open) a new database from the dialog state.

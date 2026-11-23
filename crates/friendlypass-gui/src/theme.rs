@@ -1,135 +1,287 @@
-//! The GUI look: a light, 1Password-inspired theme.
+//! The GUI look: a 1Password-inspired theme with light and dark variants.
 //!
 //! Keep the palette and spacing in one place so the panels, cards and entry
-//! list stay visually consistent.
+//! list stay visually consistent. Colours are read through [`p()`], which
+//! returns the palette of the theme egui resolved for the current frame
+//! (light, dark, or whatever the OS asks for when following the system).
 
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Vec2, Visuals,
 };
+use std::cell::Cell;
 
-pub const BG: Color32 = Color32::from_rgb(0xF6, 0xF7, 0xF9);
-pub const SIDEBAR: Color32 = Color32::from_rgb(0xEC, 0xEE, 0xF2);
-pub const SIDEBAR_HOVER: Color32 = Color32::from_rgb(0xE1, 0xE5, 0xEC);
-pub const SIDEBAR_SELECTED: Color32 = Color32::from_rgb(0xD4, 0xE3, 0xFA);
-pub const LIST_HOVER: Color32 = Color32::from_rgb(0xF1, 0xF4, 0xF9);
-pub const LIST_SELECTED: Color32 = Color32::from_rgb(0xE4, 0xEE, 0xFD);
-pub const LIST_SELECTED_STROKE: Color32 = Color32::from_rgb(0xB8, 0xD2, 0xF8);
-pub const PANEL: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-pub const CARD: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-pub const BORDER: Color32 = Color32::from_rgb(0xE2, 0xE6, 0xED);
-pub const TEXT: Color32 = Color32::from_rgb(0x18, 0x1D, 0x24);
-pub const MUTED: Color32 = Color32::from_rgb(0x64, 0x6D, 0x7A);
-pub const ACCENT: Color32 = Color32::from_rgb(0x18, 0x6A, 0xDE);
-pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0xE8, 0xF0, 0xFE);
-pub const HOVER: Color32 = Color32::from_rgb(0xEF, 0xF2, 0xF6);
-pub const DANGER: Color32 = Color32::from_rgb(0xD9, 0x3B, 0x3B);
-pub const DANGER_SOFT: Color32 = Color32::from_rgb(0xFD, 0xEC, 0xEC);
-pub const DANGER_SOFT_PRESSED: Color32 = Color32::from_rgb(0xF8, 0xD9, 0xD9);
-pub const GOOD: Color32 = Color32::from_rgb(0x2E, 0xA8, 0x3A);
-pub const WARN: Color32 = Color32::from_rgb(0xE5, 0x93, 0x1A);
-pub const GOLD: Color32 = Color32::from_rgb(0xF5, 0xB8, 0x1D);
-pub const TAG_GREEN: Color32 = Color32::from_rgb(0x2F, 0x9E, 0x62);
+/// Every colour the hand-painted UI uses, for one theme.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Palette {
+    pub dark: bool,
+    pub bg: Color32,
+    pub sidebar: Color32,
+    pub sidebar_hover: Color32,
+    pub sidebar_selected: Color32,
+    pub list_hover: Color32,
+    pub list_selected: Color32,
+    pub list_selected_stroke: Color32,
+    pub panel: Color32,
+    pub card: Color32,
+    pub border: Color32,
+    pub text: Color32,
+    pub muted: Color32,
+    pub accent: Color32,
+    pub accent_soft: Color32,
+    /// Text/icon colour on an accent or danger fill.
+    pub on_accent: Color32,
+    pub hover: Color32,
+    pub pressed: Color32,
+    pub danger: Color32,
+    pub danger_soft: Color32,
+    pub danger_soft_pressed: Color32,
+    pub good: Color32,
+    pub warn: Color32,
+    /// Warning text on the panel background (darker than `warn` in light mode).
+    pub warn_fg: Color32,
+    pub gold: Color32,
+    pub tag_green: Color32,
+    pub widget_inactive: Color32,
+    pub widget_active: Color32,
+    /// Background track of the progress rings.
+    pub ring_track: Color32,
+    /// The "all items" grid icon.
+    pub category_icon: Color32,
+    /// Dimmed backdrop behind modal dialogs.
+    pub backdrop: Color32,
+}
+
+pub const LIGHT: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(0xF6, 0xF7, 0xF9),
+    sidebar: Color32::from_rgb(0xEC, 0xEE, 0xF2),
+    sidebar_hover: Color32::from_rgb(0xE1, 0xE5, 0xEC),
+    sidebar_selected: Color32::from_rgb(0xD4, 0xE3, 0xFA),
+    list_hover: Color32::from_rgb(0xF1, 0xF4, 0xF9),
+    list_selected: Color32::from_rgb(0xE4, 0xEE, 0xFD),
+    list_selected_stroke: Color32::from_rgb(0xB8, 0xD2, 0xF8),
+    panel: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    card: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    border: Color32::from_rgb(0xE2, 0xE6, 0xED),
+    text: Color32::from_rgb(0x18, 0x1D, 0x24),
+    muted: Color32::from_rgb(0x64, 0x6D, 0x7A),
+    accent: Color32::from_rgb(0x18, 0x6A, 0xDE),
+    accent_soft: Color32::from_rgb(0xE8, 0xF0, 0xFE),
+    on_accent: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    hover: Color32::from_rgb(0xEF, 0xF2, 0xF6),
+    pressed: Color32::from_rgb(0xE2, 0xE5, 0xEA),
+    danger: Color32::from_rgb(0xD9, 0x3B, 0x3B),
+    danger_soft: Color32::from_rgb(0xFD, 0xEC, 0xEC),
+    danger_soft_pressed: Color32::from_rgb(0xF8, 0xD9, 0xD9),
+    good: Color32::from_rgb(0x2E, 0xA8, 0x3A),
+    warn: Color32::from_rgb(0xE5, 0x93, 0x1A),
+    warn_fg: Color32::from_rgb(0xB4, 0x6A, 0x00),
+    gold: Color32::from_rgb(0xF5, 0xB8, 0x1D),
+    tag_green: Color32::from_rgb(0x2F, 0x9E, 0x62),
+    widget_inactive: Color32::from_rgb(0xF3, 0xF4, 0xF6),
+    widget_active: Color32::from_rgb(0xE3, 0xE6, 0xEB),
+    ring_track: Color32::from_rgb(0xE5, 0xE7, 0xEB),
+    category_icon: Color32::from_rgb(0x45, 0x9E, 0xDC),
+    backdrop: Color32::from_rgba_premultiplied(0, 0, 0, 90),
+};
+
+pub const DARK: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(0x17, 0x19, 0x1D),
+    sidebar: Color32::from_rgb(0x1D, 0x20, 0x25),
+    sidebar_hover: Color32::from_rgb(0x2A, 0x2E, 0x35),
+    sidebar_selected: Color32::from_rgb(0x22, 0x37, 0x57),
+    list_hover: Color32::from_rgb(0x27, 0x2B, 0x31),
+    list_selected: Color32::from_rgb(0x1F, 0x32, 0x4F),
+    list_selected_stroke: Color32::from_rgb(0x2F, 0x58, 0x92),
+    panel: Color32::from_rgb(0x1F, 0x22, 0x27),
+    card: Color32::from_rgb(0x25, 0x29, 0x2F),
+    border: Color32::from_rgb(0x34, 0x39, 0x41),
+    text: Color32::from_rgb(0xE6, 0xE8, 0xEB),
+    muted: Color32::from_rgb(0x9A, 0xA3, 0xAE),
+    accent: Color32::from_rgb(0x4C, 0x8D, 0xF0),
+    accent_soft: Color32::from_rgb(0x1F, 0x31, 0x4E),
+    on_accent: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    hover: Color32::from_rgb(0x2C, 0x30, 0x37),
+    pressed: Color32::from_rgb(0x36, 0x3B, 0x43),
+    danger: Color32::from_rgb(0xEE, 0x5D, 0x5D),
+    danger_soft: Color32::from_rgb(0x3B, 0x23, 0x25),
+    danger_soft_pressed: Color32::from_rgb(0x4B, 0x2B, 0x2E),
+    good: Color32::from_rgb(0x4C, 0xC2, 0x5A),
+    warn: Color32::from_rgb(0xF0, 0xA6, 0x3A),
+    warn_fg: Color32::from_rgb(0xF0, 0xB0, 0x50),
+    gold: Color32::from_rgb(0xF5, 0xB8, 0x1D),
+    tag_green: Color32::from_rgb(0x3D, 0xB8, 0x78),
+    widget_inactive: Color32::from_rgb(0x2A, 0x2E, 0x34),
+    widget_active: Color32::from_rgb(0x36, 0x3A, 0x42),
+    ring_track: Color32::from_rgb(0x3A, 0x3F, 0x47),
+    category_icon: Color32::from_rgb(0x5A, 0xAE, 0xE8),
+    backdrop: Color32::from_rgba_premultiplied(0, 0, 0, 140),
+};
+
+/// The user's theme choice (persisted in the preferences).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ThemeChoice {
+    /// Follow the operating system's light/dark setting.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    pub const ALL: [ThemeChoice; 3] = [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "System",
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
+        }
+    }
+
+    fn preference(self) -> egui::ThemePreference {
+        match self {
+            ThemeChoice::System => egui::ThemePreference::System,
+            ThemeChoice::Light => egui::ThemePreference::Light,
+            ThemeChoice::Dark => egui::ThemePreference::Dark,
+        }
+    }
+}
+
+thread_local! {
+    /// Whether the dark palette is active on this thread. egui runs the UI on
+    /// one thread per context (the main thread in the app, one test thread per
+    /// headless harness), so a thread-local keeps parallel tests independent.
+    static DARK_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The active palette.
+pub fn p() -> &'static Palette {
+    if DARK_ACTIVE.with(Cell::get) {
+        &DARK
+    } else {
+        &LIGHT
+    }
+}
+
+/// Make `dark` the active palette for the current thread (done by [`setup`]
+/// every frame; exposed so tests can check both palettes).
+pub fn set_dark_active(dark: bool) {
+    DARK_ACTIVE.with(|d| d.set(dark));
+}
 
 /// Horizontal padding inside a quiet action button.
 const ACTION_BUTTON_PAD_X: f32 = 10.0;
 
-/// Apply the theme once per egui context.
-pub fn setup(ctx: &egui::Context) {
-    let id = egui::Id::new("friendlypass-theme-v3");
-    if ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false) {
-        return;
+/// Apply the theme: (re)build both egui styles when the choice changes, and
+/// select the palette that matches the theme egui resolved for this frame.
+///
+/// When following the system and the OS does not report a theme (the
+/// headless test harness), egui falls back to light, which keeps snapshot
+/// tests deterministic.
+pub fn setup(ctx: &egui::Context, choice: ThemeChoice) {
+    let id = egui::Id::new("friendlypass-theme-v4");
+    if ctx.data(|d| d.get_temp::<ThemeChoice>(id)) != Some(choice) {
+        ctx.options_mut(|o| o.fallback_theme = egui::Theme::Light);
+        ctx.set_theme(choice.preference());
+        ctx.style_mut_of(egui::Theme::Light, |style| apply_style(style, &LIGHT));
+        ctx.style_mut_of(egui::Theme::Dark, |style| apply_style(style, &DARK));
+        ctx.data_mut(|d| d.insert_temp(id, choice));
     }
-
-    ctx.set_theme(egui::ThemePreference::Light);
-    ctx.all_styles_mut(|style| {
-        style.visuals = visuals();
-        style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-        style.spacing.button_padding = Vec2::new(10.0, 5.0);
-        style.spacing.interact_size.y = 30.0;
-        style.spacing.menu_margin = egui::Margin::same(8);
-        style.spacing.scroll.bar_width = 8.0;
-        style.spacing.scroll.floating = true;
-        style.animation_time = 0.12;
-        style.text_styles.insert(
-            TextStyle::Body,
-            FontId::new(15.0, FontFamily::Proportional),
-        );
-        style.text_styles.insert(
-            TextStyle::Button,
-            FontId::new(14.0, FontFamily::Proportional),
-        );
-        style.text_styles.insert(
-            TextStyle::Heading,
-            FontId::new(21.0, FontFamily::Proportional),
-        );
-        style.text_styles.insert(
-            TextStyle::Small,
-            FontId::new(12.0, FontFamily::Proportional),
-        );
-        style
-            .text_styles
-            .insert(TextStyle::Monospace, FontId::new(14.0, FontFamily::Monospace));
-    });
-    ctx.data_mut(|d| d.insert_temp(id, true));
+    set_dark_active(ctx.theme() == egui::Theme::Dark);
 }
 
-fn visuals() -> Visuals {
-    let mut v = Visuals::light();
-    v.dark_mode = false;
-    v.panel_fill = BG;
-    v.window_fill = PANEL;
-    v.extreme_bg_color = PANEL;
-    v.faint_bg_color = SIDEBAR;
-    v.override_text_color = Some(TEXT);
-    v.hyperlink_color = ACCENT;
-    v.warn_fg_color = Color32::from_rgb(0xB4, 0x6A, 0x00);
-    v.error_fg_color = DANGER;
-    v.selection.bg_fill = ACCENT_SOFT;
-    v.selection.stroke = Stroke::new(0.0, Color32::TRANSPARENT);
-    v.window_stroke = Stroke::new(1.0, BORDER);
+fn apply_style(style: &mut egui::Style, pal: &Palette) {
+    style.visuals = visuals(pal);
+    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+    style.spacing.button_padding = Vec2::new(10.0, 5.0);
+    style.spacing.interact_size.y = 30.0;
+    style.spacing.menu_margin = egui::Margin::same(8);
+    style.spacing.scroll.bar_width = 8.0;
+    style.spacing.scroll.floating = true;
+    style.animation_time = 0.12;
+    style.text_styles.insert(
+        TextStyle::Body,
+        FontId::new(15.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        TextStyle::Button,
+        FontId::new(14.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        TextStyle::Heading,
+        FontId::new(21.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        TextStyle::Small,
+        FontId::new(12.0, FontFamily::Proportional),
+    );
+    style
+        .text_styles
+        .insert(TextStyle::Monospace, FontId::new(14.0, FontFamily::Monospace));
+}
+
+fn visuals(pal: &Palette) -> Visuals {
+    let mut v = if pal.dark { Visuals::dark() } else { Visuals::light() };
+    v.dark_mode = pal.dark;
+    v.panel_fill = pal.bg;
+    v.window_fill = pal.panel;
+    v.extreme_bg_color = if pal.dark { pal.bg } else { pal.panel };
+    v.faint_bg_color = pal.sidebar;
+    v.override_text_color = Some(pal.text);
+    v.hyperlink_color = pal.accent;
+    v.warn_fg_color = pal.warn_fg;
+    v.error_fg_color = pal.danger;
+    v.selection.bg_fill = pal.accent_soft;
+    // Also the focus ring of text fields (a focused field was invisible
+    // on the white panel with a transparent stroke).
+    v.selection.stroke = Stroke::new(1.0, pal.accent);
+    v.window_stroke = Stroke::new(1.0, pal.border);
     v.window_corner_radius = CornerRadius::same(12);
     v.menu_corner_radius = CornerRadius::same(10);
     v.window_shadow = egui::epaint::Shadow {
         offset: [0, 6],
         blur: 24,
         spread: 0,
-        color: Color32::from_black_alpha(28),
+        color: Color32::from_black_alpha(if pal.dark { 90 } else { 28 }),
     };
     v.popup_shadow = egui::epaint::Shadow {
         offset: [0, 4],
         blur: 16,
         spread: 0,
-        color: Color32::from_black_alpha(24),
+        color: Color32::from_black_alpha(if pal.dark { 80 } else { 24 }),
     };
     v.striped = false;
-    v.text_cursor.stroke = Stroke::new(1.5, ACCENT);
+    v.text_cursor.stroke = Stroke::new(1.5, pal.accent);
 
     let widgets = &mut v.widgets;
     widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
     widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
-    widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
+    widgets.noninteractive.fg_stroke = Stroke::new(1.0, pal.text);
+    widgets.noninteractive.bg_stroke = Stroke::new(1.0, pal.border);
     widgets.noninteractive.corner_radius = CornerRadius::same(8);
 
-    widgets.inactive.bg_fill = Color32::from_rgb(0xF3, 0xF4, 0xF6);
-    widgets.inactive.weak_bg_fill = Color32::from_rgb(0xF3, 0xF4, 0xF6);
-    widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    widgets.inactive.bg_fill = pal.widget_inactive;
+    widgets.inactive.weak_bg_fill = pal.widget_inactive;
+    widgets.inactive.fg_stroke = Stroke::new(1.0, pal.text);
     widgets.inactive.corner_radius = CornerRadius::same(8);
-    widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+    widgets.inactive.bg_stroke = Stroke::new(1.0, pal.border);
 
-    widgets.hovered.bg_fill = HOVER;
-    widgets.hovered.weak_bg_fill = HOVER;
-    widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT);
+    widgets.hovered.bg_fill = pal.hover;
+    widgets.hovered.weak_bg_fill = pal.hover;
+    widgets.hovered.fg_stroke = Stroke::new(1.0, pal.text);
     widgets.hovered.corner_radius = CornerRadius::same(8);
-    widgets.hovered.bg_stroke = Stroke::new(1.0, BORDER);
+    widgets.hovered.bg_stroke = Stroke::new(1.0, pal.border);
 
-    widgets.active.bg_fill = Color32::from_rgb(0xE3, 0xE6, 0xEB);
-    widgets.active.weak_bg_fill = Color32::from_rgb(0xE3, 0xE6, 0xEB);
-    widgets.active.fg_stroke = Stroke::new(1.0, TEXT);
+    widgets.active.bg_fill = pal.widget_active;
+    widgets.active.weak_bg_fill = pal.widget_active;
+    widgets.active.fg_stroke = Stroke::new(1.0, pal.text);
     widgets.active.corner_radius = CornerRadius::same(8);
 
-    widgets.open.bg_fill = HOVER;
-    widgets.open.weak_bg_fill = HOVER;
-    widgets.open.fg_stroke = Stroke::new(1.0, TEXT);
+    widgets.open.bg_fill = pal.hover;
+    widgets.open.weak_bg_fill = pal.hover;
+    widgets.open.fg_stroke = Stroke::new(1.0, pal.text);
     widgets.open.corner_radius = CornerRadius::same(8);
 
     v
@@ -137,15 +289,24 @@ fn visuals() -> Visuals {
 
 /// A filled blue button, for the one primary action in a view.
 pub fn primary_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text.to_owned()).color(Color32::WHITE).strong())
-        .fill(ACCENT)
+    egui::Button::new(egui::RichText::new(text.to_owned()).color(p().on_accent).strong())
+        .fill(p().accent)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(8))
+}
+
+/// A filled red button for the confirming action of a destructive dialog
+/// (delete, empty the recycle bin), so it never reads as a routine "OK".
+pub fn danger_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text.to_owned()).color(p().on_accent).strong())
+        .fill(p().danger)
         .stroke(Stroke::NONE)
         .corner_radius(CornerRadius::same(8))
 }
 
 /// A quiet, text-like button (used in card headers and row actions).
 pub fn subtle_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text.to_owned()).color(MUTED))
+    egui::Button::new(egui::RichText::new(text.to_owned()).color(p().muted))
         .frame(false)
         .corner_radius(CornerRadius::same(6))
 }
@@ -231,7 +392,7 @@ pub fn action_button_danger(
 /// before drawing it (responsive layouts, truncating a label to fit).
 pub fn action_button_width(ui: &egui::Ui, label: &str, icon: ActionIcon) -> f32 {
     let font = FontId::new(13.0, FontFamily::Proportional);
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, TEXT);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, p().text);
     let has_icon = icon != ActionIcon::None;
     let icon_w = if has_icon { 15.0 } else { 0.0 };
     let gap = if has_icon { 5.0 } else { 0.0 };
@@ -248,7 +409,7 @@ fn action_button_styled(
     forced_color: Option<Color32>,
 ) -> egui::Response {
     let font = FontId::new(13.0, FontFamily::Proportional);
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, TEXT);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, p().text);
     let has_icon = icon != ActionIcon::None;
     let icon_w = if has_icon { 15.0 } else { 0.0 };
     let gap = if has_icon { 5.0 } else { 0.0 };
@@ -259,8 +420,8 @@ fn action_button_styled(
     let pressed = hovered && ui.input(|i| i.pointer.primary_down());
     if ui.is_rect_visible(rect) {
         let (rest, active, hover_bg, press_bg) = match tone {
-            ActionTone::Quiet => (MUTED, TEXT, HOVER, Color32::from_rgb(0xE2, 0xE5, 0xEA)),
-            ActionTone::Danger => (MUTED, DANGER, DANGER_SOFT, DANGER_SOFT_PRESSED),
+            ActionTone::Quiet => (p().muted, p().text, p().hover, p().pressed),
+            ActionTone::Danger => (p().muted, p().danger, p().danger_soft, p().danger_soft_pressed),
         };
         let fg = forced_color.unwrap_or(if hovered || pressed { active } else { rest });
         let bg = if pressed {
@@ -277,7 +438,7 @@ fn action_button_styled(
                 painter.rect_stroke(
                     rect,
                     CornerRadius::same(7),
-                    Stroke::new(1.0, BORDER),
+                    Stroke::new(1.0, p().border),
                     egui::StrokeKind::Middle,
                 );
             }
@@ -347,7 +508,7 @@ pub fn draw_copy_icon(painter: &egui::Painter, center: egui::Pos2, color: Color3
         egui::StrokeKind::Middle,
     );
     let front = egui::Rect::from_center_size(center + egui::vec2(-2.0, -2.0), egui::vec2(8.5, 10.5));
-    painter.rect_filled(front, CornerRadius::same(3), Color32::WHITE);
+    painter.rect_filled(front, CornerRadius::same(3), p().card);
     painter.rect_stroke(
         front,
         CornerRadius::same(3),
@@ -399,7 +560,7 @@ pub fn draw_progress_ring(ui: &mut egui::Ui, radius: f32, fraction: f32, color: 
     painter.circle_stroke(
         center,
         radius,
-        Stroke::new(2.2, Color32::from_rgb(0xE5, 0xE7, 0xEB)),
+        Stroke::new(2.2, p().ring_track),
     );
     let steps = 28usize;
     let clamped = fraction.clamp(0.05, 1.0);
@@ -413,7 +574,8 @@ pub fn draw_progress_ring(ui: &mut egui::Ui, radius: f32, fraction: f32, color: 
     painter.add(egui::Shape::line(pts, Stroke::new(2.4, color)));
 }
 
-/// Draw a small 5-pointed gold star badge.
+/// Draw a small 5-pointed gold star badge (outlined in the card colour so it
+/// stands off whatever it overlaps).
 pub fn draw_star_badge(painter: &egui::Painter, center: egui::Pos2, outer: f32) {
     let inner = outer * 0.45;
     let mut pts = Vec::with_capacity(10);
@@ -424,8 +586,8 @@ pub fn draw_star_badge(painter: &egui::Painter, center: egui::Pos2, outer: f32) 
     }
     painter.add(egui::Shape::convex_polygon(
         pts,
-        GOLD,
-        Stroke::new(1.0, Color32::WHITE),
+        p().gold,
+        Stroke::new(1.0, p().card),
     ));
 }
 
@@ -437,14 +599,14 @@ pub fn draw_tag_pill(ui: &mut egui::Ui, color: Color32) {
     ui.painter().circle_filled(
         egui::pos2(pill.left() + 3.8, pill.center().y),
         1.7,
-        Color32::WHITE,
+        p().sidebar,
     );
 }
 
-/// Draw a 2x2 blue squares icon ("All Categories").
+/// Draw a 2x2 blue squares icon ("All Items").
 pub fn draw_categories_grid_icon(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-    let c = Color32::from_rgb(0x45, 0x9E, 0xDC);
+    let c = p().category_icon;
     let base = rect.min + egui::vec2(1.5, 1.5);
     for row in 0..2 {
         for col in 0..2 {
@@ -482,10 +644,10 @@ pub fn chevron_toggle(
         .interact(rect, ui.id().with(("chevron", id_salt)), egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(4), HOVER);
+        ui.painter().rect_filled(rect, CornerRadius::same(4), p().hover);
     }
     let c = rect.center();
-    let color = if resp.hovered() { TEXT } else { color };
+    let color = if resp.hovered() { p().text } else { color };
     if open {
         let p1 = c + egui::vec2(-3.5, -1.5);
         let p2 = c + egui::vec2(0.0, 2.0);
@@ -531,15 +693,15 @@ pub fn nav_arrow_button(ui: &mut egui::Ui, left: bool, enabled: bool) -> egui::R
     let hovered = enabled && resp.hovered();
     let color = if enabled {
         if hovered {
-            TEXT
+            p().text
         } else {
-            MUTED
+            p().muted
         }
     } else {
-        BORDER
+        p().border
     };
     if hovered {
-        ui.painter().rect_filled(rect, CornerRadius::same(7), HOVER);
+        ui.painter().rect_filled(rect, CornerRadius::same(7), p().hover);
     }
     draw_nav_arrow_at(ui.painter(), rect.center(), left, color);
     resp.on_hover_text(if left { "Back" } else { "Forward" })
@@ -616,18 +778,18 @@ pub fn icon_button(
     let pressed = hovered && ui.input(|i| i.pointer.primary_down());
     if hovered || active {
         let bg = if pressed {
-            Color32::from_rgb(0xE2, 0xE5, 0xEA)
+            p().pressed
         } else if hovered {
-            HOVER
+            p().hover
         } else {
-            ACCENT_SOFT
+            p().accent_soft
         };
         ui.painter().rect_filled(rect, CornerRadius::same(7), bg);
     }
-    let color = if active || hovered { TEXT } else { MUTED };
+    let color = if active || hovered { p().text } else { p().muted };
     paint(ui.painter(), rect.center(), color);
-    let resp = resp.on_hover_text(hover_text);
-    resp
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, hover_text));
+    resp.on_hover_text(hover_text)
 }
 
 /// Paint a "sidebar / panel" icon: a rounded rectangle with a left divider.
@@ -661,9 +823,9 @@ pub fn overflow_menu(
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(hover_text);
     if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(7), HOVER);
+        ui.painter().rect_filled(rect, CornerRadius::same(7), p().hover);
     }
-    let color = if resp.hovered() { TEXT } else { MUTED };
+    let color = if resp.hovered() { p().text } else { p().muted };
     draw_kebab_at(ui.painter(), rect.center(), color);
     egui::Popup::menu(&resp).show(|ui| add(ui));
 }
@@ -733,7 +895,7 @@ pub fn draw_trash_icon(painter: &egui::Painter, center: egui::Pos2, color: Color
 pub fn truncate_middle(ui: &egui::Ui, text: &str, font: FontId, max_width: f32) -> String {
     let measure = |candidate: &str| {
         ui.painter()
-            .layout_no_wrap(candidate.to_owned(), font.clone(), TEXT)
+            .layout_no_wrap(candidate.to_owned(), font.clone(), p().text)
             .size()
             .x
     };
@@ -854,4 +1016,113 @@ pub fn draw_share_icon(painter: &egui::Painter, center: egui::Pos2, color: Color
     painter.line_segment([mid, top], Stroke::new(1.4, color));
     painter.line_segment([top, top + egui::vec2(-2.6, 2.6)], Stroke::new(1.4, color));
     painter.line_segment([top, top + egui::vec2(2.6, 2.6)], Stroke::new(1.4, color));
+}
+
+/// Paint a 5-pointed star outline (the "not a favorite" state of the
+/// favorite toggle).
+pub fn draw_star_outline(painter: &egui::Painter, center: egui::Pos2, outer: f32, color: Color32) {
+    let inner = outer * 0.45;
+    let mut pts = Vec::with_capacity(10);
+    for i in 0..10 {
+        let r = if i % 2 == 0 { outer } else { inner };
+        let a = -std::f32::consts::FRAC_PI_2 + (i as f32) * std::f32::consts::PI / 5.0;
+        pts.push(center + egui::vec2(a.cos() * r, a.sin() * r));
+    }
+    painter.add(egui::Shape::closed_line(pts, Stroke::new(1.4, color)));
+}
+
+/// The favorite toggle: a gold star when `on`, an outline otherwise. The
+/// accessible name says what a click will do.
+pub fn favorite_toggle(ui: &mut egui::Ui, id_salt: &str, on: bool) -> egui::Response {
+    let label = if on { "Remove from Favorites" } else { "Add to Favorites" };
+    let resp = icon_button(ui, id_salt, label, false, |painter, c, color| {
+        if on {
+            draw_star_badge(painter, c, 8.5);
+        } else {
+            draw_star_outline(painter, c, 8.0, color);
+        }
+    });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, label));
+    resp
+}
+
+/// Paint a plus sign.
+pub fn draw_plus_icon(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let s = Stroke::new(1.7, color);
+    painter.line_segment([center + egui::vec2(-5.5, 0.0), center + egui::vec2(5.5, 0.0)], s);
+    painter.line_segment([center + egui::vec2(0.0, -5.5), center + egui::vec2(0.0, 5.5)], s);
+}
+
+/// Paint a gear (settings) icon: a ring with eight teeth and a hub.
+pub fn draw_gear_icon(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let s = Stroke::new(1.5, color);
+    painter.circle_stroke(center, 4.6, s);
+    painter.circle_stroke(center, 1.8, Stroke::new(1.3, color));
+    for i in 0..8 {
+        let a = i as f32 * std::f32::consts::TAU / 8.0;
+        let dir = egui::vec2(a.cos(), a.sin());
+        painter.line_segment([center + dir * 4.6, center + dir * 7.0], Stroke::new(2.2, color));
+    }
+}
+
+/// An icon-only button that opens a menu (like [`overflow_menu`], with any
+/// hand-painted glyph). `label` is the accessible name and the tooltip.
+pub fn icon_menu(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    label: &str,
+    paint: impl Fn(&egui::Painter, egui::Pos2, Color32),
+    add: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
+    let resp = icon_button(ui, id_salt, label, false, paint);
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(200.0);
+        add(ui)
+    });
+    resp
+}
+
+/// A collapsible-section header: chevron plus a strong label, the whole row
+/// clickable. Flips `open` when clicked and returns the response.
+pub fn disclosure(ui: &mut egui::Ui, id_salt: &str, label: &str, open: &mut bool) -> egui::Response {
+    let font = FontId::new(14.0, FontFamily::Proportional);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, p().text);
+    let size = Vec2::new(galley.size().x + 26.0, 26.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let resp = ui
+        .interact(rect, ui.id().with(("disclosure", id_salt)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.clicked() {
+        *open = !*open;
+    }
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(6), p().hover);
+    }
+    let c = egui::pos2(rect.left() + 10.0, rect.center().y);
+    let color = if resp.hovered() { p().text } else { p().muted };
+    let stroke = Stroke::new(1.5, color);
+    if *open {
+        ui.painter().line_segment([c + egui::vec2(-3.5, -1.5), c + egui::vec2(0.0, 2.0)], stroke);
+        ui.painter().line_segment([c + egui::vec2(0.0, 2.0), c + egui::vec2(3.5, -1.5)], stroke);
+    } else {
+        ui.painter().line_segment([c + egui::vec2(-1.5, -3.5), c + egui::vec2(2.0, 0.0)], stroke);
+        ui.painter().line_segment([c + egui::vec2(2.0, 0.0), c + egui::vec2(-1.5, 3.5)], stroke);
+    }
+    ui.painter().galley(
+        egui::pos2(rect.left() + 22.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        p().text,
+    );
+    let state = *open;
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Button, true, state, label)
+    });
+    resp
+}
+
+/// Paint an "x" (close) glyph.
+pub fn draw_close_icon(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let s = Stroke::new(1.6, color);
+    painter.line_segment([center + egui::vec2(-4.5, -4.5), center + egui::vec2(4.5, 4.5)], s);
+    painter.line_segment([center + egui::vec2(-4.5, 4.5), center + egui::vec2(4.5, -4.5)], s);
 }

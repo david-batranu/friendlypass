@@ -24,6 +24,7 @@ ureq = "3.3.0"
 uuid = "1.29.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+zxcvbn = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }

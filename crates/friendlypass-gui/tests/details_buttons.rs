@@ -48,10 +48,10 @@ fn copy_button_enters_copied_state_and_queues_toast() {
     let (_dir, mut harness) = open_sample_with_details();
 
     // The copy affordances are real buttons with icons and tooltips.
-    harness.get_by_label("Copy UserName");
+    harness.get_by_label("Copy Username");
     harness.get_by_label("Copy Password");
 
-    harness.get_by_label("Copy UserName").click();
+    harness.get_by_label("Copy Username").click();
     harness.run();
 
     let state = harness.state();

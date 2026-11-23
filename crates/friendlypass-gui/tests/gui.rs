@@ -60,11 +60,15 @@ fn unlock_screen_renders() {
     // All the unlock controls are present and accessible.
     harness.get_by_label("Database file:");
     harness.get_by_label("Password:");
-    harness.get_by_label("Key file (optional):");
     harness.get_by_label("Unlock");
     harness.get_by_label("Create new database…");
-
+    // Key file and challenge-response live behind "More options".
+    assert!(harness.query_by_label("Key file:").is_none(), "collapsed by default");
     harness.snapshot("gui_unlock_screen");
+    harness.get_by_label("More options").click();
+    harness.run();
+    harness.get_by_label("Key file:");
+    harness.get_by_label("Challenge-response:");
 }
 
 #[test]
@@ -80,13 +84,22 @@ fn wrong_password_shows_error() {
     harness.get_by_label("Unlock").click();
     harness.run();
 
-    // Still on the unlock screen, with an error message.
+    // Still on the unlock screen, with a short human message (the technical
+    // error is kept as the detail / hover text).
     let state = harness.state();
     assert!(state.db.is_none(), "database must not open with a wrong password");
+    assert_eq!(state.unlock_error, "Wrong password or key file.");
     assert!(
-        state.unlock_error.contains("unable to open"),
-        "expected an error, got: {:?}",
-        state.unlock_error
+        state.unlock_error_detail.contains("unable to open"),
+        "detail keeps the technical error, got: {:?}",
+        state.unlock_error_detail
+    );
+    // The message is shown, and the password field is focused again so the
+    // user can retype.
+    harness.get_by_label("Wrong password or key file.");
+    assert!(
+        harness.get_by_label("Password:").is_focused(),
+        "a failed unlock refocuses the password field"
     );
     harness.snapshot("gui_unlock_error");
 }
@@ -119,14 +132,17 @@ fn browse_groups_entries_and_details() {
     harness.get_by_label("Sample Entry").click();
     harness.run();
     harness.get_by_label("Edit…");
-    harness.get_by_label("Copy UserName");
+    harness.get_by_label("Copy Username");
     harness.get_by_label("Copy Password");
-    // The Auto-Type action is available (not clicked here: real injection
-    // needs the OS Accessibility permission; the pipeline itself is unit
-    // tested in src/autotype.rs with a recording injector).
-    harness.get_by_label("Auto-Type");
     stabilize(&mut harness);
     harness.snapshot("gui_entry_details");
+    // The Auto-Type action is available from the ⋮ menu (not clicked here:
+    // real injection needs the OS Accessibility permission; the pipeline
+    // itself is unit tested in src/autotype.rs with a recording injector).
+    open_entry_menu(&mut harness);
+    harness.get_by_label("Auto-Type");
+    harness.key_press(egui::Key::Escape);
+    harness.run();
 
     // Wrong search term -> empty result message.
     harness.state_mut().search = "does-not-exist".into();
@@ -154,11 +170,24 @@ fn add_entry_via_ui_save_with_upgrade_and_reopen() {
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
-    // --- open the "New Entry" dialog ---------------------------------
+    // --- open the new-entry editor (inline, in the details column) -----
     harness.get_by_label("New Entry").click();
     harness.run();
+    assert!(
+        matches!(harness.state().dialog, friendlypass_gui::dialogs::Dialog::None),
+        "no floating window"
+    );
+    assert!(
+        harness.state().inline_edit.as_ref().is_some_and(|d| d.entry_id.is_none()),
+        "the inline editor is open for a new entry"
+    );
     harness.get_by_label("Title:");
     harness.get_by_label("Password:");
+    harness.get_by_label("New Item");
+    // The rarely used sections start collapsed.
+    assert!(harness.query_by_label("Default sequence:").is_none());
+    assert!(harness.query_by_label("Insert reference").is_none());
+    assert!(harness.query_by_label("Icon 12").is_none());
     stabilize(&mut harness);
     harness.snapshot("gui_new_entry_dialog");
 
@@ -170,11 +199,12 @@ fn add_entry_via_ui_save_with_upgrade_and_reopen() {
     harness.get_by_label("Generate").click();
     harness.run();
 
-    // --- confirm the dialog -------------------------------------------
-    harness.get_by_label("OK").click();
+    // --- create it -----------------------------------------------------
+    harness.get_by_label("Create").click();
     harness.run();
 
     let state = harness.state();
+    assert!(state.inline_edit.is_none(), "editor closed after Create");
     let db = state.db.as_ref().unwrap();
     assert_eq!(db.num_entries(), 3, "entry added through the GUI");
     assert!(state.dirty, "modification marks the database dirty");
@@ -185,7 +215,7 @@ fn add_entry_via_ui_save_with_upgrade_and_reopen() {
     assert!(!entry.get("Password").unwrap().is_empty(), "generated password set");
 
     // --- saving a KDBX 3.1 database asks for the 4.1 upgrade ----------
-    harness.get_by_label("Save").click();
+    harness.get_by_label("Save database").click();
     harness.run();
     harness.get_by_label("Upgrade Database Format");
     stabilize(&mut harness);
@@ -246,8 +276,11 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
     // Deleting an entry outside the bin asks to move it to the Recycle Bin.
     harness.get_by_label("Web Login").click();
     harness.run();
+    open_entry_menu(&mut harness);
     harness.get_by_label("Delete…").click();
     harness.run();
+    // The confirm dialog is modal and its destructive button is red.
+    harness.get_by_label("Delete Entry");
     harness.get_by_label("Move to Recycle Bin").click();
     harness.run();
 
@@ -265,16 +298,19 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
     );
     harness.snapshot("gui_recycle_bin_created");
 
-    // The bin appears in the group tree; selecting it enables "Empty Recycle Bin…".
+    // The bin appears in the group tree.
     harness.get_by_label("Recycle Bin (1)").click();
     harness.run();
     harness.get_by_label("Web Login").click();
     harness.run();
 
     // Deleting from inside the bin is permanent.
+    open_entry_menu(&mut harness);
     harness.get_by_label("Delete…").click();
     harness.run();
     // The confirm button now says "Delete" (permanent).
+    stabilize(&mut harness);
+    harness.snapshot("gui_confirm_delete_dialog");
     harness.get_by_label("Delete").click();
     harness.run();
     let state = harness.state();
@@ -285,9 +321,15 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
         state.status
     );
 
-    // Empty the bin via the tree action (empty now, but must not fail).
-    harness.state_mut().dialog = friendlypass_gui::dialogs::Dialog::ConfirmEmptyRecycleBin;
+    // Empty the bin from its row's context menu (empty now, but must not fail).
+    harness.get_by_label("Recycle Bin (0)").click_secondary();
     harness.run();
+    harness.get_by_label("Empty Recycle Bin…").click();
+    harness.run();
+    assert!(matches!(
+        harness.state().dialog,
+        friendlypass_gui::dialogs::Dialog::ConfirmEmptyRecycleBin
+    ));
     harness.get_by_label("Empty Recycle Bin").click();
     harness.run();
     let state = harness.state();
@@ -298,7 +340,7 @@ fn delete_entry_moves_to_recycle_bin_then_permanent() {
     );
 
     // Save (with upgrade) and verify the bin + metadata survive on disk.
-    harness.get_by_label("Save").click();
+    harness.get_by_label("Save database").click();
     harness.run();
     harness.get_by_label("Upgrade and Save").click();
     harness.run();
@@ -346,9 +388,29 @@ fn click_at(harness: &mut Harness<friendlypass_gui::App>, pos: egui::Pos2) {
     harness.run();
 }
 
-/// Open the toolbar's "More…" menu (secondary actions live there now).
+/// Open the toolbar's gear menu (settings and tools).
 fn open_more(harness: &mut Harness<friendlypass_gui::App>) {
-    harness.get_by_label("More…").click();
+    harness.get_by_label("Settings and tools").click();
+    harness.run();
+}
+
+/// Open the toolbar's "+" menu (New Group…, Import…).
+fn open_add_menu(harness: &mut Harness<friendlypass_gui::App>) {
+    harness.get_by_label("Add").click();
+    harness.run();
+}
+
+/// Open the entry details' ⋮ menu (History…, Auto-Type, Delete…).
+fn open_entry_menu(harness: &mut Harness<friendlypass_gui::App>) {
+    harness.get_by_label("More actions").click();
+    harness.run();
+}
+
+/// Expand a collapsed section of the entry editor.
+fn expand(harness: &mut Harness<friendlypass_gui::App>, label: &str) {
+    harness.get_by_label(label).scroll_to_me();
+    harness.run();
+    harness.get_by_label(label).click();
     harness.run();
 }
 
@@ -401,8 +463,8 @@ fn entry_history_browser_and_restore() {
     harness.run();
     harness.get_by_label("Edit…").click();
     harness.run();
-    replace_text(&mut harness, "UserName:", "changed-user@example.org");
-    harness.get_by_label("OK").click();
+    replace_text(&mut harness, "Username:", "changed-user@example.org");
+    harness.get_by_label("Save").click();
     harness.run();
 
     assert_eq!(history_len(&harness), baseline + 1, "edit recorded a history item");
@@ -420,6 +482,7 @@ fn entry_history_browser_and_restore() {
     assert_eq!(current_user, "changed-user@example.org");
 
     // Open the history browser: the old revision is listed with its old username.
+    open_entry_menu(&mut harness);
     harness.get_by_label("History…").click();
     harness.run();
     // (The fixture may carry several revisions — at least one must match.)
@@ -481,13 +544,14 @@ fn custom_attributes_and_autotype_edit_and_persist() {
     harness.run();
 
     // Configure auto-type: default sequence + a window association.
+    expand(&mut harness, "Auto-Type settings");
     replace_text(&mut harness, "Default sequence:", "{USERNAME}{TAB}{PASSWORD}{ENTER}");
     harness.get_by_label("Add window association").click();
     harness.run();
     replace_text(&mut harness, "Window 0:", "* - Notepad");
     replace_text(&mut harness, "Sequence 0:", "{USERNAME}{ENTER}");
 
-    harness.get_by_label("OK").click();
+    harness.get_by_label("Save").click();
     harness.run();
 
     // Assert on the in-memory database.
@@ -515,7 +579,7 @@ fn custom_attributes_and_autotype_edit_and_persist() {
     harness.snapshot("gui_attributes_details");
 
     // Save (upgrade dialog) and verify persistence on disk.
-    harness.get_by_label("Save").click();
+    harness.get_by_label("Save database").click();
     harness.run();
     harness.get_by_label("Upgrade and Save").click();
     harness.run();
@@ -558,12 +622,13 @@ fn icon_picker_standard_and_custom_icons() {
     harness.run();
     harness.get_by_label("Edit…").click();
     harness.run();
+    expand(&mut harness, "Icon");
     harness.get_by_label("Icon 12");
 
     // Pick standard icon 12.
     harness.get_by_label("Icon 12").click();
     harness.run();
-    harness.get_by_label("OK").click();
+    harness.get_by_label("Save").click();
     harness.run();
 
     let state = harness.state();
@@ -586,10 +651,11 @@ fn icon_picker_standard_and_custom_icons() {
     // the editor through the details panel instead.)
     harness.get_by_label("Edit…").click();
     harness.run();
+    expand(&mut harness, "Icon");
     replace_text(&mut harness, "Custom icon image path:", icon_file.display().to_string().as_str());
     harness.get_by_label("Use image…").click();
     harness.run();
-    harness.get_by_label("OK").click();
+    harness.get_by_label("Save").click();
     harness.run();
 
     let state = harness.state();
@@ -602,7 +668,7 @@ fn icon_picker_standard_and_custom_icons() {
     assert!(matches!(entry.icon(), Some(keepass::db::Icon::Custom(_))), "custom icon set");
 
     // Save (upgrade) and verify both icons persist on disk.
-    harness.get_by_label("Save").click();
+    harness.get_by_label("Save database").click();
     harness.run();
     harness.get_by_label("Upgrade and Save").click();
     harness.run();
@@ -729,9 +795,10 @@ fn entry_reference_insert_and_resolve() {
         assert!(d.ref_target.is_some(), "Sample Entry is a reference target");
     }
     harness.run();
+    expand(&mut harness, "References");
     harness.get_by_label("Insert reference").click();
     harness.run();
-    harness.get_by_label("OK").click();
+    harness.get_by_label("Save").click();
     harness.run();
 
     // The reference landed in Web Login's Notes (the default insert target).
@@ -773,7 +840,7 @@ fn entry_reference_insert_and_resolve() {
     harness.snapshot("gui_reference_resolved");
 
     // Save and verify the raw reference persists on disk.
-    harness.get_by_label("Save").click();
+    harness.get_by_label("Save database").click();
     harness.run();
     harness.get_by_label("Upgrade and Save").click();
     harness.run();
@@ -1005,7 +1072,8 @@ fn share_group_dialog_exports_and_persists_reference() {
     harness.run();
 
     // Select the Web group and open the share dialog.
-    harness.get_by_label("Web (1)").click();
+    // Group actions live in the group row's context menu.
+    harness.get_by_label("Web (1)").click_secondary();
     harness.run();
     harness.get_by_label("Share group…").click();
     harness.run();
@@ -1032,7 +1100,7 @@ fn share_group_dialog_exports_and_persists_reference() {
     assert!(harness.state().dirty, "share settings mark the database dirty");
 
     // Save (upgrade) and verify the reference survives on disk.
-    harness.get_by_label("Save").click();
+    harness.get_by_label("Save database").click();
     harness.run();
     harness.get_by_label("Upgrade and Save").click();
     harness.run();
@@ -1082,7 +1150,8 @@ fn share_group_signed_container_via_gui() {
     }
     harness.run();
 
-    harness.get_by_label("Web (1)").click();
+    // Group actions live in the group row's context menu.
+    harness.get_by_label("Web (1)").click_secondary();
     harness.run();
     harness.get_by_label("Share group…").click();
     harness.run();
@@ -1169,7 +1238,7 @@ fn write_database_for_external_verification() {
     harness.run();
     harness.get_by_label("Generate").click();
     harness.run();
-    harness.get_by_label("OK").click();
+    harness.get_by_label("Create").click();
     harness.run();
 
     let temp_password = harness
@@ -1199,18 +1268,21 @@ fn write_database_for_external_verification() {
     replace_text(&mut harness, "Attribute 0 value:", "sk-12345");
     harness.get_by_label("Protected 0").click();
     harness.run();
+    expand(&mut harness, "Auto-Type settings");
     replace_text(&mut harness, "Default sequence:", "{USERNAME}{TAB}{PASSWORD}{ENTER}");
-    if let friendlypass_gui::dialogs::Dialog::EntryEdit(d) = &mut harness.state_mut().dialog {
+    if let Some(d) = harness.state_mut().inline_edit.as_mut() {
         d.ref_target = d.ref_targets.iter().position(|t| t.title == "Temp Entry");
     }
     harness.run();
+    expand(&mut harness, "References");
     harness.get_by_label("Insert reference").click();
     harness.run();
+    expand(&mut harness, "Icon");
     harness.get_by_label("Icon 5").click();
     harness.run();
     harness.get_by_label("Generate").click();
     harness.run();
-    harness.get_by_label("OK").click();
+    harness.get_by_label("Create").click();
     harness.run();
 
     // Delete "Temp Entry" -> lands in the Recycle Bin.
@@ -1218,13 +1290,14 @@ fn write_database_for_external_verification() {
     // the other entry through the entry table.)
     harness.get_by_label("Temp Entry").click();
     harness.run();
+    open_entry_menu(&mut harness);
     harness.get_by_label("Delete…").click();
     harness.run();
     harness.get_by_label("Move to Recycle Bin").click();
     harness.run();
 
     // Save.
-    harness.get_by_label("Save").click();
+    harness.get_by_label("Save database").click();
     harness.run();
 
     let state = harness.state();
@@ -1334,10 +1407,11 @@ fn unlock_with_challenge_response_secret() {
     bad.run();
     let state = bad.state();
     assert!(state.db.is_none(), "wrong challenge-response secret must be rejected");
+    assert_eq!(state.unlock_error, "Wrong password or key file.");
     assert!(
-        state.unlock_error.contains("Incorrect key") || state.unlock_error.contains("unable to open"),
-        "error: {:?}",
-        state.unlock_error
+        state.unlock_error_detail.contains("unable to open"),
+        "detail: {:?}",
+        state.unlock_error_detail
     );
 }
 
@@ -1434,17 +1508,20 @@ fn keyboard_shortcuts_and_dialog_keys() {
     harness.get_by_label("Sample Entry").click();
     harness.run();
 
-    // Cmd+N opens the new-entry dialog; Escape cancels it.
+    // Cmd+N opens the inline editor for a new entry (focus in Title);
+    // Escape cancels it.
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
     harness.run();
-    assert!(matches!(harness.state().dialog, Dialog::EntryEdit(_)));
-    harness.get_by_label("Title:");
+    assert!(harness
+        .state()
+        .inline_edit
+        .as_ref()
+        .is_some_and(|d| d.entry_id.is_none()));
+    assert!(harness.get_by_label("Title:").is_focused(), "new entry focuses Title");
     harness.key_press(egui::Key::Escape);
     harness.run();
-    assert!(
-        matches!(harness.state().dialog, Dialog::None),
-        "Escape closes the dialog"
-    );
+    assert!(harness.state().inline_edit.is_none(), "Escape cancels the editor");
+    assert!(matches!(harness.state().dialog, Dialog::None));
 
     // Cmd+E opens the editor for the selection; Cmd+Enter applies it.
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::E);
@@ -1525,7 +1602,7 @@ fn keyboard_shortcuts_and_dialog_keys() {
     search_harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
     search_harness.run();
     assert!(
-        search_harness.get_by_label("Search:").is_focused(),
+        search_harness.get_by_label("Search").is_focused(),
         "Cmd+F focuses the search box"
     );
 }
@@ -1556,7 +1633,7 @@ fn columns_are_customizable_and_persist() {
     switch_to_table(&mut harness);
 
     // All columns are visible initially (the sorted column carries a marker).
-    for header in ["Title ^", "UserName", "Password", "URL", "Notes", "Tags"] {
+    for header in ["Title ^", "Username", "Password", "URL", "Notes", "Tags"] {
         harness.get_by_label(header);
     }
 
@@ -1613,7 +1690,7 @@ fn column_order_and_widths_come_from_preferences() {
     let config_path = dir.path().join("gui-config.json");
     let db_path = fresh_sample(&dir);
 
-    // Save a layout where UserName is the first column and only Title and
+    // Save a layout where Username is the first column and only Title and
     // UserName are visible.
     let mut prefs = friendlypass_gui::config::Preferences::default();
     for id in [
@@ -1646,11 +1723,11 @@ fn column_order_and_widths_come_from_preferences() {
     // Only the saved columns exist, in the saved order.
     assert_eq!(harness.query_all_by_label("URL").count(), 0);
     assert_eq!(harness.query_all_by_label("Notes").count(), 0);
-    let user_x = harness.get_by_label("UserName").rect().left();
+    let user_x = harness.get_by_label("Username").rect().left();
     let title_x = harness.get_by_label("Title ^").rect().left();
     assert!(
         user_x < title_x,
-        "UserName should precede Title (x {user_x} vs {title_x})"
+        "Username should precede Title (x {user_x} vs {title_x})"
     );
 }
 
@@ -1694,6 +1771,10 @@ fn recent_databases_are_remembered_across_launches() {
     second.run();
     assert!(second.state().db.is_none(), "still locked on startup");
     assert_eq!(second.state().db_path, expected);
+    assert!(
+        second.get_by_label("Password:").is_focused(),
+        "with a database preselected, the password field has focus"
+    );
     second.get_by_label("Recent databases");
     second.get_by_label("sample4.kdbx");
 
@@ -1753,7 +1834,7 @@ fn import_export_dialogs_and_keepass1_import() {
     assert!(xml.contains("Sample Entry"));
 
     // Import it back: entries are merged into the open database.
-    open_more(&mut harness);
+    open_add_menu(&mut harness);
     harness.get_by_label("Import…").click();
     harness.run();
     replace_text(
@@ -1768,7 +1849,7 @@ fn import_export_dialogs_and_keepass1_import() {
     assert!(harness.state().status.contains("Imported"));
 
     // Import a real KeePass 1 (KDB) database with its password.
-    open_more(&mut harness);
+    open_add_menu(&mut harness);
     harness.get_by_label("Import…").click();
     harness.run();
     replace_text(
@@ -2026,7 +2107,7 @@ fn selecting_a_tag_filters_the_entry_list() {
     harness.get_by_label("social").click();
     harness.run();
     assert!(harness.state().selected_tag.is_none());
-    harness.get_by_label("All Categories");
+    harness.get_by_label("All Items");
     harness.get_by_label("Sample Entry");
     harness.get_by_label("Web Login");
 
@@ -2073,7 +2154,7 @@ fn edit_opens_inline_in_the_right_column() {
         "editor fields are in the right column"
     );
     replace_text(&mut harness, "Title:", "Inline Renamed");
-    harness.get_by_label("OK").click();
+    harness.get_by_label("Save").click();
     harness.run();
     let state = harness.state();
     assert!(state.inline_edit.is_none());

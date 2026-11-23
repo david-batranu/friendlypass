@@ -18,7 +18,7 @@ pub const CODE_NOTES: char = 'N';
 /// Human-readable list for the editor pickers: (code, field name, kdbx field).
 pub const REFERENCEABLE: [(char, &str, &str); 5] = [
     (CODE_TITLE, "Title", fields::TITLE),
-    (CODE_USERNAME, "UserName", fields::USERNAME),
+    (CODE_USERNAME, "Username", fields::USERNAME),
     (CODE_PASSWORD, "Password", fields::PASSWORD),
     (CODE_URL, "URL", fields::URL),
     (CODE_NOTES, "Notes", fields::NOTES),

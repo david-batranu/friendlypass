@@ -140,6 +140,47 @@ pub fn decode_image_bytes(bytes: &[u8]) -> Option<ColorImage> {
     decode_svg_bytes(bytes)
 }
 
+/// Make the white background around an icon transparent: flood-fill from
+/// the image border through near-white opaque pixels. White *inside* the
+/// artwork (enclosed by coloured pixels) is kept.
+pub fn clear_white_backdrop(image: &mut ColorImage) {
+    let [w, h] = image.size;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let is_bg = |c: eframe::egui::Color32| c.a() == 255 && c.r() >= 245 && c.g() >= 245 && c.b() >= 245;
+    let mut seen = vec![false; w * h];
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    for x in 0..w {
+        stack.push((x, 0));
+        stack.push((x, h - 1));
+    }
+    for y in 0..h {
+        stack.push((0, y));
+        stack.push((w - 1, y));
+    }
+    while let Some((x, y)) = stack.pop() {
+        let i = y * w + x;
+        if seen[i] || !is_bg(image.pixels[i]) {
+            continue;
+        }
+        seen[i] = true;
+        image.pixels[i] = eframe::egui::Color32::TRANSPARENT;
+        if x > 0 {
+            stack.push((x - 1, y));
+        }
+        if x + 1 < w {
+            stack.push((x + 1, y));
+        }
+        if y > 0 {
+            stack.push((x, y - 1));
+        }
+        if y + 1 < h {
+            stack.push((x, y + 1));
+        }
+    }
+}
+
 /// Decode and rasterize an SVG document into an RGBA `ColorImage`.
 pub fn decode_svg_bytes(bytes: &[u8]) -> Option<ColorImage> {
     let opt = resvg::usvg::Options::default();
@@ -474,8 +515,20 @@ impl IconCache {
     }
 
     pub fn standard(&mut self, ctx: &Context, n: usize) -> Option<TextureHandle> {
+        let key = format!("std-{n}");
+        if let Some(t) = self.map.get(&key) {
+            return Some(t.clone());
+        }
         let (_, bytes) = STANDARD_ICONS.iter().find(|(i, _)| *i == n)?;
-        self.texture(ctx, &format!("std-{n}"), bytes)
+        // The bundled KeePass icons are drawn on an opaque white square,
+        // which shows as a white tile on any non-white background (the icon
+        // frames, and everything in dark mode). Make that backdrop
+        // transparent.
+        let mut image = decode_image_bytes(bytes)?;
+        clear_white_backdrop(&mut image);
+        let tex = ctx.load_texture(&key, image, TextureOptions::LINEAR);
+        self.map.insert(key, tex.clone());
+        Some(tex)
     }
 
     /// Resolve a website icon texture by origin (`https://domain`), checking:
@@ -620,6 +673,22 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn standard_icons_lose_their_white_backdrop() {
+        let (_, png) = STANDARD_ICONS[0];
+        let mut image = decode_image_bytes(png).unwrap();
+        let [w, h] = image.size;
+        assert_eq!(image.pixels[0].a(), 255, "the asset has an opaque corner");
+        let center_before = image.pixels[(h / 2) * w + w / 2];
+        clear_white_backdrop(&mut image);
+        assert_eq!(image.pixels[0], eframe::egui::Color32::TRANSPARENT, "corner cleared");
+        assert_eq!(
+            image.pixels[(h / 2) * w + w / 2],
+            center_before,
+            "the artwork itself is untouched"
+        );
+    }
 
     const SAMPLE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#186ADE"/><circle cx="16" cy="16" r="8" fill="#FFFFFF"/></svg>"##;
 
