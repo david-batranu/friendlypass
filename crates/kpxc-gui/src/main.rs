@@ -8,7 +8,7 @@
 fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1150.0, 720.0])
+            .with_inner_size([1280.0, 820.0])
             .with_title("KeePassXC-RS"),
         ..Default::default()
     };

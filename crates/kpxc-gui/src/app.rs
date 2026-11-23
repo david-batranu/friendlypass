@@ -988,6 +988,7 @@ pub fn open_database(path: &str, key: &DatabaseKey) -> anyhow::Result<Database> 
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        crate::theme::setup(ui.ctx());
         if self.db.is_none() {
             self.unlock_screen(ui);
         } else {
@@ -1019,10 +1020,36 @@ impl App {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
-                ui.heading("KeePassXC-RS");
-                ui.label("KeePassXC core, migrated to Rust");
-                ui.add_space(24.0);
+                ui.add_space(44.0);
+                let key_icon =
+                    crate::icons::IconSpec::Standard(crate::icons::DEFAULT_ENTRY_ICON);
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .corner_radius(16)
+                    .inner_margin(egui::Margin::same(10))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+                    .show(ui, |ui| {
+                        ui.set_width(44.0);
+                        crate::icons::draw_icon_sized(
+                            ui,
+                            &mut self.icon_cache,
+                            Some(&key_icon),
+                            42.0,
+                        );
+                    });
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new("KeePassXC-RS")
+                        .size(28.0)
+                        .strong()
+                        .color(crate::theme::TEXT),
+                );
+                ui.label(
+                    egui::RichText::new("KeePassXC core, migrated to Rust")
+                        .size(13.0)
+                        .color(crate::theme::MUTED),
+                );
+                ui.add_space(22.0);
             });
 
             // Recently opened databases (persisted between launches).
@@ -1075,6 +1102,18 @@ impl App {
                 ui.add_space(16.0);
             }
 
+            ui.vertical_centered(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(900.0, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .corner_radius(16)
+                    .inner_margin(egui::Margin::symmetric(28, 22))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+                    .show(ui, |ui| {
+                        ui.set_width(844.0);
             // Manual rows (egui 0.37 Grid clamps TextEdit widths to the tiny
             // previous column width; see `form_row` in dialogs.rs).
             unlock_row(ui, "Database file:", |ui, id| {
@@ -1162,21 +1201,38 @@ impl App {
             }
 
             ui.add_space(16.0);
-            ui.vertical_centered(|ui| {
-                if ui.button("Unlock").clicked() {
-                    self.try_unlock();
-                }
-                ui.add_space(8.0);
-                if ui.button("Create new database…").clicked() {
-                    self.dialog = Dialog::NewDb(Box::new(dialogs::NewDb::default()));
-                }
-            });
+            if ui
+                .add_sized(
+                    [ui.available_width(), 36.0],
+                    crate::theme::primary_button("Unlock"),
+                )
+                .clicked()
+            {
+                self.try_unlock();
+            }
+            ui.add_space(6.0);
+            if ui
+                .add_sized(
+                    [ui.available_width(), 28.0],
+                    egui::Button::new(
+                        egui::RichText::new("Create new database…")
+                            .size(13.0)
+                            .color(crate::theme::MUTED),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+            {
+                self.dialog = Dialog::NewDb(Box::new(dialogs::NewDb::default()));
+            }
 
             if !self.unlock_error.is_empty() {
                 ui.add_space(12.0);
-                ui.colored_label(egui::Color32::RED, &self.unlock_error);
+                ui.colored_label(crate::theme::DANGER, &self.unlock_error);
             }
-
+                    });
+                });
+            });
                 });
             dialogs::show(self, &ctx);
         });
@@ -1196,126 +1252,186 @@ impl App {
         // Toolbar ---------------------------------------------------------
         egui::Panel::top("toolbar")
             .resizable(false)
-            .default_size(42.0)
+            .default_size(60.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(18, 10))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+            )
             .show(root, |ui| {
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    let name = std::path::Path::new(&self.db_path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "database".into());
-                    ui.strong(format!("{name}{}", if self.dirty { "  *" } else { "" }));
-                    ui.separator();
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("KeePassXC-RS")
+                                .size(16.0)
+                                .strong()
+                                .color(crate::theme::TEXT),
+                        );
+                        let name = std::path::Path::new(&self.db_path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "database".into());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{name}{}",
+                                if self.dirty { "  *" } else { "" }
+                            ))
+                            .size(11.0)
+                            .color(crate::theme::MUTED),
+                        );
+                    });
+                    ui.add_space(24.0);
 
-                    let search_label = ui.label("Search:");
-                    let search_resp =
-                        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("search all entries… (Cmd+F)"));
+                    let search_label = ui.label(
+                        egui::RichText::new("Search:")
+                            .size(12.0)
+                            .color(crate::theme::MUTED),
+                    );
+                    let search_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search all entries…")
+                            .desired_width(300.0),
+                    );
                     if self.focus_search {
                         search_resp.request_focus();
                         self.focus_search = false;
                     }
                     search_resp.labelled_by(search_label.id);
-                    if !self.search.is_empty() && ui.button("Clear search").clicked() {
+                    if !self.search.is_empty()
+                        && ui
+                            .add(crate::theme::subtle_button("Clear"))
+                            .clicked()
+                    {
                         self.search.clear();
                     }
-                    ui.separator();
 
-                    if ui.button("New Entry").clicked() {
-                        self.new_entry_dialog(self.selected_group);
-                    }
-                    if ui.button("New Group").clicked() {
-                        let parent = self
-                            .selected_group
-                            .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
-                        self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
-                    }
-                    if ui.button("Password Generator…").clicked() {
-                        self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
-                    }
-                    if ui.button("Database Info…").clicked() {
-                        self.dialog = Dialog::DbInfo;
-                    }
-                    if ui.button("Import…").clicked() {
-                        self.dialog = Dialog::Import(Box::default());
-                    }
-                    if ui.button("Export…").clicked() {
-                        self.dialog = Dialog::Export(Box::new(dialogs::ExportDialog::new(
-                            &self.db_path,
-                            "XML",
-                        )));
-                    }
-                    if ui.button("Settings…").clicked() {
-                        self.launch_at_login = startup::launch_at_login_enabled();
-                        self.dialog = Dialog::Settings;
-                    }
-                    if ui.button("Shortcuts…").clicked() {
-                        self.dialog = Dialog::Shortcuts;
-                    }
-                    if ui.button("Columns…").clicked() {
-                        self.dialog = Dialog::Columns;
-                    }
-                    if ui.button("SSH Agent…").clicked() {
-                        self.dialog = Dialog::SshAgent;
-                    }
-                    if ui.button("Browser…").clicked() {
-                        self.dialog = Dialog::Browser;
-                    }
-                    ui.separator();
-                    let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));
-                    if save.clicked() {
-                        self.request_save();
-                    }
-                    if ui.button("Save As…").clicked() {
-                        self.dialog = Dialog::SaveAs(self.db_path.clone());
-                    }
-                ui.separator();
-                ui.checkbox(&mut self.show_passwords, "Show passwords");
-                if ui.button("Lock").clicked() {
-                    self.lock();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(crate::theme::primary_button("New Entry")).clicked() {
+                            self.new_entry_dialog(self.selected_group);
+                        }
+                        if ui.button("Lock").clicked() {
+                            self.lock();
+                        }
+                        let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));
+                        if save.clicked() {
+                            self.request_save();
+                        }
+                        ui.menu_button("More…", |ui| {
+                            if ui.button("New Group").clicked() {
+                                let parent = self
+                                    .selected_group
+                                    .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
+                                self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
+                                ui.close();
+                            }
+                            if ui.button("Password Generator…").clicked() {
+                                self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Import…").clicked() {
+                                self.dialog = Dialog::Import(Box::default());
+                                ui.close();
+                            }
+                            if ui.button("Export…").clicked() {
+                                self.dialog = Dialog::Export(Box::new(dialogs::ExportDialog::new(
+                                    &self.db_path,
+                                    "XML",
+                                )));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Columns…").clicked() {
+                                self.dialog = Dialog::Columns;
+                                ui.close();
+                            }
+                            if ui.button("Database Info…").clicked() {
+                                self.dialog = Dialog::DbInfo;
+                                ui.close();
+                            }
+                            if ui.button("SSH Agent…").clicked() {
+                                self.dialog = Dialog::SshAgent;
+                                ui.close();
+                            }
+                            if ui.button("Browser…").clicked() {
+                                self.dialog = Dialog::Browser;
+                                ui.close();
+                            }
+                            ui.separator();
+                            ui.checkbox(&mut self.show_passwords, "Show passwords");
+                            if ui.button("Save As…").clicked() {
+                                self.dialog = Dialog::SaveAs(self.db_path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Settings…").clicked() {
+                                self.launch_at_login = startup::launch_at_login_enabled();
+                                self.dialog = Dialog::Settings;
+                                ui.close();
+                            }
+                            if ui.button("Shortcuts…").clicked() {
+                                self.dialog = Dialog::Shortcuts;
+                                ui.close();
+                            }
+                        });
+                    });
+                });
+
+                // Batch operations on the multi-selection get their own row
+                // so the toolbar never overflows.
+                let n = self.selected_entries.len();
+                if n >= 2 {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{n} entries selected:"));
+                        if ui.button(format!("Move {n} to group…")).clicked() {
+                            let ids: Vec<EntryId> = self.selected_entries.iter().copied().collect();
+                            let groups = self.group_snapshot();
+                            self.dialog = Dialog::BatchMove(Box::new(dialogs::BatchMove {
+                                entries: ids,
+                                groups,
+                                target: None,
+                            }));
+                        }
+                        if ui.button(format!("Recycle {n} entries…")).clicked() {
+                            let ids: Vec<EntryId> = self.selected_entries.iter().copied().collect();
+                            self.recycle_entries(ids);
+                        }
+                    });
                 }
             });
-
-            // Batch operations on the multi-selection get their own row so
-            // the toolbar never overflows the window width.
-            let n = self.selected_entries.len();
-            if n >= 2 {
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    ui.label(format!("{n} entries selected:"));
-                    if ui.button(format!("Move {n} to group…")).clicked() {
-                        let ids: Vec<EntryId> = self.selected_entries.iter().copied().collect();
-                        let groups = self.group_snapshot();
-                        self.dialog = Dialog::BatchMove(Box::new(dialogs::BatchMove {
-                            entries: ids,
-                            groups,
-                            target: None,
-                        }));
-                    }
-                    if ui.button(format!("Recycle {n} entries…")).clicked() {
-                        let ids: Vec<EntryId> = self.selected_entries.iter().copied().collect();
-                        self.recycle_entries(ids);
-                    }
-                });
-                ui.add_space(2.0);
-            } else {
-                ui.add_space(4.0);
-            }
-        });
 
         // Status bar ------------------------------------------------------
         egui::Panel::bottom("statusbar")
             .resizable(false)
-            .exact_size(24.0)
+            .exact_size(30.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::SIDEBAR)
+                    .inner_margin(egui::Margin::symmetric(14, 5))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+            )
             .show(root, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(&self.status);
+                    ui.label(
+                        egui::RichText::new(&self.status)
+                            .size(12.0)
+                            .color(crate::theme::MUTED),
+                    );
                 });
             });
 
-        // Group tree --------------------------------------------------------
-        egui::Panel::left("groups")
+        // Sidebar: groups ---------------------------------------------------
+        egui::Panel::left("sidebar")
             .resizable(true)
-            .default_size(230.0)
+            .default_size(240.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::SIDEBAR)
+                    .inner_margin(egui::Margin::symmetric(14, 14))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+            )
             .show(root, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("groups-scroll")
@@ -1325,31 +1441,67 @@ impl App {
                     });
             });
 
-        // Entry list + entry details (details only under the table, like
-        // KeePassXC, so the group/table divider never crosses it) -----------
-        egui::CentralPanel::default().show(root, |ui| {
-            if let Some(selected) = self.selected_entry {
-                egui::Panel::bottom("details")
-                    .resizable(true)
-                    .default_size(280.0)
-                    .show_inside(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("details-scroll")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                browser::entry_details(ui, self, Some(selected));
+        // Middle column and details --------------------------------------
+        if self.prefs.list_view {
+            egui::Panel::left("entry-list")
+                .resizable(true)
+                .default_size(380.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(16, 12))
+                        .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+                )
+                .show(root, |ui| {
+                    browser::entry_view(ui, self);
+                });
+
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(24, 18)),
+                )
+                .show(root, |ui| {
+                    let width = ui.available_width().min(820.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("details-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_max_width((width - 14.0).max(220.0));
+                            browser::entry_details(ui, self, self.selected_entry);
+                        });
+                });
+        } else {
+            // The table needs the whole width (six configurable columns).
+            // Details then sit under the table, still inside the central
+            // column, with the table clipped above them.
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(16, 12)),
+                )
+                .show(root, |ui| {
+                    if let Some(selected) = self.selected_entry {
+                        egui::Panel::bottom("details-table")
+                            .resizable(true)
+                            .default_size(300.0)
+                            .show_inside(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("details-table-scroll")
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        ui.set_max_width(900.0);
+                                        browser::entry_details(ui, self, Some(selected));
+                                    });
                             });
-                    });
-            }
-            let table_rect = ui.available_rect_before_wrap();
-            let mut table_ui = ui.new_child(egui::UiBuilder::new().max_rect(table_rect));
-            table_ui.set_clip_rect(table_rect.intersect(ui.clip_rect()));
-            // egui_extras ends column separators at `min_rect().bottom()`;
-            // include the table's full height so they reach its bottom edge.
-            table_ui.expand_to_include_rect(table_rect);
-            browser::entry_table(&mut table_ui, self);
-        });
+                    }
+                    browser::entry_view(ui, self);
+                });
+        }
 
         dialogs::show(self, &ctx);
     }
+
 }

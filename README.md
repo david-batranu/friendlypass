@@ -236,6 +236,12 @@ database; leave the option off on shared machines.
 
 ## GUI (`kpxc-gui`)
 
+![KeePassXC-RS: three-column light UI](docs/screenshots/details.png)
+
+![KeePassXC-RS unlock screen](docs/screenshots/unlock.png)
+
+
+
 `cargo run --release -p kpxc-gui -- [database.kdbx]` launches the
 cross-platform GUI (egui/eframe — pure Rust, runs on macOS, Windows and
 Linux). It mirrors KeePassXC's core GUI workflow:
@@ -329,8 +335,9 @@ CLI test suites all green).
 | Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
 | Import / export (XML, CSV, HTML; Bitwarden, Proton Pass, 1PUX, KeePass 1 KDB AES/Twofish, KDBX) | ✅ tested: XML round-trip, byte-identical CSV export, real `keepassxc-cli` imports our XML (entries + attachments) and our importer reads its XML; KeePassXC's own KDB test databases (AES and Twofish) import with entries/attachments; Bitwarden/Proton Pass/1PUX fixtures tested. **Per-group export** via the group tree's right-click menu (XML/CSV/HTML, subtree only). ❌ 1Password legacy `.opvault` and encrypted third-party JSON |
 | Scrollable panels | ✅ the group tree, entry details and unlock screen scroll when their content overflows (kittest ScrollIntoView checks); the entry table already virtual-scrolls |
-| Entry details layout | ✅ details are docked under the entry table only (like KeePassXC); the group/table divider and table column separators stop at the details pane and never cross it — kittest geometry check |
-| Entry details + clipboard copy + attachment export | ✅ tested |
+| 1Password-inspired light UI | ✅ three columns (library sidebar, card list, details), light palette with blue accents, rounded cards, large entry details header, inline field cards, website/security/notes/attachments sections, last-edited footer, List/Table switch — kittest snapshots |
+| Entry details layout | ✅ details live in the rightmost column, not under the groups/list; the group/list dividers never cross it — kittest geometry check |
+| Entry details + clipboard copy + attachment export | ✅ tested (light card layout with username/password/TOTP, website, security fields, notes, attachments, last edited) |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |
 | Run at startup | ✅ **Settings → Launch at login**: macOS LaunchAgent (LaunchServices, no Terminal), Windows `Run` registry key, Linux autostart entry; `--enable/--disable-launch-at-login` CLI flags — tested (plist generation) and enabled on this Mac |

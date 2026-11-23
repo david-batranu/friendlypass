@@ -32,6 +32,23 @@ fn fresh_sample(dir: &tempfile::TempDir) -> PathBuf {
 /// path, which would otherwise make image comparisons unstable.
 fn stabilize(harness: &mut Harness<kpxc_gui::App>) {
     harness.state_mut().status.clear();
+    // The details footer shows the entry's modification time. Tests create
+    // entries "now", so pin all timestamps to a fixed value before a
+    // snapshot; otherwise every run would differ by seconds.
+    let fixed = chrono::NaiveDate::from_ymd_opt(2025, 3, 12)
+        .unwrap()
+        .and_hms_opt(16, 41, 3)
+        .unwrap();
+    if let Some(db) = harness.state_mut().db.as_mut() {
+        let ids: Vec<_> = db.iter_all_entries().map(|e| e.id()).collect();
+        for id in ids {
+            if let Some(mut entry) = db.entry_mut(id) {
+                entry.times.creation = Some(fixed);
+                entry.times.last_modification = Some(fixed);
+                entry.times.last_access = Some(fixed);
+            }
+        }
+    }
     harness.run();
 }
 
@@ -308,6 +325,18 @@ fn replace_text(harness: &mut Harness<kpxc_gui::App>, label: &str, text: &str) {
     harness.key_combination_modifiers(egui::Modifiers::COMMAND, &[egui::Key::A]);
     harness.run();
     harness.event(egui::Event::Text(text.into()));
+    harness.run();
+}
+
+/// Open the toolbar's "More…" menu (secondary actions live there now).
+fn open_more(harness: &mut Harness<kpxc_gui::App>) {
+    harness.get_by_label("More…").click();
+    harness.run();
+}
+
+/// Switch the entry list from cards to the configurable table.
+fn switch_to_table(harness: &mut Harness<kpxc_gui::App>) {
+    harness.get_by_label("Table").click();
     harness.run();
 }
 
@@ -720,6 +749,7 @@ fn entry_reference_insert_and_resolve() {
     harness.run();
     let resolved_nodes = harness.query_all_by_label_contains(sample_password.as_str()).count();
     assert!(resolved_nodes > 0, "details show the resolved referenced password");
+    stabilize(&mut harness);
     harness.snapshot("gui_reference_resolved");
 
     // Save and verify the raw reference persists on disk.
@@ -794,7 +824,7 @@ fn drag_and_drop_entry_onto_group() {
     // Drag a second entry back onto the root row (the database-name row).
     let src = harness.get_by_label("Web Login").rect().center();
     // The root row label shows the total entry count (moves don't change it).
-    let root_label = "sample4.kdbx (2)";
+    let root_label = "All Items (2)";
     let dst = harness.get_by_label(root_label).rect().center();
     harness.drag_at(src);
     harness.run();
@@ -904,7 +934,7 @@ fn drag_and_drop_group_onto_group() {
 
     // Drag Web back onto the root row.
     let src = harness.get_by_label("Web (0)").rect().center();
-    let dst = harness.get_by_label("sample4.kdbx (2)").rect().center();
+    let dst = harness.get_by_label("All Items (2)").rect().center();
     harness.drag_at(src);
     harness.run();
     harness.hover_at(egui::Pos2::new(src.x + 24.0, src.y));
@@ -1323,7 +1353,7 @@ fn details_show_current_totp_code() {
     // Select the entry: the details panel shows the TOTP row.
     harness.get_by_label("OTP Entry").click();
     harness.run();
-    harness.get_by_label("TOTP");
+    harness.get_by_label("one-time password (TOTP)");
     harness.get_by_label("Copy TOTP");
 
     // The displayed code matches the code computed from the same TOTP
@@ -1340,7 +1370,22 @@ fn details_show_current_totp_code() {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        vec![totp.value_at(now).code, totp.value_at(now + 1).code]
+        let spaced = |code: String| {
+            code.chars()
+                .enumerate()
+                .flat_map(|(i, c)| {
+                    if i > 0 && i % 3 == 0 {
+                        vec![' ', c]
+                    } else {
+                        vec![c]
+                    }
+                })
+                .collect::<String>()
+        };
+        vec![
+            spaced(totp.value_at(now).code),
+            spaced(totp.value_at(now + 1).code),
+        ]
     };
     let found = codes
         .iter()
@@ -1488,6 +1533,7 @@ fn columns_are_customizable_and_persist() {
     };
     harness.set_size(egui::Vec2::new(1300.0, 900.0));
     harness.run();
+    switch_to_table(&mut harness);
 
     // All columns are visible initially (the sorted column carries a marker).
     for header in ["Title ^", "UserName", "Password", "URL", "Notes", "Tags"] {
@@ -1495,6 +1541,7 @@ fn columns_are_customizable_and_persist() {
     }
 
     // Open the Columns dialog and hide the URL column.
+    open_more(&mut harness);
     harness.get_by_label("Columns…").click();
     harness.run();
     harness.get_by_label("URL column").click();
@@ -1530,6 +1577,7 @@ fn columns_are_customizable_and_persist() {
     };
     second.set_size(egui::Vec2::new(1300.0, 900.0));
     second.run();
+    switch_to_table(&mut second);
     assert_eq!(
         second.query_all_by_label("URL").count(),
         0,
@@ -1573,6 +1621,7 @@ fn column_order_and_widths_come_from_preferences() {
     };
     harness.set_size(egui::Vec2::new(1300.0, 900.0));
     harness.run();
+    switch_to_table(&mut harness);
 
     // Only the saved columns exist, in the saved order.
     assert_eq!(harness.query_all_by_label("URL").count(), 0);
@@ -1672,6 +1721,7 @@ fn import_export_dialogs_and_keepass1_import() {
 
     // Export the whole database as KeePass 2 XML (the default format).
     let xml_path = dir.path().join("export.xml");
+    open_more(&mut harness);
     harness.get_by_label("Export…").click();
     harness.run();
     replace_text(&mut harness, "Export to:", &xml_path.display().to_string());
@@ -1683,6 +1733,7 @@ fn import_export_dialogs_and_keepass1_import() {
     assert!(xml.contains("Sample Entry"));
 
     // Import it back: entries are merged into the open database.
+    open_more(&mut harness);
     harness.get_by_label("Import…").click();
     harness.run();
     replace_text(
@@ -1697,6 +1748,7 @@ fn import_export_dialogs_and_keepass1_import() {
     assert!(harness.state().status.contains("Imported"));
 
     // Import a real KeePass 1 (KDB) database with its password.
+    open_more(&mut harness);
     harness.get_by_label("Import…").click();
     harness.run();
     replace_text(
@@ -1795,6 +1847,7 @@ fn unlock_screen_remember_checkbox_and_settings_dialog() {
     );
 
     // Settings exposes launch-at-login and the auto-unlock status.
+    open_more(&mut harness);
     harness.get_by_label("Settings…").click();
     harness.run();
     harness.get_by_label("Launch at login");
@@ -1804,6 +1857,7 @@ fn unlock_screen_remember_checkbox_and_settings_dialog() {
     harness.run();
 
     // Forget removes it from the store and disables auto-unlock.
+    open_more(&mut harness);
     harness.get_by_label("Settings…").click();
     harness.run();
     harness.get_by_label("Forget saved unlock key").click();
@@ -1886,7 +1940,7 @@ fn auto_unlock_failure_falls_back_to_the_unlock_screen() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn details_panel_is_under_the_table_only() {
+fn details_panel_is_in_the_right_column() {
     let dir = tempfile::tempdir().unwrap();
     let path = fresh_sample(&dir);
     let key = DatabaseKey::new().with_password("testpassword");
@@ -1899,24 +1953,21 @@ fn details_panel_is_under_the_table_only() {
     harness.run();
 
     // The details title ("Sample Entry") is rendered twice: once in the
-    // table row and once in the details pane. The lower one must share the
-    // table's left edge, not start under the group tree.
-    let table_left = harness.get_by_label("Title ^").rect().left();
+    // list and once in the details pane. The details copy must be in the
+    // rightmost column, not under the group tree or the entry list.
     let mut titles: Vec<egui::Rect> = harness
         .query_all_by_label("Sample Entry")
         .map(|n| n.rect())
         .collect();
-    assert!(titles.len() >= 2, "table row + details title");
-    titles.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    assert!(titles.len() >= 2, "list row + details title");
+    titles.sort_by(|a, b| a.left().total_cmp(&b.left()));
+    let list_title = titles[0];
     let details_title = *titles.last().unwrap();
     assert!(
-        (details_title.left() - table_left).abs() < 40.0,
-        "details pane starts under the table (table x {table_left}, details x {})",
+        details_title.left() > list_title.right(),
+        "details pane is to the right of the list (list right {}, details x {})",
+        list_title.right(),
         details_title.left()
-    );
-    assert!(
-        details_title.top() > titles[0].top(),
-        "details title is below the table row"
     );
 }
 

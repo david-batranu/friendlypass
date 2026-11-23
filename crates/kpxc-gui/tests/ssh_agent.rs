@@ -51,6 +51,8 @@ fn ssh_agent_window_serves_real_keys() {
     harness.run();
 
     // Open the SSH Agent window; the key is detected and listed.
+    harness.get_by_label("More…").click();
+    harness.run();
     harness.get_by_label("SSH Agent…").click();
     harness.run();
     // ("Server Key" also matches the entry-table row, so assert on the

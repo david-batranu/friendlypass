@@ -49,12 +49,12 @@ impl ColumnId {
     /// Default width in points.
     pub fn default_width(self) -> f32 {
         match self {
-            ColumnId::Title => 200.0,
-            ColumnId::UserName => 170.0,
-            ColumnId::Password => 150.0,
-            ColumnId::Url => 220.0,
-            ColumnId::Notes => 220.0,
-            ColumnId::Tags => 120.0,
+            ColumnId::Title => 180.0,
+            ColumnId::UserName => 150.0,
+            ColumnId::Password => 130.0,
+            ColumnId::Url => 180.0,
+            ColumnId::Notes => 180.0,
+            ColumnId::Tags => 100.0,
         }
     }
 }
@@ -91,6 +91,9 @@ pub struct Preferences {
     pub recent: Vec<String>,
     /// Last successfully opened database (used to prefill the unlock form).
     pub last_db: Option<String>,
+    /// Entry list style: true = 1Password-style cards, false = the
+    /// configurable-column table.
+    pub list_view: bool,
     /// Windows only: store the auto-unlock secret in a DPAPI-protected file
     /// instead of Credential Manager (for accounts without a login password).
     pub windows_dpapi_fallback: bool,
@@ -102,6 +105,7 @@ impl Default for Preferences {
             columns: ColumnId::ALL.iter().map(|&id| ColumnConfig::new(id)).collect(),
             recent: Vec::new(),
             last_db: None,
+            list_view: true,
             windows_dpapi_fallback: false,
         }
     }

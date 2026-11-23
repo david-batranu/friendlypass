@@ -75,13 +75,23 @@ impl IconCache {
 
 /// Render an icon (16x16) into the current UI, if it can be resolved.
 pub fn draw_icon(ui: &mut eframe::egui::Ui, cache: &mut IconCache, spec: Option<&IconSpec>) {
+    draw_icon_sized(ui, cache, spec, 16.0);
+}
+
+/// Draw an icon at a chosen size (entry rows and the details header).
+pub fn draw_icon_sized(
+    ui: &mut eframe::egui::Ui,
+    cache: &mut IconCache,
+    spec: Option<&IconSpec>,
+    size: f32,
+) {
     if let Some(spec) = spec {
         let ctx = ui.ctx().clone();
         if let Some(tex) = cache.spec(&ctx, spec) {
-            ui.add(eframe::egui::Image::new((tex.id(), eframe::egui::Vec2::splat(16.0))));
+            ui.add(eframe::egui::Image::new((tex.id(), eframe::egui::Vec2::splat(size))));
             return;
         }
     }
     // Placeholder keeps the layout stable even without a resolvable icon.
-    ui.add_space(16.0);
+    ui.add_space(size);
 }

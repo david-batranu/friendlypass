@@ -29,6 +29,8 @@ fn browser_window_serves_the_protocol() {
     harness.run();
 
     // Open the Browser Integration window and start serving.
+    harness.get_by_label("More…").click();
+    harness.run();
     harness.get_by_label("Browser…").click();
     harness.run();
     harness.get_by_label("Start serving").click();

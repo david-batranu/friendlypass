@@ -243,8 +243,8 @@ echo
 echo "== 18. Scrolling and panel layout =="
 check "group tree and entry details scroll their overflowing content (kittest ScrollIntoView)" \
     env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui scrolls_to"
-check "details pane sits under the entry table only, so the group/table divider does not cross it" \
-    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui details_panel_is_under_the_table_only"
+check "details pane is in the rightmost column, aligned with the list (1Password-style three-column layout)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui details_panel_is_in_the_right_column"
 
 echo
 echo "================================"

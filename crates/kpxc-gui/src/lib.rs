@@ -19,6 +19,7 @@ pub mod dialogs;
 pub mod icons;
 pub mod refs;
 pub mod startup;
+pub mod theme;
 pub mod totp;
 
 pub use app::App;
