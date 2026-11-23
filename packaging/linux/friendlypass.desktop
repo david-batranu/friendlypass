@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=friendlypass
+Comment=Friendly password manager for KeePass databases
+Exec=friendlypass-gui %f
+Icon=friendlypass
+Terminal=false
+Categories=Utility;Security;
+Keywords=password;keepass;kdbx;
+MimeType=application/x-keepass2;

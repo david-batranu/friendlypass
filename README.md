@@ -1,16 +1,24 @@
-# keepassxc-rs
+# friendlypass
 
-**KeePassXC, migrated to Rust** — the headless core *and* a cross-platform
-GUI, composing the Rust ecosystem instead of rewriting existing
-functionality.
+<p align="center">
+  <img src="crates/friendlypass-gui/assets/app-icon.png" width="128" alt="friendlypass app icon">
+</p>
 
-The original C++ lives in `../keepassxc` (cloned from
-https://github.com/keepassxreboot/keepassxc). This folder contains the Rust
-migration.
+**A friendly password manager for KeePass databases** — a Rust
+reimplementation of KeePassXC's headless core *plus* a cross-platform GUI,
+composing the Rust ecosystem instead of rewriting existing functionality.
+
+The name is the `friendlypass` binary (CLI) and the `friendlypass-gui`
+desktop app. Databases stay standard KDBX files, so they keep opening in
+KeePassXC, KeePass, and mobile KeePass apps.
+
+The original C++ implementation lives in `../keepassxc` (cloned from
+https://github.com/keepassxreboot/keepassxc); friendlypass is built to be
+behaviorally compatible with it.
 
 ## What it does
 
-`kpxc` (the binary) is a drop-in-style replacement for the core
+`friendlypass` (the binary) is a drop-in-style replacement for the core
 `keepassxc-cli` commands:
 
 | command             | keepassxc-cli equivalent | notes                                     |
@@ -27,7 +35,7 @@ migration.
 | `import`            | `import`                 | XML, CSV, Bitwarden/Proton Pass JSON, 1PUX, KeePass 1 KDB (AES/Twofish), KDBX into a new database |
 
 Passwords are read from a hidden prompt on a TTY, or one line from stdin when
-piped (same convention as keepassxc-cli: `printf 'pw\n' | kpxc ls db.kdbx`).
+piped (same convention as keepassxc-cli: `printf 'pw\n' | friendlypass ls db.kdbx`).
 
 Modifying a KDBX 3.x database transparently upgrades it to KDBX 4.1 on save
 (the `keepass` writer supports KDBX 4), which is also KeePassXC's
@@ -44,7 +52,7 @@ layers; this project is the behavior/compatibility layer on top:
   XML v1/v2 keyfiles, the XML document model.
 * `clap` — CLI; `rpassword` — prompts; `rust-argon2` — KDF parameter types;
   `sha2`/`getrandom` — keyfile generation; `anyhow` — errors.
-* `kpxc` itself contributes the keepassxc-cli-compatible commands, the
+* `friendlypass` itself contributes the keepassxc-cli-compatible commands, the
   KeePassXC-compatible XML-v2 keyfile *generator* (with the correct Hash
   attribute and 32-byte key data so KeePassXC and keepass-rs agree),
   password generation, the KDBX3→4.1 upgrade-on-save, atomic writes, and
@@ -59,10 +67,10 @@ layers; this project is the behavior/compatibility layer on top:
 ## Preferences
 
 Display preferences persist as JSON in the platform configuration directory
-(`~/Library/Application Support/kpxc-gui/config.json` on macOS,
-`%APPDATA%\kpxc-gui\config.json` on Windows,
-`$XDG_CONFIG_HOME/kpxc-gui/config.json` on Linux; override with the
-`KPXC_GUI_CONFIG` environment variable). It stores the column layout and the
+(`~/Library/Application Support/friendlypass-gui/config.json` on macOS,
+`%APPDATA%\friendlypass-gui\config.json` on Windows,
+`$XDG_CONFIG_HOME/friendlypass-gui/config.json` on Linux; override with the
+`FRIENDLYPASS_GUI_CONFIG` environment variable). It stores the column layout and the
 recent-database list — no passwords or key material. Column widths are also
 persisted through eframe's egui-memory storage. A missing or corrupt config
 file falls back to defaults, so the app always starts.
@@ -98,12 +106,12 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 `./verify.sh` runs the full cross-check against the **real KeePassXC
 2.8.0** (`keepassxc-cli`):
 
-1. every fixture created by keepassxc-cli opens in `kpxc` — KDBX 3.1
+1. every fixture created by keepassxc-cli opens in `friendlypass` — KDBX 3.1
    (AES256, AES-KDF up to 14.3M rounds, Salsa20 inner stream, attachments,
    keyfiles, empty password, non-ASCII password) and KDBX 4.0 (ChaCha20);
-2. databases created *and modified* by `kpxc` open in keepassxc-cli, across
+2. databases created *and modified* by `friendlypass` open in keepassxc-cli, across
    all cipher/KDF/compression variants;
-3. a KDBX 3.1 database upgraded to 4.1 by `kpxc` opens in keepassxc-cli with
+3. a KDBX 3.1 database upgraded to 4.1 by `friendlypass` opens in keepassxc-cli with
    all entries and attachments intact;
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
@@ -113,9 +121,9 @@ Current result: **72/72 checks, all workspace tests green.**
 ## Layout
 
 ```
-crates/kpxc/          the CLI + library (commands, key handling, save logic)
-crates/kpxc-gui/      the cross-platform GUI (egui) + headless UI tests
-crates/kpxc/tests/    integration tests against the fixtures
+crates/friendlypass/          the CLI + library (commands, key handling, save logic)
+crates/friendlypass-gui/      the cross-platform GUI (egui) + headless UI tests
+crates/friendlypass/tests/    integration tests against the fixtures
 fixtures/             real .kdbx files (see passwords below)
 packaging/            macOS .app bundle, Linux .desktop entry
 verify.sh             end-to-end Rust <=> KeePassXC cross-verification
@@ -138,27 +146,27 @@ verify.sh             end-to-end Rust <=> KeePassXC cross-verification
 
 ```console
 $ cargo build --release
-$ printf 'mypw\n' | target/release/kpxc ls fixtures/sample4.kdbx
+$ printf 'mypw\n' | target/release/friendlypass ls fixtures/sample4.kdbx
 Bank/
 Web/
 Sample Entry
 Web Login
-$ printf 'mypw\n' | target/release/kpxc show fixtures/sample4.kdbx "Sample Entry"
+$ printf 'mypw\n' | target/release/friendlypass show fixtures/sample4.kdbx "Sample Entry"
 Title:    Sample Entry
 UserName: user@example.com
 ...
-$ printf 'mypw\n' | target/release/kpxc export -f csv fixtures/sample4.kdbx
+$ printf 'mypw\n' | target/release/friendlypass export -f csv fixtures/sample4.kdbx
 "Group","Title","Username","Password",...
 $ printf 'masterpw\nnewpw\nnewpw\n' | \
-    target/release/kpxc import fixtures/keepass1.kdb imported.kdbx --set-password
+    target/release/friendlypass import fixtures/keepass1.kdb imported.kdbx --set-password
 Successfully imported KeePass 1 (KDB) into imported.kdbx
 ```
 
 ## Import / export
 
-`kpxc export -f xml|csv|html` matches `keepassxc-cli export` (the CSV is
+`friendlypass export -f xml|csv|html` matches `keepassxc-cli export` (the CSV is
 byte-identical for the fixture, and `keepassxc-cli import` accepts our XML).
-`kpxc import` creates a new database from:
+`friendlypass import` creates a new database from:
 
 | Format | Notes |
 | --- | --- |
@@ -182,32 +190,32 @@ Finder. The GUI therefore ships a macOS app-bundle script:
 
 ```console
 $ ./packaging/macos/install.sh          # builds + installs to /Applications
-$ open -b org.keepassxc.rs              # or open it from Finder/Launchpad
+$ open -b org.friendlypass.friendlypass # or open it from Finder/Launchpad
 ```
 
 `packaging/macos/package.sh` only builds the bundle under `target/release/`
 if you do not want to install it.
 
 The app is launched by LaunchServices (parent process `launchd`, not
-Terminal), has an `Info.plist` with bundle id `org.keepassxc.rs`, an icon and
-an ad-hoc signature. Re-run the script after rebuilding.
+Terminal), has an `Info.plist` with bundle id `org.friendlypass.friendlypass`,
+an icon and an ad-hoc signature. Re-run the script after rebuilding.
 
 On **Windows**, release builds use the GUI subsystem
-(`windows_subsystem = "windows"`), so double-clicking `kpxc-gui.exe` does not
+(`windows_subsystem = "windows"`), so double-clicking `friendlypass-gui.exe` does not
 open a console; debug builds keep it for logs. On **Linux**, install
-`packaging/linux/kpxc-gui.desktop` (`Terminal=false`) so the desktop launcher
-starts the GUI directly.
+`packaging/linux/friendlypass.desktop` (`Terminal=false`) and the matching
+hicolor icon so the desktop launcher starts the GUI directly, with its icon.
 
 ## Startup and automatic unlock
 
 **Run at login.** Open **Settings…** in the main window and tick *Launch at
-login* (also available as `kpxc-gui --enable-launch-at-login` /
+login* (also available as `friendlypass-gui --enable-launch-at-login` /
 `--disable-launch-at-login` from the app bundle's executable). This writes:
 
-* macOS: a `~/Library/LaunchAgents/org.keepassxc.rs.plist` LaunchAgent that
+* macOS: a `~/Library/LaunchAgents/org.friendlypass.friendlypass.plist` LaunchAgent that
   opens the `.app` through LaunchServices (`launchctl bootstrap`, no Terminal)
 * Windows: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-* Linux: `~/.config/autostart/org.keepassxc.rs.desktop`
+* Linux: `~/.config/autostart/org.friendlypass.friendlypass.desktop`
 
 **Automatic unlock.** On the unlock screen tick *Remember unlock key and
 auto-unlock at startup* and unlock once. The app stores the password, key-file
@@ -225,7 +233,7 @@ auto-unlock off.
 **Windows accounts without a login password:** Credential Manager may be
 unavailable there. Enable *Use a DPAPI-protected file instead of Credential
 Manager* in Settings; the secret is then encrypted with Windows DPAPI in
-`%APPDATA%\kpxc-gui\auto-unlock.dpapi`. This is intentionally an explicit,
+`%APPDATA%\friendlypass-gui\auto-unlock.dpapi`. This is intentionally an explicit,
 weaker option: any program running as that Windows user can ask DPAPI to
 decrypt it. The Windows DPAPI path is type-checked against the real
 `windows-sys` 0.61 bindings; its runtime behavior needs Windows to verify.
@@ -234,15 +242,15 @@ Security note: auto-unlock is only as strong as your logged-in OS session.
 Anyone who can use your unlocked account can start the app and open the
 database; leave the option off on shared machines.
 
-## GUI (`kpxc-gui`)
+## GUI (`friendlypass-gui`)
 
-![KeePassXC-RS: three-column light UI](docs/screenshots/details.png)
+![friendlypass: three-column light UI](docs/screenshots/details.png)
 
-![KeePassXC-RS unlock screen](docs/screenshots/unlock.png)
+![friendlypass unlock screen](docs/screenshots/unlock.png)
 
 
 
-`cargo run --release -p kpxc-gui -- [database.kdbx]` launches the
+`cargo run --release -p friendlypass-gui -- [database.kdbx]` launches the
 cross-platform GUI (egui/eframe — pure Rust, runs on macOS, Windows and
 Linux). It mirrors KeePassXC's core GUI workflow:
 
@@ -283,7 +291,7 @@ Linux). It mirrors KeePassXC's core GUI workflow:
   (replacing the details view), with the same fields, attributes, auto-type,
   references and icon picker as the New Entry modal; OK/Cancel stay pinned
   at the top while the form scrolls
-* **Passkeys** — entries with `KPEX_PASSKEY*` / `KPXC_PASSKEY*` attributes
+* **Passkeys** — entries with `KPEX_PASSKEY*` / `FRIENDLYPASS_PASSKEY*` attributes
   show a single **Passkey** chip; the raw credential/private-key fields are
   hidden from the generic attribute list
 * **Entry details** — copy username / password / URL to the clipboard,
@@ -306,10 +314,10 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 * **Database info** dialog, **lock** button
 
 The GUI is tested **headlessly with `egui_kittest`**
-(`cargo test -p kpxc-gui`): the tests drive the real `eframe` app by
+(`cargo test -p friendlypass-gui`): the tests drive the real `eframe` app by
 clicking widgets and typing text, assert on the rendered UI and app
 state, and produce image snapshots of the actual UI in
-`crates/kpxc-gui/tests/snapshots/`. The external-verification test
+`crates/friendlypass-gui/tests/snapshots/`. The external-verification test
 creates a database entirely through the GUI dialogs — entry with a
 protected custom attribute and auto-type configuration, plus a second
 entry deleted into the Recycle Bin — and the original C++ `keepassxc-cli
@@ -347,7 +355,7 @@ CLI test suites all green).
 | Entry details layout | ✅ details live in the rightmost column, not under the groups/list; the group/list dividers never cross it — kittest geometry check |
 | Entry details + clipboard copy + attachment export | ✅ tested (light card layout with username/password/TOTP, website, security fields, notes, attachments, last edited) |
 | Inline entry editing (right column) | ✅ **Edit…** replaces the details view with the editor; OK/Cancel pinned at the top while the form scrolls; kittest verifies the editor is in the right column and changes persist |
-| Passkeys | ✅ `KPEX_PASSKEY*` / `KPXC_PASSKEY*` entries show a **Passkey** chip; raw fields are hidden from the attribute list — kittest |
+| Passkeys | ✅ `KPEX_PASSKEY*` / `FRIENDLYPASS_PASSKEY*` entries show a **Passkey** chip; raw fields are hidden from the attribute list — kittest |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |
 | Run at startup | ✅ **Settings → Launch at login**: macOS LaunchAgent (LaunchServices, no Terminal), Windows `Run` registry key, Linux autostart entry; `--enable/--disable-launch-at-login` CLI flags — tested (plist generation) and enabled on this Mac |
@@ -364,7 +372,7 @@ CLI test suites all green).
 | New database (Argon2id, generated keyfile) | ✅ tested + C++ cross-checked |
 | Database info / lock                     | ✅ tested |
 | Auto-type execution (keystroke injection via `enigo`) | ✅ implemented + pipeline unit-tested with a recording injector; end-to-end injection requires the user to grant the macOS Accessibility permission (manual step) |
-| SSH agent (key serving) | ✅ implemented + tested against the REAL ssh tooling: our parser reads `ssh-keygen` output; `ssh-keygen -y/-lf` accepts our written keys; `ssh-add -l` lists keys served from database attachments via the `kpxc-ssh-agent` binary, the library server, AND the GUI's SSH Agent window; signatures verify. Subset: unencrypted `ssh-ed25519` (RSA/ECDSA + passphrase-encrypted documented as unsupported) |
+| SSH agent (key serving) | ✅ implemented + tested against the REAL ssh tooling: our parser reads `ssh-keygen` output; `ssh-keygen -y/-lf` accepts our written keys; `ssh-add -l` lists keys served from database attachments via the `friendlypass-ssh-agent` binary, the library server, AND the GUI's SSH Agent window; signatures verify. Subset: unencrypted `ssh-ed25519` (RSA/ECDSA + passphrase-encrypted documented as unsupported) |
 | Browser integration (KeepassXC-Browser protocol) | ✅ implemented + verified against the REAL shipped `keepassxc-proxy` binary: X25519 `change-public-keys` handshake, nonce-increment responses, encrypted `associate` / `test-associate` / `get-logins` / `generate-password` / `lock-database` with KeePassXC 2.8.0's exact message shapes and error codes; the full flow (handshake → associate → test-associate → get-logins with base64 credentials → error replies) round-trips through the actual proxy from the KeePassXC.app bundle; the GUI's Browser window starts/stops the server on the socket the proxy connects to |
 | KeeShare (signed share containers) | ✅ full: classic (unsigned) shares **and signed shares**. Signed containers use KeePassXC's exact layout — ZIP with `container.share.kdbx` + `container.share.signature`, RSA PKCS#1 v1.5 SHA-256 over the database bytes hex-prefixed `rsa|`, signature XML carrying the signer name and the `ssh-rsa` public key blob — signed with a local self-signed X.509 identity (CN signer) persisted under the config dir. Verified on import (tampered containers rejected, signer reported). Cross-checked with real tools: `openssl dgst -sha256 -verify` reports Verified OK, `unzip -l` shows the KeePassXC layout, and `keepassxc-cli` reads the database inside our signed container |
 | YubiKey challenge-response keys | ✅ challenge-response composite-key support implemented + tested: the response component is HMAC-SHA1(KDF seed, secret) — the same construction a YubiKey uses — via the keepass `challenge_response` feature (`LocalChallenge`); CLI (`--challenge-response <hex>`) and GUI unlock field; round-trip tests cover password+CR, keyfile+CR, and rejection of missing/wrong secrets. ❌ live USB YubiKey HID transport is not implemented — it needs physical YubiKey hardware |

@@ -1,0 +1,19 @@
+[package]
+name = "friendlypass-browser"
+description = "friendlypass browser integration: KeePassXC-Browser protocol server (keepassxc-proxy compatible)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crypto_box = "0.9"
+getrandom = "0.4"
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+anyhow = "1"
+libc = "0.2"
+keepass = "0.17.0"
+
+[dev-dependencies]
+tempfile = "3"

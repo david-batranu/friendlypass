@@ -1,0 +1,1665 @@
+//! Application state, the eframe `App` implementation, the unlock screen
+//! and the main window chrome (toolbar / status bar / save logic).
+
+use eframe::egui;
+use eframe::egui::Ui;
+use keepass::db::{Database, GroupId};
+use keepass::DatabaseKey;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::browser;
+use crate::config::{self, ColumnId, Preferences};
+use crate::dialogs::{self, Dialog};
+use crate::startup::{self, SecretStore, StoredSecret};
+use crate::icons::IconCache;
+use keepass::db::EntryId;
+
+/// Which entry field a keyboard shortcut copies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyField {
+    Password,
+    Username,
+    Url,
+    Totp,
+}
+
+/// How long a copy button shows its "Copied" confirmation state.
+pub const COPIED_TTL: std::time::Duration = std::time::Duration::from_millis(1200);
+/// How long a toast notification stays on screen.
+pub const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(2600);
+
+/// A transient toast notification (bottom-right corner of the window).
+pub struct Toast {
+    pub text: String,
+    pub created: std::time::Instant,
+}
+
+/// Column to sort the entry list by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortColumn {
+    Title,
+    Username,
+    Password,
+    Url,
+    Notes,
+    Tags,
+}
+
+impl SortColumn {
+    pub fn label(&self) -> &'static str {
+        match self {
+            SortColumn::Title => "Title",
+            SortColumn::Username => "UserName",
+            SortColumn::Password => "Password",
+            SortColumn::Url => "URL",
+            SortColumn::Notes => "Notes",
+            SortColumn::Tags => "Tags",
+        }
+    }
+}
+
+/// The main GUI application.
+pub struct App {
+    // -- unlock screen state --------------------------------------------
+    pub db_path: String,
+    pub password: String,
+    pub key_file: String,
+    /// Optional local challenge-response secret (hex) — the software
+    /// equivalent of a YubiKey HMAC-SHA1 response.
+    pub challenge_response: String,
+    pub unlock_error: String,
+    /// Store the unlock key in the OS keychain and auto-unlock this database
+    /// on startup.
+    pub remember_unlock: bool,
+    /// A saved secret for the current database exists and was used on startup.
+    pub auto_unlock: bool,
+    /// Inline entry editor shown in the right column (replaces details).
+    pub inline_edit: Option<Box<dialogs::EntryEdit>>,
+    /// The OS login item is installed (read by the Settings dialog).
+    pub launch_at_login: bool,
+    /// Where auto-unlock secrets live (the OS keychain in production).
+    pub secret_store: Arc<dyn SecretStore>,
+
+    // -- open database state --------------------------------------------
+    pub db: Option<Database>,
+    pub db_key: Option<DatabaseKey>,
+    pub dirty: bool,
+    /// Set once the KDBX3→4.1 upgrade has been confirmed, so we don't ask
+    /// again on every save.
+    pub upgrade_confirmed: bool,
+
+    // -- browsing state --------------------------------------------------
+    pub search: String,
+    /// Set to focus the search box on the next frame (Cmd/Ctrl+F).
+    pub focus_search: bool,
+    pub selected_group: Option<GroupId>, // None = root
+    /// Active tag filter from the sidebar TAGS section.
+    pub selected_tag: Option<String>,
+    /// Show only favorite (starred) entries.
+    pub filter_favorites: bool,
+    pub selected_entry: Option<keepass::db::EntryId>,
+    /// Multi-selection (Ctrl/Cmd-click) for batch operations.
+    pub selected_entries: std::collections::HashSet<EntryId>,
+    pub sort_column: SortColumn,
+    pub sort_desc: bool,
+    pub show_passwords: bool,
+    pub status: String,
+    /// Field key -> when its value was last copied; drives the "Copied"
+    /// confirmation on the details panel's copy buttons and value cells.
+    pub copied_fields: std::collections::HashMap<String, std::time::Instant>,
+    /// Transient toast notifications shown bottom-right.
+    pub toasts: Vec<Toast>,
+    pub dialog: Dialog,
+    /// Lazily-uploaded icon textures (standard + custom icons).
+    pub icon_cache: IconCache,
+    /// The running SSH agent server (KeePassXC's SSH agent integration).
+    pub ssh_handle: Option<friendlypass_ssh_agent::server::AgentHandle>,
+    pub ssh_pool: Option<friendlypass_ssh_agent::server::IdentityPool>,
+    /// Socket path for the SSH agent (editable before starting).
+    pub ssh_socket: String,
+    /// The running browser-protocol server (KeePassXC-Browser integration).
+    pub browser_handle: Option<friendlypass_browser::ServerHandle>,
+    pub browser_state: Option<friendlypass_browser::SharedState>,
+
+    // -- persisted preferences ------------------------------------------
+    /// Column layout and the recent-databases list.
+    pub prefs: Preferences,
+    /// Where `prefs` are stored; `None` keeps them in memory only
+    /// (constructed with `App::default()`, e.g. in tests).
+    pub config_path: Option<PathBuf>,
+    /// Reset the table's persisted column widths on the next frame (set when
+    /// the Columns dialog changes the layout, so the new widths apply).
+    pub reset_columns: bool,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        App {
+            db_path: String::new(),
+            password: String::new(),
+            key_file: String::new(),
+            challenge_response: String::new(),
+            unlock_error: String::new(),
+            remember_unlock: false,
+            auto_unlock: false,
+            inline_edit: None,
+            launch_at_login: false,
+            secret_store: Arc::new(startup::KeychainStore),
+            db: None,
+            db_key: None,
+            dirty: false,
+            upgrade_confirmed: false,
+            search: String::new(),
+            focus_search: false,
+            selected_group: None,
+            selected_tag: None,
+            filter_favorites: false,
+            selected_entry: None,
+            selected_entries: std::collections::HashSet::new(),
+            sort_column: SortColumn::Title,
+            sort_desc: false,
+            show_passwords: false,
+            status: String::new(),
+            copied_fields: std::collections::HashMap::new(),
+            toasts: Vec::new(),
+            dialog: Dialog::None,
+            icon_cache: IconCache::default(),
+            ssh_handle: None,
+            ssh_pool: None,
+            ssh_socket: friendlypass_ssh_agent::default_socket_path().display().to_string(),
+            browser_handle: None,
+            browser_state: None,
+            prefs: Preferences::default(),
+            config_path: None,
+            reset_columns: false,
+        }
+    }
+}
+
+impl App {
+    /// Application entry point: loads persisted preferences (column layout,
+    /// recent databases) and prefills the last database when no path was
+    /// given on the command line.
+    pub fn new(initial_db: Option<String>) -> Self {
+        let mut app = match config::config_path() {
+            Some(path) => App::with_config_path(path),
+            None => App::default(),
+        };
+        if let Some(path) = initial_db {
+            app.db_path = path;
+        }
+        // If the last database has an enrolled key, unlock it before the
+        // first frame. Failures fall back to the normal unlock screen.
+        if !app.db_path.is_empty() && app.has_saved_secret(&app.db_path) {
+            app.auto_unlock = true;
+            app.remember_unlock = true;
+            app.try_auto_unlock();
+        }
+        app
+    }
+
+    /// Replace the secret store (tests use an in-memory store).
+    pub fn with_secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
+        self.secret_store = store;
+        self
+    }
+
+    /// Load preferences from an explicit config file (used by tests and by
+    /// `FRIENDLYPASS_GUI_CONFIG`-style portable setups).
+    pub fn with_config_path(path: PathBuf) -> Self {
+        let mut app = App::default();
+        app.prefs = Preferences::load(&path);
+        app.secret_store = startup::platform_store(app.prefs.windows_dpapi_fallback);
+        app.config_path = Some(path);
+        if app.db_path.is_empty() {
+            if let Some(last) = &app.prefs.last_db {
+                app.db_path = last.clone();
+            }
+        }
+        app
+    }
+
+    /// Whether an auto-unlock secret is enrolled for `path`.
+    pub fn has_saved_secret(&self, path: &str) -> bool {
+        let account = startup::account_key(path);
+        self.secret_store
+            .get(&account)
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Rebuild the database key from the stored secret and open the
+    /// database. Returns false (and leaves the unlock screen usable) on
+    /// failure.
+    pub fn try_auto_unlock(&mut self) -> bool {
+        let path = self.db_path.trim().to_owned();
+        if path.is_empty() {
+            return false;
+        }
+        let account = startup::account_key(&path);
+        let secret = match self.secret_store.get(&account) {
+            Ok(Some(secret)) => secret,
+            Ok(None) => return false,
+            Err(e) => {
+                self.unlock_error = format!("Auto-unlock unavailable: {e:#}");
+                return false;
+            }
+        };
+
+        let mut key = DatabaseKey::new();
+        if !secret.password.is_empty() {
+            key = key.with_password(&secret.password);
+        }
+        if let Some(bytes) = &secret.keyfile {
+            match key.with_keyfile(&mut std::io::Cursor::new(bytes)) {
+                Ok(k) => key = k,
+                Err(e) => {
+                    self.unlock_error = format!("Auto-unlock key file invalid: {e}");
+                    return false;
+                }
+            }
+        }
+        if !secret.challenge_response.is_empty() {
+            match friendlypass::key::with_challenge_response(key, &secret.challenge_response) {
+                Ok(k) => key = k,
+                Err(e) => {
+                    self.unlock_error = format!("Auto-unlock challenge-response invalid: {e:#}");
+                    return false;
+                }
+            }
+        }
+
+        match open_database(&path, &key) {
+            Ok(db) => {
+                self.db = Some(db);
+                self.db_key = Some(key);
+                self.dirty = false;
+                self.upgrade_confirmed = false;
+                self.search.clear();
+                self.selected_group = None;
+                self.selected_entry = None;
+                self.auto_unlock = true;
+                self.remember_unlock = true;
+                self.status = format!("Unlocked {path} automatically");
+                true
+            }
+            Err(e) => {
+                self.unlock_error = format!("Auto-unlock failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Persist the current preferences (no-op when no config path is set).
+    pub fn save_preferences(&mut self) {
+        if let Some(path) = &self.config_path {
+            let _ = self.prefs.save(path);
+        }
+    }
+
+    /// Remember a successfully opened database in the recent list.
+    pub fn record_recent_database(&mut self, path: &str) {
+        self.prefs.record_recent(path);
+        self.save_preferences();
+    }
+
+    /// The saved/merged column layout (visible columns in display order).
+    pub fn column_layout(&self) -> Vec<config::ColumnConfig> {
+        let mut prefs = self.prefs.clone();
+        prefs.normalize();
+        prefs.columns.iter().filter(|c| c.visible).cloned().collect()
+    }
+
+    /// Toggle/column width edits from the Columns dialog.
+    pub fn set_column_visible(&mut self, id: ColumnId, visible: bool) {
+        if self.prefs.set_visible(id, visible) {
+            self.reset_columns = true;
+            self.save_preferences();
+        } else {
+            self.status = "At least one column must stay visible".into();
+        }
+    }
+
+    /// Open a database directly (used by tests and scripting entry points).
+    pub fn with_open_database(path: &str, key: DatabaseKey) -> Self {
+        let mut app = App::default();
+        app.db_path = path.to_string();
+        match open_database(path, &key) {
+            Ok(db) => {
+                app.db = Some(db);
+                app.db_key = Some(key);
+                app.status = format!("Opened {}", path);
+            }
+            Err(e) => app.unlock_error = format!("{e:#}"),
+        }
+        app
+    }
+
+    /// Attempt to unlock using the fields on the welcome screen.
+    pub fn try_unlock(&mut self) {
+        self.unlock_error.clear();
+
+        if self.db_path.trim().is_empty() {
+            self.unlock_error = "Select a database file first.".into();
+            return;
+        }
+        if self.password.is_empty() && self.key_file.trim().is_empty() {
+            self.unlock_error = "Enter a password and/or select a key file.".into();
+            return;
+        }
+
+        let mut key = DatabaseKey::new();
+        if !self.password.is_empty() {
+            key = key.with_password(&self.password);
+        }
+        if !self.key_file.trim().is_empty() {
+            match std::fs::File::open(&self.key_file) {
+                Ok(mut f) => match key.with_keyfile(&mut f) {
+                    Ok(k) => key = k,
+                    Err(e) => {
+                        self.unlock_error = format!("unable to read key file: {e}");
+                        return;
+                    }
+                },
+                Err(e) => {
+                    self.unlock_error = format!("unable to open key file: {e}");
+                    return;
+                }
+            }
+        }
+
+        if !self.challenge_response.trim().is_empty() {
+            match friendlypass::key::with_challenge_response(key, &self.challenge_response) {
+                Ok(k) => key = k,
+                Err(e) => {
+                    self.unlock_error = format!("{e:#}");
+                    return;
+                }
+            }
+        }
+
+        match open_database(&self.db_path, &key) {
+            Ok(db) => {
+                self.db = Some(db);
+                self.db_key = Some(key);
+                self.dirty = false;
+                self.upgrade_confirmed = false;
+                self.search.clear();
+                self.selected_group = None;
+                self.selected_entry = None;
+                self.status = format!("Opened {}", self.db_path);
+                let opened = self.db_path.clone();
+                self.record_recent_database(&opened);
+                self.update_saved_secret(&opened);
+                self.password.clear();
+            }
+            Err(e) => {
+                self.unlock_error = format!("{e:#}");
+            }
+        }
+    }
+
+    /// Enroll or remove the auto-unlock secret after a successful unlock.
+    fn update_saved_secret(&mut self, path: &str) {
+        let account = startup::account_key(path);
+        if self.remember_unlock {
+            let keyfile = if self.key_file.trim().is_empty() {
+                None
+            } else {
+                std::fs::read(self.key_file.trim()).ok()
+            };
+            let secret = StoredSecret {
+                password: self.password.clone(),
+                keyfile,
+                keyfile_name: std::path::Path::new(self.key_file.trim())
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned()),
+                challenge_response: self.challenge_response.clone(),
+            };
+            match self.secret_store.set(&account, &secret) {
+                Ok(()) => {
+                    self.auto_unlock = true;
+                    self.status = format!("{} (auto-unlock enabled)", self.status);
+                }
+                Err(e) => {
+                    self.auto_unlock = false;
+                    self.status = format!("{} (auto-unlock not saved: {e:#})", self.status);
+                }
+            }
+        } else if self.auto_unlock {
+            if let Err(e) = self.secret_store.delete(&account) {
+                self.status = format!("{} (auto-unlock key not removed: {e:#})", self.status);
+            }
+            self.auto_unlock = false;
+        }
+    }
+
+    /// Remove the stored auto-unlock secret for the current database.
+    pub fn forget_saved_secret(&mut self) -> bool {
+        let path = self.db_path.clone();
+        let account = startup::account_key(&path);
+        match self.secret_store.delete(&account) {
+            Ok(()) => {
+                self.auto_unlock = false;
+                self.remember_unlock = false;
+                self.status = "Saved auto-unlock key removed".into();
+                true
+            }
+            Err(e) => {
+                self.status = format!("Unable to remove the saved key: {e:#}");
+                false
+            }
+        }
+    }
+
+    /// Lock the database and return to the unlock screen.
+    pub fn lock(&mut self) {
+        self.db = None;
+        self.db_key = None;
+        self.dirty = false;
+        self.upgrade_confirmed = false;
+        self.selected_entry = None;
+        self.selected_group = None;
+        self.selected_tag = None;
+        self.filter_favorites = false;
+        self.search.clear();
+        self.dialog = Dialog::None;
+        self.inline_edit = None;
+        self.status = "Database locked".into();
+        self.password.clear();
+    }
+
+    /// Save button: checks whether an upgrade confirmation is needed first.
+    pub fn request_save(&mut self) {
+        let needs_upgrade = self
+            .db
+            .as_ref()
+            .map(|db| !matches!(db.config.version, keepass::config::DatabaseVersion::KDB4(_)))
+            .unwrap_or(false);
+        if needs_upgrade && !self.upgrade_confirmed {
+            self.dialog = Dialog::ConfirmUpgrade;
+            return;
+        }
+        self.perform_save(None);
+    }
+
+    /// Perform the actual save (optionally to a new path).
+    pub fn perform_save(&mut self, new_path: Option<String>) {
+        let Some(path) = new_path.clone().or_else(|| Some(self.db_path.clone())) else {
+            return;
+        };
+        let Some(db) = self.db.as_mut() else { return };
+        let Some(key) = self.db_key.clone() else { return };
+
+        // KDBX 3.x can only be saved after upgrading to KDBX 4.1.
+        friendlypass::commands::ensure_writable_version(db);
+
+        let path = PathBuf::from(&path);
+        match friendlypass::saveutil::save(&path, db, key) {
+            Ok(()) => {
+                if let Some(p) = new_path {
+                    self.db_path = p;
+                    let saved = self.db_path.clone();
+                    self.record_recent_database(&saved);
+                }
+                self.dirty = false;
+                self.upgrade_confirmed = true;
+                self.dialog = Dialog::None;
+                self.status = format!("Saved {}", self.db_path);
+            }
+            Err(e) => {
+                self.status = format!("{e:#}");
+            }
+        }
+    }
+
+    /// Copy text to the system clipboard; reports failures in the status bar.
+    pub fn copy_to_clipboard(&mut self, text: String) {
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+            Ok(()) => self.status = "Copied to clipboard".into(),
+            Err(e) => self.status = format!("clipboard unavailable: {e}"),
+        }
+    }
+
+    /// True while `field_key` is showing its "Copied" confirmation.
+    pub fn is_field_copied(&self, field_key: &str) -> bool {
+        self.copied_fields
+            .get(field_key)
+            .is_some_and(|t| t.elapsed() < COPIED_TTL)
+    }
+
+    /// Copy `text` to the clipboard for `field_key` (e.g. "username",
+    /// "attr:KP2A_URL"): records the "Copied" confirmation state for the
+    /// details panel and queues a toast notification.
+    pub fn note_copied(&mut self, field_key: &str, label: &str, text: String) {
+        self.copy_to_clipboard(text);
+        if !self.status.starts_with("clipboard unavailable") {
+            self.status = format!("Copied {label} to clipboard");
+        }
+        self.copied_fields
+            .insert(field_key.to_string(), std::time::Instant::now());
+        self.toasts.push(Toast {
+            text: format!("{label} copied to clipboard"),
+            created: std::time::Instant::now(),
+        });
+        if self.toasts.len() > 3 {
+            self.toasts.remove(0);
+        }
+    }
+
+    /// Draw the transient toast notifications (bottom-right, fading out) and
+    /// prune expired copy-confirmation state.
+    fn render_toasts(&mut self, ctx: &egui::Context) {
+        let now = std::time::Instant::now();
+        self.toasts.retain(|t| now.duration_since(t.created) < TOAST_TTL);
+        self.copied_fields
+            .retain(|_, t| now.duration_since(*t) < COPIED_TTL);
+        if self.toasts.is_empty() {
+            return;
+        }
+        let toasts = std::mem::take(&mut self.toasts);
+        egui::Area::new(egui::Id::new("friendlypass-toasts"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -44.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+                    for toast in toasts.iter().rev() {
+                        let frac = 1.0
+                            - now.duration_since(toast.created).as_secs_f32()
+                                / TOAST_TTL.as_secs_f32();
+                        let a = frac.clamp(0.0, 1.0);
+                        egui::Frame::new()
+                            .fill(crate::theme::PANEL.gamma_multiply(a))
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                crate::theme::BORDER.gamma_multiply(a),
+                            ))
+                            .corner_radius(10)
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let (r, _) = ui.allocate_exact_size(
+                                        egui::vec2(14.0, 14.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    crate::theme::draw_check_icon(
+                                        ui.painter(),
+                                        r.center(),
+                                        crate::theme::GOOD.gamma_multiply(a),
+                                    );
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(&toast.text)
+                                            .size(13.0)
+                                            .color(crate::theme::TEXT.gamma_multiply(a)),
+                                    );
+                                });
+                            });
+                        ui.add_space(6.0);
+                    }
+                });
+            });
+        self.toasts = toasts;
+        ctx.request_repaint_after(std::time::Duration::from_millis(80));
+    }
+
+    /// Copy a field of the selected entry (keyboard shortcuts).
+    pub fn copy_selected(&mut self, field: CopyField) {
+        let Some(id) = self.selected_entry else {
+            self.status = "No entry selected".into();
+            return;
+        };
+        let Some(db) = self.db.as_ref() else { return };
+        let Some(entry) = db.entry(id) else { return };
+        let (label, value) = match field {
+            CopyField::Password => ("password", entry.get("Password").unwrap_or_default().to_owned()),
+            CopyField::Username => ("username", entry.get("UserName").unwrap_or_default().to_owned()),
+            CopyField::Url => ("URL", entry.get("URL").unwrap_or_default().to_owned()),
+            CopyField::Totp => ("TOTP", match crate::totp::current_code(&entry) {
+                Some((code, _)) => code,
+                None => {
+                    self.status = "This entry has no TOTP".into();
+                    return;
+                }
+            }),
+        };
+        if value.is_empty() {
+            self.status = format!("This entry has no {label}");
+            return;
+        }
+        self.copy_to_clipboard(value);
+        self.status = format!("Copied {label} to clipboard");
+    }
+
+    /// Handle global keyboard shortcuts on the database screen.
+    /// Returns true if a shortcut consumed a key this frame.
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        // Shortcuts are ignored while a dialog is open (dialogs handle their
+        // own keys, see `dialogs::show`).
+        if !matches!(self.dialog, Dialog::None) {
+            return;
+        }
+        let cmd = Modifiers::COMMAND;
+        let shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        // True while a text field (e.g. the search box) has focus. Typing
+        // keys then belong to the field; global commands still work.
+        let typing = ctx.egui_wants_keyboard_input();
+
+        // Global commands: available even while typing.
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::S)) {
+            self.request_save();
+        }
+        if ctx.input_mut(|i| i.consume_key(shift, Key::S)) {
+            self.dialog = Dialog::SaveAs(self.db_path.clone());
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::L)) {
+            self.lock();
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::F)) {
+            self.focus_search = true;
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::G)) {
+            self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::N)) {
+            self.new_entry_dialog(self.selected_group);
+        }
+        if ctx.input_mut(|i| i.consume_key(shift, Key::N)) {
+            let parent = self
+                .selected_group
+                .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
+            self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
+            self.dialog = Dialog::Shortcuts;
+        }
+        if typing {
+            return;
+        }
+        // Entry commands: only when no text field is focused, so Cmd+C in
+        // the search box still copies text and Delete edits the query.
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::C)) {
+            self.copy_selected(CopyField::Password);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::B)) {
+            self.copy_selected(CopyField::Username);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::U)) {
+            self.copy_selected(CopyField::Url);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::T)) {
+            self.copy_selected(CopyField::Totp);
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::E)) {
+            if let Some(id) = self.selected_entry {
+                self.edit_entry_dialog(id);
+            }
+        }
+        if ctx.input_mut(|i| i.consume_key(cmd, Key::H)) {
+            if let Some(id) = self.selected_entry {
+                self.dialog = Dialog::History(id);
+            }
+        }
+        // Delete key (macOS Backspace) recycles the selected entry.
+        let delete = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete))
+            || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace));
+        if delete {
+            if let Some(id) = self.selected_entry {
+                self.dialog = Dialog::ConfirmDeleteEntry(id);
+            }
+        }
+        // Enter opens the selected entry for editing.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+            if let Some(id) = self.selected_entry {
+                self.edit_entry_dialog(id);
+            }
+        }
+        // Escape clears an active search.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) && !self.search.is_empty() {
+            self.search.clear();
+        }
+    }
+
+    /// Open the entry editor for a new entry in the given group.
+    pub fn new_entry_dialog(&mut self, group: Option<GroupId>) {
+        let parent = group
+            .or(self.selected_group)
+            .unwrap_or_else(|| self.db.as_ref().map(|db| db.root().id()).expect("db open"));
+        let targets = self
+            .db
+            .as_ref()
+            .map(|db| crate::refs::ref_targets(db, None))
+            .unwrap_or_default();
+        let custom_icons = self.custom_icon_snapshot();
+        self.dialog = Dialog::EntryEdit(Box::new(dialogs::EntryEdit::new(parent, targets, custom_icons)));
+    }
+
+    /// Open the entry editor for an existing entry (loads its fields).
+    pub fn edit_entry_dialog(&mut self, id: keepass::db::EntryId) {
+        let Some(db) = self.db.as_ref() else { return };
+        let Some(entry) = db.entry(id) else { return };
+        let targets = crate::refs::ref_targets(db, Some(id));
+        let custom_icons = self.custom_icon_snapshot();
+        self.inline_edit = Some(Box::new(dialogs::EntryEdit::from_entry(
+            id,
+            &entry,
+            targets,
+            custom_icons,
+        )));
+        // Inline editing lives in the right-hand details column.
+        if !self.prefs.list_view {
+            self.prefs.list_view = true;
+            self.save_preferences();
+        }
+        self.dialog = Dialog::None;
+    }
+
+    /// Snapshot of the database custom icon pool (for editor pickers).
+    fn custom_icon_snapshot(&self) -> Vec<(keepass::db::CustomIconId, Vec<u8>)> {
+        self.db
+            .as_ref()
+            .map(|db| {
+                db.iter_all_custom_icons()
+                    .map(|ci| (ci.id(), ci.data.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Delete an entry (after confirmation), mirroring KeePassXC's behavior:
+    /// if the recycle bin is enabled and the entry is not already inside it,
+    /// the entry is *moved* to the recycle bin group (created on demand);
+    /// otherwise it is deleted permanently.
+    pub fn delete_entry(&mut self, id: keepass::db::EntryId) {
+        let to_recycle = self.deletes_to_recycle_bin_entry(id);
+        let bin_id = to_recycle.then(|| self.ensure_recycle_bin());
+        let Some(db) = self.db.as_mut() else { return };
+
+        if let Some(bin_id) = bin_id {
+            if let Some(mut entry) = db.entry_mut(id) {
+                match entry.track_changes().move_to(bin_id) {
+                    Ok(()) => {
+                        self.dirty = true;
+                        self.selected_entry = None;
+                        self.status = "Entry moved to the Recycle Bin".into();
+                    }
+                    Err(e) => self.status = format!("cannot move entry to recycle bin: {e}"),
+                }
+            }
+        } else if let Some(entry) = db.entry_mut(id) {
+            entry.remove();
+            self.dirty = true;
+            if self.selected_entry == Some(id) {
+                self.selected_entry = None;
+            }
+            self.status = "Entry deleted permanently".into();
+        }
+    }
+
+    /// Delete a group (after confirmation) with the same recycle-bin
+    /// semantics as [`App::delete_entry`]. The root group cannot be deleted.
+    pub fn delete_group(&mut self, id: GroupId) {
+        // Decide first (immutable), then mutate.
+        let bin_id_current = self.db.as_ref().and_then(|db| db.recycle_bin()).map(|b| b.id());
+        let in_bin = self
+            .db
+            .as_ref()
+            .and_then(|db| db.group(id))
+            .and_then(|g| g.parent().map(|p| p.id()))
+            .map(|pid| Some(pid) == bin_id_current)
+            .unwrap_or(false);
+        let is_bin_itself = bin_id_current == Some(id);
+        let to_recycle = self.recycle_bin_enabled() && !in_bin && !is_bin_itself;
+
+        let bin_id = to_recycle.then(|| self.ensure_recycle_bin());
+        let Some(db) = self.db.as_mut() else { return };
+
+        if let Some(bin_id) = bin_id {
+            if let Some(mut group) = db.group_mut(id) {
+                match group.track_changes().move_to(bin_id) {
+                    Ok(()) => {
+                        self.dirty = true;
+                        if self.selected_group == Some(id) {
+                            self.selected_group = None;
+                        }
+                        self.status = "Group moved to the Recycle Bin".into();
+                    }
+                    Err(e) => self.status = format!("cannot move group to recycle bin: {e}"),
+                }
+            }
+        } else if let Some(mut group) = db.group_mut(id) {
+            match group.track_changes().remove() {
+                Ok(()) => {
+                    self.dirty = true;
+                    if self.selected_group == Some(id) {
+                        self.selected_group = None;
+                    }
+                    self.status = "Group deleted permanently".into();
+                }
+                Err(e) => self.status = format!("cannot delete group: {e}"),
+            }
+        }
+    }
+
+    /// Perform auto-type for an entry: resolves the entry's auto-type
+    /// sequence (or the KeePass default) and injects the keystrokes on a
+    /// background thread after a short countdown, so the user can focus the
+    /// target window — the same UX as KeePassXC.
+    ///
+    /// On macOS this requires the Accessibility permission; failures are
+    /// logged (the GUI cannot inject without the user granting it).
+    pub fn perform_auto_type(&mut self, id: keepass::db::EntryId) {
+        let Some(db) = self.db.as_ref() else { return };
+        let Some(entry) = db.entry(id) else { return };
+        let sequence = entry
+            .autotype
+            .as_ref()
+            .and_then(|a| a.default_sequence.clone())
+            .unwrap_or_else(|| crate::autotype::DEFAULT_SEQUENCE.to_owned());
+        let actions = crate::autotype::resolve_sequence(db, id, &sequence);
+
+        std::thread::spawn(move || {
+            // Countdown so the user can focus the target window.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let result = crate::autotype::EnigoInjector::new()
+                .and_then(|mut injector| crate::autotype::execute(&mut injector, &actions));
+            if let Err(e) = result {
+                eprintln!("auto-type failed: {e:#} (on macOS, grant the app the Accessibility permission)");
+            }
+        });
+        self.status =
+            "Auto-Type starts in 1.5 seconds - focus the target window".into();
+    }
+
+    /// Move a group to another group (drag & drop), with the same
+    /// cycle-prevention as KeePassXC: a group cannot be dropped into itself
+    /// or into one of its own descendants.
+    pub fn move_group_to(&mut self, group: GroupId, target: Option<GroupId>) {
+        let Some(db) = self.db.as_ref() else { return };
+        let root_id = db.root().id();
+        let target_id = target.unwrap_or(root_id);
+
+        if target_id == group {
+            self.status = "Cannot move a group into itself".into();
+            return;
+        }
+        // Reject dropping a group into its own subtree.
+        let mut cur = Some(target_id);
+        while let Some(c) = cur {
+            if c == group {
+                self.status = "Cannot move a group into one of its own groups".into();
+                return;
+            }
+            cur = self
+                .db
+                .as_ref()
+                .and_then(|db| db.group(c))
+                .and_then(|g| g.parent().map(|p| p.id()));
+        }
+
+        let group_name = self
+            .db
+            .as_ref()
+            .and_then(|db| db.group(group))
+            .map(|g| g.name.clone())
+            .unwrap_or_default();
+        let target_name = target
+            .and_then(|t| self.db.as_ref().and_then(|db| db.group(t)).map(|g| g.name.clone()))
+            .unwrap_or_else(|| {
+                self.db
+                    .as_ref()
+                    .map(|db| db.root().name.clone())
+                    .unwrap_or_default()
+            });
+
+        let Some(db) = self.db.as_mut() else { return };
+        if let Some(mut g) = db.group_mut(group) {
+            match g.track_changes().move_to(target_id) {
+                Ok(()) => {
+                    self.dirty = true;
+                    self.selected_group = Some(group);
+                    self.status = format!("Moved group {group_name} to {target_name}");
+                }
+                Err(e) => self.status = format!("cannot move group: {e}"),
+            }
+        }
+    }
+
+    /// Move a batch of entries to a group (batch operation on the
+    /// multi-selection).
+    pub fn move_entries_to(&mut self, ids: &[EntryId], target: GroupId) {
+        let mut moved = 0;
+        if let Some(db) = self.db.as_mut() {
+            for id in ids {
+                if let Some(mut entry) = db.entry_mut(*id) {
+                    if entry.track_changes().move_to(target).is_ok() {
+                        moved += 1;
+                    }
+                }
+            }
+        }
+        if moved > 0 {
+            self.dirty = true;
+            let target_name = self
+                .db
+                .as_ref()
+                .and_then(|db| db.group(target))
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            let plural = if moved == 1 { "entry" } else { "entries" };
+            self.status = format!("Moved {moved} {plural} to {target_name}");
+        }
+        self.selected_entries.clear();
+        self.selected_entry = None;
+    }
+
+    /// Recycle a batch of entries (multi-selection delete).
+    pub fn recycle_entries(&mut self, ids: Vec<EntryId>) {
+        let n = ids.len();
+        for id in ids {
+            self.delete_entry(id);
+        }
+        self.status = format!("Moved {n} entries to the Recycle Bin");
+        self.selected_entries.clear();
+        self.selected_entry = None;
+    }
+
+    /// Snapshot of all groups (for the batch-move dialog), with paths.
+    pub fn group_snapshot(&self) -> Vec<(GroupId, String)> {
+        let Some(db) = self.db.as_ref() else { return Vec::new() };
+        let mut out = vec![(db.root().id(), "(root)".into())];
+        fn walk(db: &keepass::db::Database, id: GroupId, prefix: &str, out: &mut Vec<(GroupId, String)>) {
+            if let Some(g) = db.group(id) {
+                let mut children: Vec<(GroupId, String)> = g
+                    .groups()
+                    .map(|c| (c.id(), c.name.clone()))
+                    .collect();
+                children.sort_by(|a, b| a.1.cmp(&b.1));
+                for (cid, name) in children {
+                    let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+                    out.push((cid, path.clone()));
+                    walk(db, cid, &path, out);
+                }
+            }
+        }
+        let root = db.root().id();
+        walk(db, root, "", &mut out);
+        out
+    }
+
+    /// Permanently remove everything inside the recycle bin.
+    pub fn empty_recycle_bin(&mut self) {
+        let Some(db) = self.db.as_mut() else { return };
+        let Some(bin) = db.recycle_bin() else {
+            self.status = "No recycle bin in this database".into();
+            return;
+        };
+        let entry_ids: Vec<_> = bin.entries().map(|e| e.id()).collect();
+        let group_ids: Vec<_> = bin.groups().map(|g| g.id()).collect();
+        let n = entry_ids.len() + group_ids.len();
+
+        for id in entry_ids {
+            if let Some(entry) = db.entry_mut(id) {
+                entry.remove();
+            }
+        }
+        for id in group_ids {
+            if let Some(mut group) = db.group_mut(id) {
+                let _ = group.track_changes().remove();
+            }
+        }
+        self.dirty = true;
+        self.selected_entry = None;
+        self.status = format!("Emptied the Recycle Bin ({n} objects removed)");
+    }
+
+    /// Whether the recycle bin is enabled in this database's metadata.
+    pub fn recycle_bin_enabled(&self) -> bool {
+        self.db
+            .as_ref()
+            .map(|db| db.meta.recyclebin_enabled.unwrap_or(true))
+            .unwrap_or(true)
+    }
+
+    /// Whether deleting this entry would move it to the recycle bin
+    /// (used to word the confirmation dialog like KeePassXC does).
+    pub fn deletes_to_recycle_bin_entry(&self, id: keepass::db::EntryId) -> bool {
+        let Some(db) = self.db.as_ref() else { return false };
+        if !self.recycle_bin_enabled() {
+            return false;
+        }
+        let bin_id = db.recycle_bin().map(|b| b.id());
+        // Already inside the bin (or inside a group within the bin)?
+        let mut parent = db.entry(id).map(|e| e.parent().id());
+        while let Some(pid) = parent {
+            if Some(pid) == bin_id {
+                return false;
+            }
+            parent = db.group(pid).and_then(|g| g.parent().map(|p| p.id()));
+        }
+        true
+    }
+
+    /// Get the recycle bin group id, creating the group (and registering it
+    /// in the metadata) on first use, exactly like KeePassXC.
+    fn ensure_recycle_bin(&mut self) -> GroupId {
+        if let Some(bin) = self.db.as_ref().and_then(|db| db.recycle_bin()) {
+            return bin.id();
+        }
+        let Some(db) = self.db.as_mut() else { unreachable!("db is open") };
+        let mut root = db.root_mut();
+        let mut bin = root.add_group();
+        bin.name = "Recycle Bin".into();
+        let id = bin.id();
+        drop(bin);
+        drop(root);
+        db.meta.recyclebin_uuid = Some(id.uuid());
+        db.meta.recyclebin_changed = Some(chrono::Utc::now().naive_utc());
+        self.dirty = true;
+        id
+    }
+
+    /// Restore a historical revision of an entry: copies all fields of the
+    /// revision into the current entry. Like KeePassXC, the restore itself
+    /// is recorded in the entry's history.
+    pub fn restore_history_entry(&mut self, id: keepass::db::EntryId, index: usize) {
+        let Some(db) = self.db.as_mut() else { return };
+
+        // Snapshot the historical fields.
+        let historical_fields = db
+            .entry(id)
+            .and_then(|e| e.historical(index).map(|h| h.fields.clone()));
+
+        let Some(fields) = historical_fields else {
+            self.status = "History revision not found".into();
+            return;
+        };
+
+        if let Some(mut entry) = db.entry_mut(id) {
+            entry.track_changes().edit(|e| {
+                e.fields = fields;
+            });
+            self.dirty = true;
+            self.dialog = Dialog::None;
+            self.status = "Restored entry from history".into();
+        }
+    }
+
+}
+
+/// Open a database with friendly error mapping (shared with the CLI layer).
+pub fn open_database(path: &str, key: &DatabaseKey) -> anyhow::Result<Database> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| anyhow::anyhow!("unable to open database file {path}: {e}"))?;
+    match Database::open(&mut file, key.clone()) {
+        Ok(db) => Ok(db),
+        Err(e) => anyhow::bail!("unable to open database {path} (wrong password or key file?): {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// eframe integration
+// ---------------------------------------------------------------------------
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        crate::theme::setup(ui.ctx());
+        if self.db.is_none() {
+            self.unlock_screen(ui);
+        } else {
+            self.database_screen(ui);
+        }
+    }
+}
+
+/// A form row on the unlock screen: fixed-width label + field content.
+/// (egui 0.37's Grid clamps TextEdit widths to the previous column width,
+/// leaving the fields tiny; manual rows honor `desired_width`.)
+fn unlock_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui::Id)) {
+    ui.horizontal(|ui| {
+        let label_resp = ui.add_sized(
+            [270.0, ui.spacing().interact_size.y],
+            egui::Label::new(
+                egui::RichText::new(label)
+                    .size(13.5)
+                    .color(crate::theme::MUTED),
+            ),
+        );
+        add(ui, label_resp.id);
+    });
+}
+
+impl App {
+    /// The unlock / welcome screen.
+    fn unlock_screen(&mut self, root: &mut Ui) {
+        let ctx = root.ctx().clone();
+        egui::CentralPanel::default().show(root, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("unlock-scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(44.0);
+                let key_icon =
+                    crate::icons::IconSpec::Standard(crate::icons::DEFAULT_ENTRY_ICON);
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .corner_radius(16)
+                    .inner_margin(egui::Margin::same(10))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+                    .show(ui, |ui| {
+                        ui.set_width(44.0);
+                        crate::icons::draw_icon_sized(
+                            ui,
+                            &mut self.icon_cache,
+                            Some(&key_icon),
+                            42.0,
+                        );
+                    });
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(crate::brand::NAME)
+                        .size(28.0)
+                        .strong()
+                        .color(crate::theme::TEXT),
+                );
+                ui.label(
+                    egui::RichText::new(crate::brand::TAGLINE)
+                        .size(13.0)
+                        .color(crate::theme::MUTED),
+                );
+                ui.add_space(22.0);
+            });
+
+            // Recently opened databases (persisted between launches).
+            if !self.prefs.recent.is_empty() {
+                let mut chosen: Option<String> = None;
+                let mut clear = false;
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Recent databases").strong());
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            for path in self.prefs.recent.clone() {
+                                let p = std::path::Path::new(&path);
+                                let name = p
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| path.clone());
+                                let exists = p.exists();
+                                let label = if exists {
+                                    name
+                                } else {
+                                    format!("{name} (missing)")
+                                };
+                                if ui
+                                    .add_enabled(
+                                        exists,
+                                        egui::Button::new(label).frame(false),
+                                    )
+                                    .on_hover_text(&path)
+                                    .clicked()
+                                {
+                                    chosen = Some(path.clone());
+                                }
+                            }
+                        });
+                    });
+                    if ui.small_button("Clear recent list").clicked() {
+                        clear = true;
+                    }
+                });
+                if let Some(path) = chosen {
+                    self.db_path = path;
+                    self.password.clear();
+                    self.unlock_error.clear();
+                }
+                if clear {
+                    self.prefs.recent.clear();
+                    self.prefs.last_db = None;
+                    self.save_preferences();
+                }
+                ui.add_space(16.0);
+            }
+
+            ui.vertical_centered(|ui| {
+                let card_w = (ui.available_width() - 32.0).clamp(520.0, 760.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(card_w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .corner_radius(16)
+                    .inner_margin(egui::Margin::symmetric(24, 22))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER))
+                    .show(ui, |ui| {
+                        let inner_w = (card_w - 48.0).max(460.0);
+                        ui.set_width(inner_w);
+                        let field_w = (inner_w - 270.0 - 92.0).max(180.0);
+            // Manual rows (egui 0.37 Grid clamps TextEdit widths to the tiny
+            // previous column width; see `form_row` in dialogs.rs).
+            unlock_row(ui, "Database file:", |ui, id| {
+                let path_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.db_path)
+                        .hint_text("/path/to/database.kdbx")
+                        .desired_width(field_w),
+                );
+                path_resp.labelled_by(id);
+                if ui.button("Browse…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("KeePass database", &["kdbx", "kdb"])
+                        .pick_file()
+                    {
+                        self.db_path = p.display().to_string();
+                    }
+                }
+            });
+
+            let mut unlock_on_enter = false;
+            unlock_row(ui, "Password:", |ui, id| {
+                let pw_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.password)
+                        .password(true)
+                        .hint_text("password")
+                        .desired_width(field_w),
+                );
+                // Enter in the password field unlocks.
+                unlock_on_enter =
+                    pw_resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                pw_resp.labelled_by(id);
+            });
+            if unlock_on_enter {
+                self.try_unlock();
+            }
+
+            unlock_row(ui, "Key file (optional):", |ui, id| {
+                let kf_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.key_file)
+                        .hint_text("/path/to/keyfile.keyx")
+                        .desired_width(field_w),
+                );
+                kf_resp.labelled_by(id);
+                if ui.button("Browse…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new()
+                        .add_filter("Key file", &["keyx", "key"])
+                        .pick_file()
+                    {
+                        self.key_file = p.display().to_string();
+                    }
+                }
+            });
+
+            unlock_row(ui, "Challenge-response secret (hex, optional):", |ui, id| {
+                let cr_resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.challenge_response)
+                        .hint_text("YubiKey-equivalent HMAC-SHA1 secret")
+                        .desired_width(field_w),
+                );
+                cr_resp.labelled_by(id);
+            });
+
+            ui.add_space(8.0);
+            let mut remember = self.remember_unlock;
+            if ui
+                .checkbox(
+                    &mut remember,
+                    "Remember unlock key and auto-unlock at startup",
+                )
+                .on_hover_text(
+                    "The password/key file/challenge-response secret is stored in the operating \
+                     system's keychain (macOS Keychain, Windows Credential Manager or the Linux \
+                     Secret Service). Anyone who can use your logged-in account can then open \
+                     the database.",
+                )
+                .changed()
+            {
+                self.remember_unlock = remember;
+            }
+            if self.auto_unlock {
+                ui.label(
+                    egui::RichText::new("An auto-unlock key is saved for this database.")
+                        .weak(),
+                );
+            }
+
+            ui.add_space(16.0);
+            if ui
+                .add_sized(
+                    [ui.available_width(), 36.0],
+                    crate::theme::primary_button("Unlock"),
+                )
+                .clicked()
+            {
+                self.try_unlock();
+            }
+            ui.add_space(6.0);
+            if ui
+                .add_sized(
+                    [ui.available_width(), 28.0],
+                    egui::Button::new(
+                        egui::RichText::new("Create new database…")
+                            .size(13.0)
+                            .color(crate::theme::MUTED),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+            {
+                self.dialog = Dialog::NewDb(Box::new(dialogs::NewDb::default()));
+            }
+
+            if !self.unlock_error.is_empty() {
+                ui.add_space(12.0);
+                ui.colored_label(crate::theme::DANGER, &self.unlock_error);
+            }
+                    });
+                });
+            });
+                });
+            dialogs::show(self, &ctx);
+        });
+    }
+
+    /// The main database screen: toolbar, group tree, entry list, details.
+    fn database_screen(&mut self, root: &mut Ui) {
+        let ctx = root.ctx().clone();
+
+        // Global keyboard shortcuts (skipped while dialogs or text fields
+        // have focus).
+        self.handle_shortcuts(&ctx);
+        if self.db.is_none() {
+            return; // e.g. Cmd+L locked the database this frame
+        }
+
+        // Toolbar ---------------------------------------------------------
+        egui::Panel::top("toolbar")
+            .resizable(false)
+            .default_size(60.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(18, 10))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+            )
+            .show(root, |ui| {
+                ui.horizontal(|ui| {
+                    let db_name = std::path::Path::new(&self.db_path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "database".into());
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new(crate::brand::NAME)
+                                .size(16.0)
+                                .strong()
+                                .color(crate::theme::TEXT),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{db_name}{}",
+                                if self.dirty { "  *" } else { "" }
+                            ))
+                            .size(11.0)
+                            .color(crate::theme::MUTED),
+                        );
+                    });
+                    ui.add_space(16.0);
+                    crate::theme::draw_nav_arrow(ui, true, crate::theme::MUTED);
+                    crate::theme::draw_nav_arrow(ui, false, crate::theme::MUTED);
+                    ui.add_space(6.0);
+                    crate::theme::draw_search_icon(ui, crate::theme::MUTED);
+
+                    let search_label = ui.label(
+                        egui::RichText::new("Search:")
+                            .size(11.0)
+                            .color(crate::theme::MUTED),
+                    );
+                    let search_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text(format!("Search in {db_name}"))
+                            .desired_width(300.0),
+                    );
+                    if self.focus_search {
+                        search_resp.request_focus();
+                        self.focus_search = false;
+                    }
+                    search_resp.labelled_by(search_label.id);
+                    if !self.search.is_empty()
+                        && ui
+                            .add(crate::theme::subtle_button("Clear"))
+                            .clicked()
+                    {
+                        self.search.clear();
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(crate::theme::primary_button("New Entry")).clicked() {
+                            self.new_entry_dialog(self.selected_group);
+                        }
+                        if ui.button("Lock").clicked() {
+                            self.lock();
+                        }
+                        let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));
+                        if save.clicked() {
+                            self.request_save();
+                        }
+                        ui.menu_button("More…", |ui| {
+                            if ui.button("New Group").clicked() {
+                                let parent = self
+                                    .selected_group
+                                    .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
+                                self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
+                                ui.close();
+                            }
+                            if ui.button("Password Generator…").clicked() {
+                                self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Import…").clicked() {
+                                self.dialog = Dialog::Import(Box::default());
+                                ui.close();
+                            }
+                            if ui.button("Export…").clicked() {
+                                self.dialog = Dialog::Export(Box::new(dialogs::ExportDialog::new(
+                                    &self.db_path,
+                                    "XML",
+                                )));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Columns…").clicked() {
+                                self.dialog = Dialog::Columns;
+                                ui.close();
+                            }
+                            if ui.button("Database Info…").clicked() {
+                                self.dialog = Dialog::DbInfo;
+                                ui.close();
+                            }
+                            if ui.button("SSH Agent…").clicked() {
+                                self.dialog = Dialog::SshAgent;
+                                ui.close();
+                            }
+                            if ui.button("Browser…").clicked() {
+                                self.dialog = Dialog::Browser;
+                                ui.close();
+                            }
+                            ui.separator();
+                            ui.checkbox(&mut self.show_passwords, "Show passwords");
+                            if ui.button("Save As…").clicked() {
+                                self.dialog = Dialog::SaveAs(self.db_path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Settings…").clicked() {
+                                self.launch_at_login = startup::launch_at_login_enabled();
+                                self.dialog = Dialog::Settings;
+                                ui.close();
+                            }
+                            if ui.button("Shortcuts…").clicked() {
+                                self.dialog = Dialog::Shortcuts;
+                                ui.close();
+                            }
+                        });
+                    });
+                });
+
+                // Batch operations on the multi-selection get their own row
+                // so the toolbar never overflows.
+                let n = self.selected_entries.len();
+                if n >= 2 {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{n} entries selected:"));
+                        if ui.button(format!("Move {n} to group…")).clicked() {
+                            let ids: Vec<EntryId> = self.selected_entries.iter().copied().collect();
+                            let groups = self.group_snapshot();
+                            self.dialog = Dialog::BatchMove(Box::new(dialogs::BatchMove {
+                                entries: ids,
+                                groups,
+                                target: None,
+                            }));
+                        }
+                        if ui.button(format!("Recycle {n} entries…")).clicked() {
+                            let ids: Vec<EntryId> = self.selected_entries.iter().copied().collect();
+                            self.recycle_entries(ids);
+                        }
+                    });
+                }
+            });
+
+        // Status bar ------------------------------------------------------
+        egui::Panel::bottom("statusbar")
+            .resizable(false)
+            .exact_size(30.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::SIDEBAR)
+                    .inner_margin(egui::Margin::symmetric(14, 5))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+            )
+            .show(root, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(&self.status)
+                            .size(12.0)
+                            .color(crate::theme::MUTED),
+                    );
+                });
+            });
+
+        // Sidebar: groups ---------------------------------------------------
+        egui::Panel::left("sidebar")
+            .resizable(true)
+            .default_size(225.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::SIDEBAR)
+                    .inner_margin(egui::Margin::symmetric(14, 14))
+                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+            )
+            .show(root, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("groups-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        browser::group_tree(ui, self);
+                    });
+            });
+
+        // Middle column and details --------------------------------------
+        if self.prefs.list_view {
+            egui::Panel::left("entry-list")
+                .resizable(true)
+                .default_size(340.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(16, 12))
+                        .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+                )
+                .show(root, |ui| {
+                    browser::entry_view(ui, self);
+                });
+
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(24, 18)),
+                )
+                .show(root, |ui| {
+                    let width = ui.available_width().min(820.0);
+                    if let Some(mut d) = self.inline_edit.take() {
+                        let (mut apply, mut cancel) =
+                            dialogs::entry_edit_inline_header(ui);
+                        apply |= ui.ctx().input_mut(|i| {
+                            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                        });
+                        cancel |= ui.ctx().input_mut(|i| {
+                            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                        });
+                        if apply {
+                            d.apply(self);
+                            self.inline_edit = None;
+                        } else if cancel {
+                            self.inline_edit = None;
+                        } else {
+                            egui::ScrollArea::vertical()
+                                .id_salt("inline-edit-scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_max_width((width - 14.0).max(220.0));
+                                    dialogs::entry_edit_body(ui, self, &mut d);
+                                });
+                            self.inline_edit = Some(d);
+                        }
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .id_salt("details-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_max_width((width - 14.0).max(220.0));
+                                browser::entry_details(ui, self, self.selected_entry);
+                            });
+                    }
+                });
+        } else {
+            // The table needs the whole width (six configurable columns).
+            // Details then sit under the table, still inside the central
+            // column, with the table clipped above them.
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::PANEL)
+                        .inner_margin(egui::Margin::symmetric(16, 12)),
+                )
+                .show(root, |ui| {
+                    if let Some(selected) = self.selected_entry {
+                        egui::Panel::bottom("details-table")
+                            .resizable(true)
+                            .default_size(300.0)
+                            .show_inside(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("details-table-scroll")
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        ui.set_max_width(900.0);
+                                        browser::entry_details(ui, self, Some(selected));
+                                    });
+                            });
+                    }
+                    browser::entry_view(ui, self);
+                });
+        }
+
+        dialogs::show(self, &ctx);
+
+        // Transient copy-confirmation toasts (bottom-right overlay).
+        self.render_toasts(&ctx);
+    }
+
+}

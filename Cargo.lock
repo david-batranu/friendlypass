@@ -2034,6 +2034,97 @@ dependencies = [
 ]
 
 [[package]]
+name = "friendlypass"
+version = "0.1.0"
+dependencies = [
+ "aes 0.8.4",
+ "anyhow",
+ "base64 0.23.1",
+ "cbc 0.1.2",
+ "chrono",
+ "cipher 0.4.4",
+ "clap",
+ "csv",
+ "flate2",
+ "getrandom 0.4.3",
+ "hex",
+ "keepass",
+ "md-5",
+ "quick-xml 0.42.0",
+ "rand_core 0.6.4",
+ "roxmltree",
+ "rpassword",
+ "rsa",
+ "rust-argon2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "twofish 0.7.1",
+ "uuid",
+ "x509-cert",
+ "zip",
+]
+
+[[package]]
+name = "friendlypass-browser"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "crypto_box",
+ "getrandom 0.4.3",
+ "keepass",
+ "libc",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "friendlypass-gui"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "anyhow",
+ "arboard",
+ "chrono",
+ "ed25519-dalek 3.0.0",
+ "eframe",
+ "egui_extras",
+ "egui_kittest",
+ "enigo",
+ "friendlypass",
+ "friendlypass-browser",
+ "friendlypass-ssh-agent",
+ "image",
+ "keepass",
+ "keyring",
+ "resvg",
+ "rfd",
+ "rust-argon2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ureq",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "friendlypass-ssh-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "ed25519-dalek 2.2.0",
+ "keepass",
+ "rpassword",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2824,97 +2915,6 @@ checksum = "0bb81a721ba76aa095b7f45deb180504f786904e56ca4b8e141f66eb89a78b75"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
-]
-
-[[package]]
-name = "kpxc"
-version = "0.1.0"
-dependencies = [
- "aes 0.8.4",
- "anyhow",
- "base64 0.23.1",
- "cbc 0.1.2",
- "chrono",
- "cipher 0.4.4",
- "clap",
- "csv",
- "flate2",
- "getrandom 0.4.3",
- "hex",
- "keepass",
- "md-5",
- "quick-xml 0.42.0",
- "rand_core 0.6.4",
- "roxmltree",
- "rpassword",
- "rsa",
- "rust-argon2",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "twofish 0.7.1",
- "uuid",
- "x509-cert",
- "zip",
-]
-
-[[package]]
-name = "kpxc-browser"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "crypto_box",
- "getrandom 0.4.3",
- "keepass",
- "libc",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
-name = "kpxc-gui"
-version = "0.1.0"
-dependencies = [
- "accesskit",
- "anyhow",
- "arboard",
- "chrono",
- "ed25519-dalek 3.0.0",
- "eframe",
- "egui_extras",
- "egui_kittest",
- "enigo",
- "image",
- "keepass",
- "keyring",
- "kpxc",
- "kpxc-browser",
- "kpxc-ssh-agent",
- "resvg",
- "rfd",
- "rust-argon2",
- "serde",
- "serde_json",
- "tempfile",
- "ureq",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "kpxc-ssh-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "ed25519-dalek 2.2.0",
- "keepass",
- "rpassword",
- "sha2 0.10.9",
- "tempfile",
 ]
 
 [[package]]
