@@ -342,3 +342,47 @@ fn kdb_import_reads_keepass1_fixture() {
     // Wrong password is rejected by the content hash, not by a hang.
     assert!(kpxc::kdb::import_kdb(&bytes, "wrong").is_err());
 }
+
+
+#[test]
+fn group_scoped_exports_only_include_the_subtree() {
+    let mut db = Database::new();
+    db.root_mut().name = "Vault".into();
+    let web_id = {
+        let mut root = db.root_mut();
+        let mut web = root.add_group();
+        web.name = "Web".into();
+        let id = web.id();
+        let mut entry = web.add_entry();
+        entry.set_unprotected(fields::TITLE, "Site Login");
+        entry.set_unprotected(fields::USERNAME, "alice");
+        id
+    };
+    {
+        let mut root = db.root_mut();
+        let mut other = root.add_group();
+        other.name = "Other".into();
+        let mut entry = other.add_entry();
+        entry.set_unprotected(fields::TITLE, "Unrelated");
+    }
+
+    let xml = kpxc::export::export_xml_group(&db, web_id).unwrap();
+    assert!(xml.contains("<Name>Web</Name>"));
+    assert!(xml.contains("Site Login"));
+    assert!(!xml.contains("Unrelated"));
+
+    let csv = kpxc::export::export_csv_group(&db, web_id);
+    assert!(csv.contains("\"Web\",\"Site Login\",\"alice\""));
+    assert!(!csv.contains("Unrelated"));
+    assert!(!csv.contains("Other"));
+
+    let html = kpxc::export::export_html_group(&db, "vault.kdbx", web_id);
+    assert!(html.contains("<h2>Web</h2>"));
+    assert!(html.contains("Site Login"));
+    assert!(!html.contains("Unrelated"));
+
+    // The group XML is importable on its own and keeps the group's content.
+    let imported = kpxc::import::import_xml(xml.as_bytes()).unwrap();
+    assert_eq!(imported.iter_all_entries().count(), 1);
+    assert_eq!(find(&imported, "Site Login").get(fields::USERNAME), Some("alice"));
+}

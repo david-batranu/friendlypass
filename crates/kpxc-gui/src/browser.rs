@@ -192,6 +192,8 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     let mut rename_dialog: Option<crate::dialogs::Dialog> = None;
     let mut delete_target: Option<GroupId> = None;
     let mut share_target: Option<GroupId> = None;
+    // Group-scoped export chosen from a row's context menu.
+    let mut export_request: Option<(Option<GroupId>, &'static str)> = None;
     let mut empty_bin_clicked = false;
     // Entry dropped from the entry table onto a group row: (entry, target).
     let mut dropped: Option<(EntryId, Option<GroupId>)> = None;
@@ -227,6 +229,19 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
             if resp.clicked() {
                 selected_group = if is_root { None } else { row.id };
             }
+            resp.context_menu(|ui| {
+                ui.label(if is_root { "Database export" } else { "Group export" });
+                for (label, format) in [
+                    ("Export as KeePass 2 XML…", "XML"),
+                    ("Export as CSV…", "CSV"),
+                    ("Export as HTML…", "HTML"),
+                ] {
+                    if ui.button(label).clicked() {
+                        export_request = Some((row.id, format));
+                        ui.close();
+                    }
+                }
+            });
             // Drag source: non-root groups can be dragged.
             if let Some(gid) = row.id {
                 resp.dnd_set_drag_payload(gid);
@@ -272,6 +287,27 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     );
     for row in &rows {
         row_ui(ui, row, false);
+    }
+
+    if let Some((group, format)) = export_request {
+        let group_name = match group {
+            Some(id) => app
+                .db
+                .as_ref()
+                .and_then(|db| db.group(id))
+                .map(|g| g.name.clone())
+                .unwrap_or_default(),
+            None => std::path::Path::new(&app.db_path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "database".into()),
+        };
+        app.dialog = crate::dialogs::Dialog::Export(Box::new(crate::dialogs::ExportDialog::for_group(
+            &app.db_path,
+            group,
+            &group_name,
+            format,
+        )));
     }
 
     ui.separator();

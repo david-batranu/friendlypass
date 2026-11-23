@@ -94,6 +94,9 @@ pub struct ExportDialog {
     pub path: String,
     pub format: String,
     pub error: String,
+    /// Export only this group (and its subtree); `None` exports the database.
+    pub group: Option<GroupId>,
+    pub group_name: String,
 }
 
 impl ExportDialog {
@@ -102,6 +105,26 @@ impl ExportDialog {
             path: String::new(),
             format: format.to_owned(),
             error: String::new(),
+            group: None,
+            group_name: String::new(),
+        };
+        dialog.update_default_path(database_path);
+        dialog
+    }
+
+    /// Export a single group (or the whole database when `group` is None).
+    pub fn for_group(
+        database_path: &str,
+        group: Option<GroupId>,
+        group_name: &str,
+        format: &str,
+    ) -> Self {
+        let mut dialog = ExportDialog {
+            path: String::new(),
+            format: format.to_owned(),
+            error: String::new(),
+            group,
+            group_name: group_name.to_owned(),
         };
         dialog.update_default_path(database_path);
         dialog
@@ -113,10 +136,23 @@ impl ExportDialog {
             "HTML" => "html",
             _ => "xml",
         };
-        let stem = std::path::Path::new(database_path)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "database".into());
+        let stem = if self.group_name.is_empty() {
+            std::path::Path::new(database_path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "database".into())
+        } else {
+            self.group_name
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect()
+        };
         let dir = std::path::Path::new(database_path)
             .parent()
             .map(|p| p.to_path_buf())
@@ -2049,11 +2085,19 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let mut open = true;
             let mut export_clicked = false;
             let mut cancelled = false;
-            egui::Window::new("Export (unencrypted)")
+            let title = if d.group.is_some() {
+                "Export group (unencrypted)"
+            } else {
+                "Export (unencrypted)"
+            };
+            egui::Window::new(title)
                 .open(&mut open)
                 .collapsible(false)
                 .default_width(860.0)
                 .show(ctx, |ui| {
+                    if d.group.is_some() {
+                        ui.label(format!("Group: {}", d.group_name));
+                    }
                     form_row(ui, "Format:", |ui, id| {
                         let resp = egui::ComboBox::from_id_salt("export-format")
                             .selected_text(d.format.clone())
@@ -2112,16 +2156,27 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     app.dialog = Dialog::Export(d);
                     return;
                 };
+                let group = d.group;
                 let rendered = match d.format.as_str() {
-                    "CSV" => Ok(kpxc::export::export_csv(db)),
-                    "HTML" => Ok(kpxc::export::export_html(
-                        db,
-                        &std::path::Path::new(&app.db_path)
+                    "CSV" => Ok(match group {
+                        Some(g) => kpxc::export::export_csv_group(db, g),
+                        None => kpxc::export::export_csv(db),
+                    }),
+                    "HTML" => {
+                        let name = std::path::Path::new(&app.db_path)
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| app.db_path.clone()),
-                    )),
-                    _ => kpxc::export::export_xml(db).map_err(|e| format!("{e:#}")),
+                            .unwrap_or_else(|| app.db_path.clone());
+                        Ok(match group {
+                            Some(g) => kpxc::export::export_html_group(db, &name, g),
+                            None => kpxc::export::export_html(db, &name),
+                        })
+                    }
+                    _ => match group {
+                        Some(g) => kpxc::export::export_xml_group(db, g)
+                            .map_err(|e| format!("{e:#}")),
+                        None => kpxc::export::export_xml(db).map_err(|e| format!("{e:#}")),
+                    },
                 };
                 match rendered {
                     Ok(out) => match std::fs::write(std::path::Path::new(d.path.trim()), out) {

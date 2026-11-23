@@ -224,6 +224,10 @@ check "our CSV export is byte-identical to keepassxc-cli's for the same database
     env sh -c "printf 'testpassword\\n' | '$KPXC' export -f csv '$ROOT/fixtures/sample4.kdbx' > '$WORK/ours.csv' && printf 'testpassword\\n' | '$CLI' export -f csv '$ROOT/fixtures/sample4.kdbx' > '$WORK/real.csv' && cmp '$WORK/real.csv' '$WORK/ours.csv'"
 check "KeePass 1 KDB import: field model, attachment and Twofish variant preserved" \
     env sh -c "printf 'masterpw\\nkdbpass\\nkdbpass\\n' | '$KPXC' import '$ROOT/fixtures/keepass1.kdb' '$WORK/kdb-import.kdbx' --set-password >/dev/null 2>&1 && printf 'kdbpass\\n' | '$KPXC' show '$WORK/kdb-import.kdbx' 'Test entry' | grep -q 'secretpassword' && printf 'masterpw\\nkdbpass\\nkdbpass\\n' | '$KPXC' import '$ROOT/fixtures/keepass1-twofish.kdb' '$WORK/twofish-import.kdbx' --set-password >/dev/null 2>&1 && printf 'kdbpass\\n' | '$KPXC' ls '$WORK/twofish-import.kdbx' | grep -q 'Twofish/'"
+check "group-scoped exports include only the group's subtree (XML/CSV/HTML; library test)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test import_export group_scoped_exports_only_include_the_subtree"
+check "group tree right-click menu exports a single group through the Export dialog (kittest)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui group_context_menu_exports_only_that_group"
 
 
 echo

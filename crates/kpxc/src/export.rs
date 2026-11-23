@@ -10,7 +10,7 @@ use keepass::db::{fields, Database, Entry, GroupRef, Icon, Times, Value};
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 // ---------------------------------------------------------------------------
 // XML
@@ -19,13 +19,22 @@ use anyhow::Result;
 /// Export the database as KeePass 2 XML (unencrypted), the format emitted by
 /// `keepassxc-cli export -f xml` and read by `keepassxc-cli import`.
 pub fn export_xml(db: &Database) -> Result<String> {
+    export_xml_group(db, db.root().id())
+}
+
+/// Export a single group (and its subtree) as KeePass 2 XML. The group
+/// becomes the XML document's root group.
+pub fn export_xml_group(db: &Database, group: keepass::db::GroupId) -> Result<String> {
+    let group = db
+        .group(group)
+        .context("cannot export: group not found")?;
     let mut w = Writer::new_with_indent(Vec::new(), b'\t', 1);
     w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), Some("yes"))))?;
 
     start(&mut w, "KeePassFile")?;
     write_meta(&mut w, db)?;
     start(&mut w, "Root")?;
-    write_group(&mut w, db, &db.root())?;
+    write_group(&mut w, db, &group)?;
     end(&mut w, "Root")?;
     end(&mut w, "KeePassFile")?;
 
@@ -384,6 +393,12 @@ fn write_value<W: std::io::Write>(w: &mut Writer<W>, value: &Value<String>) -> R
 
 /// Export in KeePassXC's CSV layout.
 pub fn export_csv(db: &Database) -> String {
+    export_csv_group(db, db.root().id())
+}
+
+/// Export a single group (and its subtree) as CSV. Group paths start at the
+/// exported group.
+pub fn export_csv_group(db: &Database, group: keepass::db::GroupId) -> String {
     let mut out = String::new();
     let header = [
         "Group",
@@ -429,7 +444,9 @@ pub fn export_csv(db: &Database) -> String {
             walk(out, db, &child, &path);
         }
     }
-    walk(&mut out, db, &db.root(), "");
+    if let Some(group) = db.group(group) {
+        walk(&mut out, db, &group, "");
+    }
     out
 }
 
@@ -453,6 +470,11 @@ fn push_csv_row(out: &mut String, fields: &[&str]) {
 
 /// Export as a self-contained HTML page, following KeePassXC's HtmlExporter.
 pub fn export_html(db: &Database, db_path: &str) -> String {
+    export_html_group(db, db_path, db.root().id())
+}
+
+/// Export a single group (and its subtree) as HTML.
+pub fn export_html_group(db: &Database, db_path: &str, group: keepass::db::GroupId) -> String {
     let name = db.meta.database_name.as_deref().unwrap_or("");
     let description = db
         .meta
@@ -480,7 +502,9 @@ overflow-wrap: anywhere;} .notes { font-size: small; } </style></head>\n<body><h
     out.push_str(&html_escape(db_path));
     out.push_str("</code></p>");
 
-    write_html_group(&mut out, db, &db.root(), "");
+    if let Some(group) = db.group(group) {
+        write_html_group(&mut out, db, &group, "");
+    }
     out.push_str("</body></html>");
     out
 }

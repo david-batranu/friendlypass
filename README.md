@@ -108,7 +108,7 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **61/61 checks, all workspace tests green.**
+Current result: **63/63 checks, all workspace tests green.**
 
 ## Layout
 
@@ -234,6 +234,9 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 * **Import… / Export…** — the same formats as the CLI, through dialogs:
   imports are merged into the open database (root group), exports warn that
   the XML/CSV/HTML file is unencrypted
+* **Per-group export** — right-click a group in the tree and choose
+  *Export as KeePass 2 XML… / CSV… / HTML…*; only that group and its
+  descendants are written (the group becomes the XML root / CSV path root)
 * **Entry details** — copy username / password / URL to the clipboard,
   **live TOTP codes** for OTP entries (RFC 6238, refreshed every second,
   copy button), custom attributes, auto-type summary, attachments with
@@ -274,7 +277,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 61 checks; GUI kittest, import/export, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 63 checks; GUI kittest, import/export, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)
@@ -288,7 +291,7 @@ CLI test suites all green).
 | Icons: 69 standard icons + custom icon pool, rendered in tree/table, per-entry picker | ✅ tested (standard + custom persisted; rendered from the original KeePassXC assets) |
 | Multi-selection & batch operations (move to group, recycle) | ✅ tested (Cmd/Ctrl-click) |
 | Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
-| Import / export (XML, CSV, HTML; Bitwarden, Proton Pass, 1PUX, KeePass 1 KDB AES/Twofish, KDBX) | ✅ tested: XML round-trip, byte-identical CSV export, real `keepassxc-cli` imports our XML (entries + attachments) and our importer reads its XML; KeePassXC's own KDB test databases (AES and Twofish) import with entries/attachments; Bitwarden/Proton Pass/1PUX fixtures tested. ❌ 1Password legacy `.opvault` and encrypted third-party JSON |
+| Import / export (XML, CSV, HTML; Bitwarden, Proton Pass, 1PUX, KeePass 1 KDB AES/Twofish, KDBX) | ✅ tested: XML round-trip, byte-identical CSV export, real `keepassxc-cli` imports our XML (entries + attachments) and our importer reads its XML; KeePassXC's own KDB test databases (AES and Twofish) import with entries/attachments; Bitwarden/Proton Pass/1PUX fixtures tested. **Per-group export** via the group tree's right-click menu (XML/CSV/HTML, subtree only). ❌ 1Password legacy `.opvault` and encrypted third-party JSON |
 | Entry details + clipboard copy + attachment export | ✅ tested |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |

@@ -1717,6 +1717,50 @@ fn import_export_dialogs_and_keepass1_import() {
     );
 }
 
+#[test]
+fn group_context_menu_exports_only_that_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = db_path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1400.0, 1000.0));
+    harness.run();
+
+    // Give the database a group with one entry so the subtree is distinctive.
+    {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        let mut root = db.root_mut();
+        let mut group = root.add_group();
+        group.name = "ExportMe".into();
+        let mut entry = group.add_entry();
+        entry.set_unprotected("Title", "Group Only");
+        entry.set_unprotected("UserName", "subtree-user");
+    }
+    harness.run();
+    harness.get_by_label("ExportMe (1)");
+
+    // Right-click the group -> Export as CSV…
+    harness.get_by_label("ExportMe (1)").click_secondary();
+    harness.run();
+    harness.get_by_label("Export as CSV…");
+    harness.get_by_label("Export as CSV…").click();
+    harness.run();
+    harness.get_by_label("Group: ExportMe");
+
+    let out = dir.path().join("exportme.csv");
+    replace_text(&mut harness, "Export to:", &out.display().to_string());
+    harness.get_by_label("Export now").click();
+    harness.run();
+
+    let csv = std::fs::read_to_string(&out).expect("group CSV written");
+    assert!(csv.contains("\"ExportMe\",\"Group Only\",\"subtree-user\""));
+    assert!(!csv.contains("Sample Entry"), "other groups are excluded");
+    assert!(!csv.contains("Web Login"), "other groups are excluded");
+}
+
 // ---------------------------------------------------------------------------
 // unit tests for the pure logic helpers
 // ---------------------------------------------------------------------------
