@@ -1245,7 +1245,6 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "database".into());
 
-    let mut copy: Option<String> = None;
     let mut edit_clicked = false;
     let mut delete_clicked = false;
     let mut history_clicked = false;
@@ -1270,33 +1269,28 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         crate::theme::draw_chevron_down(ui, crate::theme::MUTED);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             crate::theme::draw_kebab_icon(ui, crate::theme::MUTED);
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Edit…")
-                            .size(14.0)
-                            .color(crate::theme::TEXT),
-                    )
-                    .frame(false),
-                )
-                .clicked()
+            if crate::theme::action_button(
+                ui,
+                "top-edit",
+                "Edit…",
+                crate::theme::ActionIcon::None,
+                "Edit this entry (Cmd/Ctrl+E)",
+            )
+            .clicked()
             {
                 edit_clicked = true;
             }
             let (p_rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
             crate::theme::draw_pencil_icon(ui.painter(), p_rect.center(), crate::theme::MUTED);
             ui.add_space(6.0);
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Share")
-                            .size(14.0)
-                            .color(crate::theme::TEXT),
-                    )
-                    .frame(false),
-                )
-                .on_hover_text("Share group via KeeShare")
-                .clicked()
+            if crate::theme::action_button(
+                ui,
+                "top-share",
+                "Share",
+                crate::theme::ActionIcon::None,
+                "Share group via KeeShare",
+            )
+            .clicked()
             {
                 share_clicked = true;
             }
@@ -1395,11 +1389,14 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
     detail_card(ui, |ui| {
         field_block(
             ui,
+            app,
+            "username",
             "username",
             &d.username,
             &d.username,
+            "UserName",
             "Copy UserName",
-            &mut copy,
+            "Copy UserName (Cmd/Ctrl+B) — or click the field",
         );
         ui.add(egui::Separator::default().spacing(6.0));
         let masked = if show_password || d.password.is_empty() {
@@ -1410,33 +1407,38 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         let (strength_label, strength_frac, strength_color) = password_strength(&d.password);
         let row_width = ui.available_width();
         ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2((row_width - 255.0).max(80.0), 42.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.label(
-                        egui::RichText::new("password")
-                            .size(12.5)
-                            .color(crate::theme::ACCENT),
-                    );
-                    ui.label(
-                        egui::RichText::new(masked)
-                            .size(16.0)
-                            .monospace()
-                            .color(crate::theme::TEXT),
-                    );
-                },
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let avail = (row_width - 300.0).max(80.0);
+            value_cell(
+                ui,
+                app,
+                "password",
+                avail,
+                "password",
+                &masked,
+                true,
+                crate::theme::TEXT,
+                "Click to copy the password (Cmd/Ctrl+C)",
+                |app| app.note_copied("password", "Password", d.password.clone()),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(crate::theme::subtle_button("Copy Password"))
-                    .clicked()
-                {
-                    copy = Some(d.password.clone());
-                }
-                if ui
-                    .add(crate::theme::subtle_button(if show_password { "Hide" } else { "Show" }))
-                    .clicked()
+                copy_action(
+                    ui,
+                    app,
+                    "password",
+                    "Password",
+                    &d.password,
+                    "Copy Password",
+                    "Copy password (Cmd/Ctrl+C)",
+                );
+                if crate::theme::action_button(
+                    ui,
+                    "toggle-password",
+                    if show_password { "Hide" } else { "Show" },
+                    crate::theme::ActionIcon::Eye { shown: show_password },
+                    "Show / hide the password",
+                )
+                .clicked()
                 {
                     show_password = !show_password;
                 }
@@ -1456,44 +1458,37 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             ui.add(egui::Separator::default().spacing(6.0));
             let row_width = ui.available_width();
             ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2((row_width - 100.0).max(100.0), 48.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new("one-time password (TOTP)")
-                                .size(12.5)
-                                .color(crate::theme::ACCENT),
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(spaced_code(code))
-                                    .size(17.0)
-                                    .monospace()
-                                    .color(crate::theme::TEXT),
-                            );
-                            let frac = (*valid_for as f32 / 30.0).clamp(0.05, 1.0);
-                            crate::theme::draw_progress_ring(
-                                ui,
-                                6.5,
-                                frac,
-                                crate::theme::GOOD,
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("{valid_for}"))
-                                    .size(13.0)
-                                    .color(crate::theme::MUTED),
-                            );
-                        });
-                    },
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let avail = (row_width - 130.0).max(100.0);
+                value_cell(
+                    ui,
+                    app,
+                    "totp",
+                    avail,
+                    "one-time password (TOTP)",
+                    &spaced_code(code),
+                    true,
+                    crate::theme::TEXT,
+                    "Click to copy the TOTP code (Cmd/Ctrl+T)",
+                    |app| app.note_copied("totp", "TOTP", code.clone()),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(crate::theme::subtle_button("Copy TOTP"))
-                        .clicked()
-                    {
-                        copy = Some(code.clone());
-                    }
+                    copy_action(
+                        ui,
+                        app,
+                        "totp",
+                        "TOTP",
+                        code,
+                        "Copy TOTP",
+                        "Copy TOTP (Cmd/Ctrl+T)",
+                    );
+                    let frac = (*valid_for as f32 / 30.0).clamp(0.05, 1.0);
+                    crate::theme::draw_progress_ring(ui, 6.5, frac, crate::theme::GOOD);
+                    ui.label(
+                        egui::RichText::new(format!("{valid_for}"))
+                            .size(13.0)
+                            .color(crate::theme::MUTED),
+                    );
                 });
             });
         }
@@ -1505,44 +1500,81 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         detail_card(ui, |ui| {
             let width = ui.available_width();
             ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2((width - 110.0).max(80.0), 42.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new("website")
-                                .size(12.5)
-                                .color(crate::theme::ACCENT),
-                        );
-                        let (head, tail) = split_url_domain(&d.url);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            if !head.is_empty() {
-                                ui.label(
-                                    egui::RichText::new(head)
-                                        .size(15.5)
-                                        .color(crate::theme::MUTED),
-                                );
-                            }
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(tail)
-                                        .size(15.5)
-                                        .color(crate::theme::TEXT),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(&d.url);
-                        });
-                    },
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let avail = (width - 120.0).max(80.0);
+                // Clickable URL: hover pill, accent-colored text, click opens
+                // the system browser.
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(avail, 44.0), egui::Sense::hover());
+                let hovered = ui.rect_contains_pointer(rect);
+                let inner = rect.shrink2(egui::vec2(10.0, 5.0));
+                let lg = ui.painter().layout_no_wrap(
+                    "website".to_owned(),
+                    egui::FontId::new(12.5, egui::FontFamily::Proportional),
+                    crate::theme::ACCENT,
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(crate::theme::subtle_button("Copy URL"))
-                        .clicked()
-                    {
-                        copy = Some(d.url.clone());
+                let lg_size = lg.size();
+                let cap = ui.interact(
+                    egui::Rect::from_min_size(inner.min, lg_size),
+                    ui.id().with("value-cap-url"),
+                    egui::Sense::hover(),
+                );
+                cap.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), "website")
+                });
+                if ui.is_rect_visible(rect) {
+                    let painter = ui.painter();
+                    if hovered {
+                        painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::HOVER);
                     }
+                    painter.galley(egui::pos2(inner.left(), inner.top()), lg, crate::theme::ACCENT);
+                    let (head, tail) = split_url_domain(&d.url);
+                    let vfont = egui::FontId::new(15.5, egui::FontFamily::Proportional);
+                    let vcolor = if hovered {
+                        crate::theme::ACCENT
+                    } else {
+                        crate::theme::TEXT
+                    };
+                    let y = inner.top() + 17.0;
+                    let mut x = inner.left();
+                    if !head.is_empty() {
+                        let hg = layout_truncated(
+                            painter,
+                            head,
+                            vfont.clone(),
+                            crate::theme::MUTED,
+                            inner.width(),
+                        );
+                        let hw = hg.size().x;
+                        painter.galley(egui::pos2(x, y), hg, crate::theme::MUTED);
+                        x += hw;
+                    }
+                    let tg = layout_truncated(painter, tail, vfont, vcolor, inner.right() - x);
+                    painter.galley(egui::pos2(x, y), tg, vcolor);
+                }
+                let mut resp = ui.interact(
+                    rect,
+                    ui.id().with("value-cell-url"),
+                    egui::Sense::click(),
+                );
+                resp = resp.on_hover_text(format!("Open {} in the browser", d.url));
+                if resp.clicked() {
+                    open_url(&d.url);
+                    app.status = format!("Opening {} in the browser…", d.url);
+                }
+                resp.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &d.url)
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    copy_action(
+                        ui,
+                        app,
+                        "url",
+                        "URL",
+                        &d.url,
+                        "Copy URL",
+                        "Copy URL (Cmd/Ctrl+U) — or click the field",
+                    );
                 });
             });
         });
@@ -1573,13 +1605,21 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                 } else {
                     key.clone()
                 };
-                field_block(ui, &label, &shown, value, "Copy", &mut copy);
+                field_block(
+                    ui,
+                    app,
+                    &format!("attr:{key}"),
+                    &label,
+                    &shown,
+                    value,
+                    key,
+                    "Copy",
+                    &format!("Copy {key} — or click the field"),
+                );
             }
             if !d.tags.is_empty() {
                 ui.add(egui::Separator::default().spacing(6.0));
-                if ui.add(crate::theme::subtle_button("Copy Tags")).clicked() {
-                    copy = Some(d.tags.clone());
-                }
+                copy_action(ui, app, "tags", "tags", &d.tags, "Copy Tags", "Copy all tags");
             }
         });
     }
@@ -1664,7 +1704,15 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(crate::theme::subtle_button("Export…")).clicked() {
+                        if crate::theme::action_button(
+                            ui,
+                            &format!("export:{name}"),
+                            "Export…",
+                            crate::theme::ActionIcon::None,
+                            "Export this attachment to a file",
+                        )
+                        .clicked()
+                        {
                             if let Some(data) = app
                                 .db
                                 .as_ref()
@@ -1697,40 +1745,53 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
         ui.add_space(8.0);
     }
     ui.horizontal(|ui| {
-        if ui
-            .add(crate::theme::subtle_button("History…"))
-            .on_hover_text("Browse and restore previous versions")
-            .clicked()
+        if crate::theme::action_button(
+            ui,
+            "footer-history",
+            "History…",
+            crate::theme::ActionIcon::None,
+            "Browse and restore previous versions",
+        )
+        .clicked()
         {
             history_clicked = true;
         }
-        if ui
-            .add(crate::theme::subtle_button("Auto-Type"))
-            .on_hover_text("Type the entry's sequence (macOS needs Accessibility permission)")
-            .clicked()
+        if crate::theme::action_button(
+            ui,
+            "footer-autotype",
+            "Auto-Type",
+            crate::theme::ActionIcon::None,
+            "Type the entry's sequence (macOS needs Accessibility permission)",
+        )
+        .clicked()
         {
             autotype_clicked = true;
         }
-        if ui
-            .add(
-                egui::Button::new(
-                    egui::RichText::new("Delete…")
-                        .size(12.5)
-                        .color(crate::theme::DANGER),
-                )
-                .frame(false),
-            )
-            .clicked()
+        if crate::theme::action_button_ex(
+            ui,
+            "footer-delete",
+            "Delete…",
+            crate::theme::ActionIcon::None,
+            "Move the entry to the Recycle Bin",
+            Some(crate::theme::DANGER),
+        )
+        .clicked()
         {
             delete_clicked = true;
         }
     });
 
+    // Keep repainting while a "Copied" confirmation is visible.
+    if app
+        .copied_fields
+        .values()
+        .any(|t| t.elapsed() < crate::app::COPIED_TTL)
+    {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+    }
+
     // Apply pending mutations.
     app.show_passwords = show_password;
-    if let Some(text) = copy {
-        app.copy_to_clipboard(text);
-    }
     if edit_clicked {
         app.edit_entry_dialog(id);
     }
@@ -1772,40 +1833,186 @@ fn detail_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
+/// Lay out `text` without wrapping, truncating with an ellipsis to `max_w`.
+fn layout_truncated(
+    painter: &egui::Painter,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let full = painter.layout_no_wrap(text.to_owned(), font.clone(), color);
+    if full.size().x <= max_w {
+        return full;
+    }
+    let mut s = text.to_string();
+    while !s.is_empty() {
+        s.pop();
+        let g = painter.layout_no_wrap(format!("{s}…"), font.clone(), color);
+        if g.size().x <= max_w {
+            return g;
+        }
+    }
+    painter.layout_no_wrap("…".to_owned(), font, color)
+}
+
+/// A clickable field value in the details panel: soft pill on hover, accent
+/// flash while the "Copied" confirmation is active; clicking runs `on_click`.
+/// The accessible label is the shown value itself (role: button).
+#[allow(clippy::too_many_arguments)]
+fn value_cell(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    key: &str,
+    width: f32,
+    label: &str,
+    shown: &str,
+    mono: bool,
+    value_color: egui::Color32,
+    click_tooltip: &str,
+    on_click: impl FnOnce(&mut App),
+) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 44.0), egui::Sense::hover());
+    let hovered = ui.rect_contains_pointer(rect);
+    let copied = app.is_field_copied(key);
+    let inner = rect.shrink2(egui::vec2(10.0, 5.0));
+    // Lay out the caption even when off-screen so its accessibility node
+    // still exists (tests and screen readers query it, e.g. "attr_49").
+    let lg = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::new(12.5, egui::FontFamily::Proportional),
+        crate::theme::ACCENT,
+    );
+    let lg_size = lg.size();
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        if copied {
+            painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::ACCENT_SOFT);
+        } else if hovered {
+            painter.rect_filled(rect, egui::CornerRadius::same(8), crate::theme::HOVER);
+        }
+        painter.galley(egui::pos2(inner.left(), inner.top()), lg, crate::theme::ACCENT);
+        let family = if mono {
+            egui::FontFamily::Monospace
+        } else {
+            egui::FontFamily::Proportional
+        };
+        let vg = layout_truncated(
+            painter,
+            shown,
+            egui::FontId::new(15.5, family),
+            value_color,
+            inner.width(),
+        );
+        painter.galley(egui::pos2(inner.left(), inner.top() + 17.0), vg, value_color);
+    }
+    let cap = ui.interact(
+        egui::Rect::from_min_size(inner.min, lg_size),
+        ui.id().with(("value-cap", key)),
+        egui::Sense::hover(),
+    );
+    cap.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), label)
+    });
+    let mut resp = ui.interact(rect, ui.id().with(("value-cell", key)), egui::Sense::click());
+    if !click_tooltip.is_empty() {
+        resp = resp.on_hover_text(click_tooltip);
+    }
+    if resp.clicked() {
+        on_click(app);
+    }
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), shown)
+    });
+    resp
+}
+
+/// The copy button for a details field: clipboard icon at rest, morphs into a
+/// green "✓ Copied" while the confirmation is active.
+fn copy_action(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    key: &str,
+    label: &str,
+    value: &str,
+    btn_label: &str,
+    btn_tooltip: &str,
+) {
+    let id = format!("copy-{key}");
+    let resp = if app.is_field_copied(key) {
+        crate::theme::action_button_ex(
+            ui,
+            &id,
+            "Copied",
+            crate::theme::ActionIcon::Check,
+            "Copied to clipboard",
+            Some(crate::theme::GOOD),
+        )
+    } else {
+        crate::theme::action_button(
+            ui,
+            &id,
+            btn_label,
+            crate::theme::ActionIcon::Copy,
+            btn_tooltip,
+        )
+    };
+    if resp.clicked() {
+        app.note_copied(key, label, value.to_owned());
+    }
+}
+
+/// One details row: a clickable value cell (click = copy) plus a copy action
+/// button on the right.
+#[allow(clippy::too_many_arguments)]
 fn field_block(
     ui: &mut egui::Ui,
+    app: &mut App,
+    key: &str,
     label: &str,
     shown: &str,
     copy_value: &str,
     copy_label: &str,
-    copy: &mut Option<String>,
+    btn_label: &str,
+    btn_tooltip: &str,
 ) {
     let width = ui.available_width();
+    let btn_w = 120.0;
     ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2((width - 110.0).max(80.0), 42.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(12.5)
-                        .color(crate::theme::ACCENT),
-                );
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(shown)
-                            .size(15.5)
-                            .color(crate::theme::TEXT),
-                    )
-                    .truncate(),
-                );
-            },
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let avail = (width - btn_w).max(80.0);
+        value_cell(
+            ui,
+            app,
+            key,
+            avail,
+            label,
+            shown,
+            false,
+            crate::theme::TEXT,
+            &format!("Click to copy {copy_label}"),
+            |app| app.note_copied(key, copy_label, copy_value.to_owned()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(crate::theme::subtle_button(copy_label)).clicked() {
-                *copy = Some(copy_value.to_owned());
-            }
+            copy_action(ui, app, key, copy_label, copy_value, btn_label, btn_tooltip);
         });
+    });
+}
+
+/// Open a URL in the system browser (best effort, cross-platform).
+fn open_url(url: &str) {
+    let url = url.to_owned();
+    std::thread::spawn(move || {
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(&url).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+        #[cfg(not(any(unix, windows)))]
+        let _ = &url;
     });
 }
 

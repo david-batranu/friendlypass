@@ -2878,6 +2878,7 @@ dependencies = [
 name = "kpxc-gui"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
  "anyhow",
  "arboard",
  "chrono",

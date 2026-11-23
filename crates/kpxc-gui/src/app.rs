@@ -24,6 +24,17 @@ pub enum CopyField {
     Totp,
 }
 
+/// How long a copy button shows its "Copied" confirmation state.
+pub const COPIED_TTL: std::time::Duration = std::time::Duration::from_millis(1200);
+/// How long a toast notification stays on screen.
+pub const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(2600);
+
+/// A transient toast notification (bottom-right corner of the window).
+pub struct Toast {
+    pub text: String,
+    pub created: std::time::Instant,
+}
+
 /// Column to sort the entry list by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
@@ -94,6 +105,11 @@ pub struct App {
     pub sort_desc: bool,
     pub show_passwords: bool,
     pub status: String,
+    /// Field key -> when its value was last copied; drives the "Copied"
+    /// confirmation on the details panel's copy buttons and value cells.
+    pub copied_fields: std::collections::HashMap<String, std::time::Instant>,
+    /// Transient toast notifications shown bottom-right.
+    pub toasts: Vec<Toast>,
     pub dialog: Dialog,
     /// Lazily-uploaded icon textures (standard + custom icons).
     pub icon_cache: IconCache,
@@ -145,6 +161,8 @@ impl Default for App {
             sort_desc: false,
             show_passwords: false,
             status: String::new(),
+            copied_fields: std::collections::HashMap::new(),
+            toasts: Vec::new(),
             dialog: Dialog::None,
             icon_cache: IconCache::default(),
             ssh_handle: None,
@@ -503,6 +521,88 @@ impl App {
             Ok(()) => self.status = "Copied to clipboard".into(),
             Err(e) => self.status = format!("clipboard unavailable: {e}"),
         }
+    }
+
+    /// True while `field_key` is showing its "Copied" confirmation.
+    pub fn is_field_copied(&self, field_key: &str) -> bool {
+        self.copied_fields
+            .get(field_key)
+            .is_some_and(|t| t.elapsed() < COPIED_TTL)
+    }
+
+    /// Copy `text` to the clipboard for `field_key` (e.g. "username",
+    /// "attr:KP2A_URL"): records the "Copied" confirmation state for the
+    /// details panel and queues a toast notification.
+    pub fn note_copied(&mut self, field_key: &str, label: &str, text: String) {
+        self.copy_to_clipboard(text);
+        if !self.status.starts_with("clipboard unavailable") {
+            self.status = format!("Copied {label} to clipboard");
+        }
+        self.copied_fields
+            .insert(field_key.to_string(), std::time::Instant::now());
+        self.toasts.push(Toast {
+            text: format!("{label} copied to clipboard"),
+            created: std::time::Instant::now(),
+        });
+        if self.toasts.len() > 3 {
+            self.toasts.remove(0);
+        }
+    }
+
+    /// Draw the transient toast notifications (bottom-right, fading out) and
+    /// prune expired copy-confirmation state.
+    fn render_toasts(&mut self, ctx: &egui::Context) {
+        let now = std::time::Instant::now();
+        self.toasts.retain(|t| now.duration_since(t.created) < TOAST_TTL);
+        self.copied_fields
+            .retain(|_, t| now.duration_since(*t) < COPIED_TTL);
+        if self.toasts.is_empty() {
+            return;
+        }
+        let toasts = std::mem::take(&mut self.toasts);
+        egui::Area::new(egui::Id::new("kpxc-toasts"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -44.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+                    for toast in toasts.iter().rev() {
+                        let frac = 1.0
+                            - now.duration_since(toast.created).as_secs_f32()
+                                / TOAST_TTL.as_secs_f32();
+                        let a = frac.clamp(0.0, 1.0);
+                        egui::Frame::new()
+                            .fill(crate::theme::PANEL.gamma_multiply(a))
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                crate::theme::BORDER.gamma_multiply(a),
+                            ))
+                            .corner_radius(10)
+                            .inner_margin(egui::Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let (r, _) = ui.allocate_exact_size(
+                                        egui::vec2(14.0, 14.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    crate::theme::draw_check_icon(
+                                        ui.painter(),
+                                        r.center(),
+                                        crate::theme::GOOD.gamma_multiply(a),
+                                    );
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(&toast.text)
+                                            .size(13.0)
+                                            .color(crate::theme::TEXT.gamma_multiply(a)),
+                                    );
+                                });
+                            });
+                        ui.add_space(6.0);
+                    }
+                });
+            });
+        self.toasts = toasts;
+        ctx.request_repaint_after(std::time::Duration::from_millis(80));
     }
 
     /// Copy a field of the selected entry (keyboard shortcuts).
@@ -1557,6 +1657,9 @@ impl App {
         }
 
         dialogs::show(self, &ctx);
+
+        // Transient copy-confirmation toasts (bottom-right overlay).
+        self.render_toasts(&ctx);
     }
 
 }
