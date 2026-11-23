@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/kpxc", "crates/kpxc-gui", "crates/kpxc-ssh-agent", "crates/kpxc-browser"]
+members = [
+    "crates/kpxc",
+    "crates/kpxc-gui",
+    "crates/kpxc-gui-config",
+    "crates/kpxc-gui-egui",
+    "crates/kpxc-ssh-agent",
+    "crates/kpxc-browser",
+]
 
 # Local patch: challenge_response 0.5.46's nusb backend calls the Linux-only
 # `DeviceInfo::busnum()` unconditionally and does not build on macOS.
@@ -8,6 +15,11 @@ members = ["crates/kpxc", "crates/kpxc-gui", "crates/kpxc-ssh-agent", "crates/kp
 # `LocalChallenge` component (no USB transport), so behavior is unchanged.
 [patch.crates-io]
 challenge_response = { path = "vendor/challenge-response" }
+# Local patch: BUI 0.5.1's `<input type="password">` sets the kit mask with a
+# numeric setter, but the kit expects a one-character mask string, so
+# passwords were drawn in clear text. The vendored copy passes "•". See
+# vendor/blenderui/PATCH.md.
+blenderui = { path = "vendor/blenderui" }
 
 [workspace.package]
 edition = "2021"

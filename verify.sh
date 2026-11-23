@@ -114,11 +114,11 @@ check "keepassxc-cli opens it with the kpxc-generated keyfile" \
     env sh -c "printf 'kp\n' | '$CLI' ls -k kf.keyx kf.kdbx"
 
 echo
-echo "== 7. GUI (kpxc-gui): headless UI tests + C++ opens a GUI-written database =="
-check "cargo test -p kpxc-gui (13 headless UI tests + 6 unit tests: browse, edit, recycle bin, history, attributes/auto-type, icons, multi-selection, references, entry & group drag&drop, auto-type pipeline)" \
-    cargo test --release -p kpxc-gui --manifest-path "$ROOT/Cargo.toml"
+echo "== 7. GUI (legacy egui front-end): headless UI tests + C++ opens a GUI-written database =="
+check "egui front-end: headless UI tests (browse, edit, recycle bin, history, attributes/auto-type, icons, multi-selection, references, entry & group drag&drop, auto-type pipeline)" \
+    cargo test --release -p kpxc-gui-egui --manifest-path "$ROOT/Cargo.toml"
 check "GUI test run writes a database purely through the GUI dialogs" \
-    cargo test --release -p kpxc-gui --manifest-path "$ROOT/Cargo.toml" --test gui write_database_for_external_verification -- --ignored
+    cargo test --release -p kpxc-gui-egui --manifest-path "$ROOT/Cargo.toml" --test gui write_database_for_external_verification -- --ignored
 GUIOUT="$ROOT/target/gui-roundtrip.kdbx"
 check "keepassxc-cli opens the GUI-written database" \
     env sh -c "printf 'gui-pass-123\n' | '$CLI' ls '$GUIOUT'"
@@ -142,7 +142,7 @@ check "real ssh-keygen accepts keys written by our OpenSSH key writer" \
 check "real ssh-add lists keys served by the kpxc-ssh-agent CLI from a database" \
     env sh -c "timeout 60 cargo test --release -p kpxc-ssh-agent --manifest-path '$ROOT/Cargo.toml' --test e2e real_ssh_add_lists_keys_served_from_a_database"
 check "GUI SSH Agent window serves keys listed by real ssh-add (kittest test)" \
-    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test ssh_agent"
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test ssh_agent"
 
 echo
 echo "== 9. Browser protocol (kpxc-browser): REAL keepassxc-proxy interop =="
@@ -151,14 +151,14 @@ check "cargo test -p kpxc-browser (4 unit + 2 proxy-interop tests)" \
 check "the REAL shipped keepassxc-proxy relays our protocol: handshake, associate, test-associate, get-logins, error shape" \
     env sh -c "timeout 120 cargo test --release -p kpxc-browser --manifest-path '$ROOT/Cargo.toml' --test e2e_proxy full_protocol_flow_through_the_real_keepassxc_proxy"
 check "GUI Browser window starts/stops serving the protocol (kittest test)" \
-    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test browser"
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test browser"
 
 echo
 echo "== 10. KeeShare (classic shares): C++ keepassxc-cli reads our share containers =="
 check "cargo test -p kpxc keeshare (reference format + export/import merge)" \
     env sh -c "timeout 120 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare"
 check "KeeShare GUI dialog exports a group and persists the reference (kittest test)" \
-    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui share_group"
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test gui share_group"
 check "KeeShare test writes a share container for the C++ cross-check" \
     env sh -c "timeout 120 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare export_for_external_verification -- --ignored"
 check "keepassxc-cli reads the shared entries from our KeeShare container" \
@@ -166,7 +166,7 @@ check "keepassxc-cli reads the shared entries from our KeeShare container" \
 check "KeeShare signed mode: signed export verifies + tampering is rejected (unit/integration)" \
     env sh -c "timeout 180 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare signed_export_and_import_roundtrip"
 check "KeeShare signed GUI test (signed export + verified import through the dialogs)" \
-    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui share_group_signed_container_via_gui"
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test gui share_group_signed_container_via_gui"
 check "KeeShare signed container has KeePassXC's ZIP layout (container.share.kdbx + container.share.signature)" \
     env sh -c "timeout 180 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test keeshare signed_export_for_external_verification -- --ignored && unzip -l '$ROOT/target/keeshare-signed.kdbx.share' | grep -q container.share.kdbx && unzip -l '$ROOT/target/keeshare-signed.kdbx.share' | grep -q container.share.signature"
 check "OpenSSL verifies our RSA PKCS#1 v1.5 SHA-256 share signature" \
@@ -179,7 +179,7 @@ echo "== 11. Challenge-response (YubiKey-equivalent) composite keys =="
 check "cargo test -p kpxc challenge_response (password/CR, keyfile/CR, wrong-secret rejection)" \
     env sh -c "timeout 120 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test challenge_response"
 check "GUI unlock with the challenge-response secret (kittest test)" \
-    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui unlock_with_challenge_response_secret"
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test gui unlock_with_challenge_response_secret"
 check "CLI round-trip: create with --challenge-response, open with it, and reject when missing" \
     env sh -c "cd '$WORK' && printf 'crpass\ncrpass\n' | '$KPXC' db-create cr.kdbx --set-password --challenge-response 0102030405060708090a0b0c0d0e0f1011121314 --kdf aes --aes-rounds 10000 >/dev/null && printf 'crpass\n' | '$KPXC' add cr.kdbx 'CR Entry' -u u -g -L 12 --challenge-response 0102030405060708090a0b0c0d0e0f1011121314 >/dev/null && printf 'crpass\n' | '$KPXC' ls cr.kdbx --challenge-response 0102030405060708090a0b0c0d0e0f1011121314 | grep -q 'CR Entry' && ! printf 'crpass\n' | '$KPXC' ls cr.kdbx >/dev/null 2>&1"
 check "real YubiKey USB transport is hardware-gated (documented; LocalChallenge is the tested software equivalent)" \
@@ -188,28 +188,37 @@ check "real YubiKey USB transport is hardware-gated (documented; LocalChallenge 
 echo
 echo "== 12. TOTP (one-time passwords) =="
 check "TOTP generation matches RFC 6238 test vectors (SHA-1, 8 and 6 digits)" \
-    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --lib totp"
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --lib totp"
 check "GUI details panel shows the live TOTP code for OTP entries (kittest test)" \
-    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui details_show_current_totp_code"
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test gui details_show_current_totp_code"
 
 echo
 echo "== 13. Form layout (fields must be readable widths) =="
 check "entry-editor and unlock-screen text fields are wide (kittest rect measurements)" \
-    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test layout"
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test layout"
 
 echo
 echo "== 14. Keyboard shortcuts =="
 check "shortcuts (copy password/username/URL/TOTP, Cmd+F search, new/edit/delete, lock) and dialog keys (Enter/Escape, Cmd+Enter) work end-to-end (kittest test)" \
-    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui keyboard_shortcuts_and_dialog_keys"
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test gui keyboard_shortcuts_and_dialog_keys"
 check "shortcut reference window (toolbar button + F1) documents the full key map" \
-    sh -c "grep -q 'F1' '$ROOT/crates/kpxc-gui/src/dialogs.rs' && grep -q 'Shortcuts…' '$ROOT/crates/kpxc-gui/src/app.rs'"
+    sh -c "grep -q 'F1' '$ROOT/crates/kpxc-gui-egui/src/dialogs.rs' && grep -q 'Shortcuts…' '$ROOT/crates/kpxc-gui-egui/src/app.rs'"
 
 echo
 echo "== 15. Column customization + recent databases =="
 check "column layout (visibility, order, width) is configurable in the GUI and persists across restarts (kittest + config unit tests)" \
-    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --lib config && timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui columns_are_customizable_and_persist"
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui-config --manifest-path '$ROOT/Cargo.toml' && timeout 180 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test gui columns_are_customizable_and_persist"
 check "recent databases are remembered, prefilled on the next launch, listed on the welcome screen, clearable and unlockable (kittest)" \
-    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui recent_databases_are_remembered_across_launches"
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui-egui --manifest-path '$ROOT/Cargo.toml' --test gui recent_databases_are_remembered_across_launches"
+
+echo
+echo "== 16. BUI (Blender UI) front-end =="
+check "primary kpxc-gui is built on BUI: the blenderui crate drives the C kit (Blender's widget drawing)" \
+    sh -c "cargo tree -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' | grep -q 'blenderui v0.5.1'"
+check "headless BUI window tests: unlock, browse, search, copy, edit+history, save, columns, recents, generator, new DB, new entry, delete (7 tests)" \
+    env sh -c "timeout 400 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml'"
+check "BUI rendered real screenshots of the unlock screen, entry details and recent databases" \
+    sh -c "test -s '$ROOT/crates/kpxc-gui/tests/screenshots/bui_unlock.png' && test -s '$ROOT/crates/kpxc-gui/tests/screenshots/bui_details.png' && test -s '$ROOT/crates/kpxc-gui/tests/screenshots/bui_recent.png'"
 
 echo
 echo "================================"

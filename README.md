@@ -1,8 +1,9 @@
 # keepassxc-rs
 
 **KeePassXC, migrated to Rust** — the headless core *and* a cross-platform
-GUI, composing the Rust ecosystem instead of rewriting existing
-functionality.
+GUI drawn with [BUI](https://github.com/ppmpreetham/BUI), Blender's UI
+decoupled from Blender, composing the Rust ecosystem instead of rewriting
+existing functionality.
 
 The original C++ lives in `../keepassxc` (cloned from
 https://github.com/keepassxreboot/keepassxc). This folder contains the Rust
@@ -47,6 +48,15 @@ layers; this project is the behavior/compatibility layer on top:
   attribute and 32-byte key data so KeePassXC and keepass-rs agree),
   password generation, the KDBX3→4.1 upgrade-on-save, atomic writes, and
   friendly credential errors.
+* [`blenderui`](https://crates.io/crates/blenderui) 0.5.1 / BUI — the GUI
+  toolkit. BUI is Blender's widget drawing, layout and interaction (a C kit
+  ported from `interface_widgets.cc`) with a Rust binding: HTML + CSS,
+  Flexbox/Grid, Blender's dark theme and real Blender widgets. The primary
+  GUI (`crates/kpxc-gui`) is built entirely with it. `vendor/blenderui` is a
+  one-line local patch (see `vendor/blenderui/PATCH.md`): upstream 0.5.1
+  told the kit to mask password fields with a numeric setter while the kit
+  expects a one-character mask string, so passwords were drawn in clear
+  text.
 * `vendor/challenge-response` — a local compatibility patch for the
   `challenge_response` 0.5.46 crate (pulled in by keepass's
   `challenge_response` feature): its `nusb` backend calls the Linux-only
@@ -106,13 +116,15 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **55/55 checks, all workspace tests green.**
+Current result: **58/58 checks, all workspace tests green.**
 
 ## Layout
 
 ```
 crates/kpxc/          the CLI + library (commands, key handling, save logic)
-crates/kpxc-gui/      the cross-platform GUI (egui) + headless UI tests
+crates/kpxc-gui/      the primary GUI, built on BUI + headless BUI tests
+crates/kpxc-gui-egui/ the earlier egui GUI (kept for full-dialog parity)
+crates/kpxc-gui-config/ persisted preferences shared by both front-ends
 crates/kpxc/tests/    integration tests against the fixtures
 fixtures/             real .kdbx files (see passwords below)
 verify.sh             end-to-end Rust <=> KeePassXC cross-verification
@@ -145,11 +157,47 @@ UserName: user@example.com
 ...
 ```
 
-## GUI (`kpxc-gui`)
+## GUI (`kpxc-gui`): BUI (Blender's UI)
 
-`cargo run --release -p kpxc-gui -- [database.kdbx]` launches the
-cross-platform GUI (egui/eframe — pure Rust, runs on macOS, Windows and
-Linux). It mirrors KeePassXC's core GUI workflow:
+`cargo run --release -p kpxc-gui -- [database.kdbx]` launches the primary
+GUI. Every pixel is drawn by **[BUI](https://github.com/ppmpreetham/BUI)**,
+Blender's own UI code extracted as a library: the C kit does layout, input
+and widget drawing (a port of Blender's `interface_widgets.cc`), the
+`blenderui` Rust crate builds the tree with gpui-style syntax inside
+Blender's dark theme. No browser, no webview.
+
+![BUI unlock screen](crates/kpxc-gui/tests/screenshots/bui_unlock.png)
+
+![BUI entry details](crates/kpxc-gui/tests/screenshots/bui_details.png)
+
+The screenshots above are not mockups: the headless tests open real BUI
+windows off-screen with `Application::headless()`, drive them with
+`simulate_click` / `simulate_key`, and save the kit's actual raster output as
+PNGs (`crates/kpxc-gui/tests/screenshots/`).
+
+What the BUI front-end does today:
+
+| BUI front-end | Status |
+| --- | --- |
+| Unlock: password, key file, challenge-response secret, recent databases, last-db prefill | ✅ tested |
+| Browse: group tree, search, sortable columns, customizable columns (show/hide, reorder, width, persisted) | ✅ tested |
+| Entry details: username/password/URL/TOTP copy, custom attributes, notes | ✅ tested |
+| Entry editor (all standard fields + tags, password protection, history item on change), new entry, delete to recycle bin | ✅ tested |
+| New database, password generator, save, lock, persisted preferences | ✅ tested |
+| Native window on macOS (Cocoa host), ripples through the same app code | ✅ smoke-tested (`timeout 5 kpxc-gui`, no crash) |
+| Group add | ✅ |
+| Group rename/delete, recycle-bin empty, history browser/restore, ATTRIBUTES/auto-type editing, KeePass icons | ⏳ port in progress (available in the egui app) |
+| SSH agent / browser protocol / KeeShare / auto-type execution windows | ⏳ port in progress (available in the egui app) |
+
+The BUI port is why the binary is `kpxc-gui` and the old app is
+`kpxc-gui-egui`: no functionality is lost while the remaining dialogs move
+over.
+
+## Legacy GUI (`kpxc-gui-egui`, egui/eframe)
+
+`cargo run --release -p kpxc-gui-egui -- [database.kdbx]` launches the earlier
+egui GUI (pure Rust, macOS/Windows/Linux). It keeps the complete dialog set
+built before the BUI migration and mirrors KeePassXC's core GUI workflow:
 
 * **Unlock screen** — database file, password (Enter to unlock), optional
   key file, friendly error reporting for bad credentials
@@ -197,7 +245,7 @@ Linux). It mirrors KeePassXC's core GUI workflow:
   keyfile
 * **Database info** dialog, **lock** button
 
-The GUI is tested **headlessly with `egui_kittest`**
+The egui app is tested **headlessly with `egui_kittest`**
 (`cargo test -p kpxc-gui`): the tests drive the real `eframe` app by
 clicking widgets and typing text, assert on the rendered UI and app
 state, and produce image snapshots of the actual UI in
@@ -218,10 +266,10 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 55 checks; GUI kittest, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 58 checks; BUI headless windows, egui kittest, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
-### Feature matrix (GUI)
+### Feature matrix (legacy egui GUI, full dialog set)
 
 | Feature                                   | Status |
 |-------------------------------------------|--------|

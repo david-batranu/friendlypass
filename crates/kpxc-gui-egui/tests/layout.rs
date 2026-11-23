@@ -20,7 +20,7 @@ fn form_fields_are_wide() {
     let key = DatabaseKey::new().with_password("testpassword");
     let path = db_path.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path, key));
+        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path, key));
     harness.set_size(egui::Vec2::new(1400.0, 1000.0));
     harness.run();
 
@@ -41,7 +41,7 @@ fn form_fields_are_wide() {
     );
 
     // The unlock screen fields are wide too (fresh app, no database).
-    let mut welcome = Harness::new_eframe(|_cc| kpxc_gui::App::default());
+    let mut welcome = Harness::new_eframe(|_cc| kpxc_gui_egui::App::default());
     welcome.set_size(egui::Vec2::new(1400.0, 900.0));
     welcome.run();
     let path_width = welcome.get_by_label("Database file:").rect().width();

@@ -33,7 +33,7 @@ fn ssh_agent_window_serves_real_keys() {
     let path_str = db_path.display().to_string();
     let socket_str = socket.display().to_string();
     let mut harness =
-        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+        Harness::new_eframe(move |_cc| kpxc_gui_egui::App::with_open_database(&path_str, key));
     harness.set_size(egui::Vec2::new(1150.0, 720.0));
     harness.run();
 

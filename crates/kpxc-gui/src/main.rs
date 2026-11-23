@@ -1,20 +1,26 @@
-//! `kpxc-gui` binary: the cross-platform (egui) GUI of the KeePassXC Rust
-//! migration.
+//! `kpxc-gui` binary: the BUI (Blender UI) front-end.
 
-fn main() -> eframe::Result {
-    let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1150.0, 720.0])
-            .with_title("KeePassXC-RS"),
-        ..Default::default()
-    };
+use blenderui::prelude::*;
+use kpxc_gui::BuiApp;
 
-    // Optional: pass a database path as the first argument.
+fn main() {
+    // Optional database path as the first argument (prefills the form).
     let initial_db = std::env::args().nth(1);
 
-    eframe::run_native(
-        "KeePassXC-RS",
-        native_options,
-        Box::new(move |_cc| Ok(Box::new(kpxc_gui::App::new(initial_db)))),
-    )
+    Application::new().run(move |cx| {
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(1200.0), px(800.0)),
+            })),
+            is_resizable: Some(true),
+            window_min_size: Some(size(px(900.0), px(600.0))),
+            ..Default::default()
+        };
+        cx.open_window(opts, move |_, cx| {
+            let db = initial_db.clone();
+            cx.new(|_| BuiApp::new(db))
+        })
+        .expect("open the BUI window");
+    });
 }

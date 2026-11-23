@@ -1,0 +1,13 @@
+[package]
+name = "kpxc-gui-config"
+description = "Persisted GUI preferences shared by the BUI and egui front-ends (columns, recent databases)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+[dev-dependencies]
+tempfile = "3.27.0"
