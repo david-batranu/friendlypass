@@ -280,6 +280,20 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 * **Entry references** — insert `{REF:…}` references to other entries'
   fields through the editor; the details panel resolves them (and the
   original KeePassXC resolves references written by this GUI)
+* **Responsive layout** — the window adapts instead of clipping: the
+  toolbar moves the search box to its own row when narrow, the library
+  sidebar hides itself below ~1000 pt (and comes back from the toolbar
+  toggle or the list's group picker), and below ~820 pt the entry list and
+  the details pane stack vertically. Attachment rows keep their buttons off
+  the file name by shortening names in the middle and, in very narrow
+  panes, moving Export/Delete onto their own line
+* **Attachment visibility** — entries with files show a paperclip marker
+  (with a count when there are several) in both list and table views, and
+  the sidebar's **Attachments** row filters the list to those entries
+* **Back / Forward** — the toolbar arrows walk through the entries you have
+  visited, revealing each entry's group and clearing filters as needed
+* **Collapsible sections** — the GROUPS and TAGS sidebar headings really
+  collapse (their chevrons are interactive), which keeps short windows usable
 * **Icons** — all 69 KeePass standard icons (rasterized from the original
   KeePassXC SVG assets) plus database custom icons; pick per entry, add
   custom images from files, rendered in the group tree and entry table
@@ -296,7 +310,8 @@ Linux). It mirrors KeePassXC's core GUI workflow:
 * **Passkeys** — entries with `KPEX_PASSKEY*` / `FRIENDLYPASS_PASSKEY*` attributes
   show a single **Passkey** chip; the raw credential/private-key fields are
   hidden from the generic attribute list
-* **Entry details** — copy username / password / URL to the clipboard,
+* **Entry details** — a group picker and an overflow (⋮) menu with all the
+  secondary actions, plus copy username / password / URL to the clipboard,
   **live TOTP codes** for OTP entries (RFC 6238, refreshed every second,
   copy button), custom attributes, auto-type summary, and an **Attachments**
   card that manages files: **Add file…** (replaces a same-named attachment),
@@ -360,6 +375,8 @@ CLI test suites all green).
 | Sidebar tag filter | ✅ tags collected from all entries; clicking anywhere on a tag row filters the list to entries with that tag (click again or the × clears it); selecting a group/favorite clears the tag filter — kittest |
 | Entry details layout | ✅ details live in the rightmost column, not under the groups/list; the group/list dividers never cross it — kittest geometry check |
 | Entry details + clipboard copy | ✅ tested (light card layout with username/password/TOTP, website, security fields, notes, attachments, last edited) |
+| Responsive layout | ✅ toolbar wraps, the sidebar auto-hides below 1000 pt (explicit toggle wins) and the list/details stack below 820 pt; `tests/ui_polish.rs` asserts that names never overlap the attachment buttons at 1150/900/700 pt, that the search box never overlaps the toolbar actions, and that the panes stack |
+| Entry markers & filters | ✅ paperclip badge (with count) in list and table rows, announced to assistive tech; the sidebar Attachments row filters to entries with files; back/forward navigation and collapsible GROUPS/TAGS sections are covered by `tests/ui_polish.rs` |
 | Entry attachments | ✅ **manage** them from the details panel: add a file, replace one of the same name, export, delete (with confirmation); names are reduced to bare file names; sizes are shown per file and in total. Each change records entry history, survives save/re-open, and is covered by `tests/attachments.rs`; `keepassxc-cli` exports friendlypass-written attachments byte-identically |
 | Inline entry editing (right column) | ✅ **Edit…** replaces the details view with the editor; OK/Cancel pinned at the top while the form scrolls; kittest verifies the editor is in the right column and changes persist |
 | Passkeys | ✅ `KPEX_PASSKEY*` / `FRIENDLYPASS_PASSKEY*` entries show a **Passkey** chip; raw fields are hidden from the attribute list — kittest |

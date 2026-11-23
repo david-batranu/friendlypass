@@ -24,6 +24,10 @@ pub enum CopyField {
     Totp,
 }
 
+/// Window width (points) below which the library sidebar hides itself: under
+/// this, three columns cannot coexist without squeezing the details pane.
+pub const SIDEBAR_AUTO_HIDE_WIDTH: f32 = 1000.0;
+
 /// How long a copy button shows its "Copied" confirmation state.
 pub const COPIED_TTL: std::time::Duration = std::time::Duration::from_millis(1200);
 /// How long a toast notification stays on screen.
@@ -98,6 +102,25 @@ pub struct App {
     pub selected_tag: Option<String>,
     /// Show only favorite (starred) entries.
     pub filter_favorites: bool,
+    /// Show only entries that have attachments.
+    pub filter_attachments: bool,
+    /// Entry-selection history behind the toolbar's Back arrow (oldest last).
+    pub nav_back: Vec<EntryId>,
+    /// Entries the Forward arrow can return to (nearest last).
+    pub nav_forward: Vec<EntryId>,
+    /// The entry the navigation recorder last saw.
+    nav_last: Option<EntryId>,
+    /// Set while the app itself moves the selection (Back/Forward), so that
+    /// move is not recorded as a new history step.
+    nav_internal: bool,
+    /// Sidebar GROUPS / TAGS sections are collapsible (useful in short
+    /// windows); collapsed state is remembered for the session.
+    pub groups_collapsed: bool,
+    pub tags_collapsed: bool,
+    /// Sidebar visibility override: `None` follows the window width (shown
+    /// when there is room for three columns), `Some` pins it either way so the
+    /// toolbar toggle wins even in a narrow window.
+    pub sidebar_override: Option<bool>,
     pub selected_entry: Option<keepass::db::EntryId>,
     /// Multi-selection (Ctrl/Cmd-click) for batch operations.
     pub selected_entries: std::collections::HashSet<EntryId>,
@@ -155,6 +178,14 @@ impl Default for App {
             selected_group: None,
             selected_tag: None,
             filter_favorites: false,
+            filter_attachments: false,
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
+            nav_last: None,
+            nav_internal: false,
+            groups_collapsed: false,
+            tags_collapsed: false,
+            sidebar_override: None,
             selected_entry: None,
             selected_entries: std::collections::HashSet::new(),
             sort_column: SortColumn::Title,
@@ -464,6 +495,11 @@ impl App {
         self.selected_group = None;
         self.selected_tag = None;
         self.filter_favorites = false;
+        self.filter_attachments = false;
+        self.nav_back.clear();
+        self.nav_forward.clear();
+        self.sidebar_override = None;
+        self.nav_last = None;
         self.search.clear();
         self.dialog = Dialog::None;
         self.inline_edit = None;
@@ -1088,6 +1124,144 @@ impl App {
         }
     }
 
+    /// Whether the library sidebar is shown for a window of `window_w` points:
+    /// the explicit toggle wins, otherwise it appears when three columns fit.
+    pub fn sidebar_visible(&self, window_w: f32) -> bool {
+        self.sidebar_override.unwrap_or(window_w >= SIDEBAR_AUTO_HIDE_WIDTH)
+    }
+
+    /// The toolbar's action buttons (right to left): New Entry, Lock, Save and
+    /// the "More…" overflow menu.
+    fn toolbar_actions(&mut self, ui: &mut Ui) {
+        if ui.add(crate::theme::primary_button("New Entry")).clicked() {
+            self.new_entry_dialog(self.selected_group);
+        }
+        if ui.button("Lock").clicked() {
+            self.lock();
+        }
+        let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));
+        if save.clicked() {
+            self.request_save();
+        }
+        ui.menu_button("More…", |ui| {
+            if ui.button("New Group").clicked() {
+                let parent = self
+                    .selected_group
+                    .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
+                self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
+                ui.close();
+            }
+            if ui.button("Password Generator…").clicked() {
+                self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Import…").clicked() {
+                self.dialog = Dialog::Import(Box::default());
+                ui.close();
+            }
+            if ui.button("Export…").clicked() {
+                self.dialog = Dialog::Export(Box::new(dialogs::ExportDialog::new(
+                    &self.db_path,
+                    "XML",
+                )));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Columns…").clicked() {
+                self.dialog = Dialog::Columns;
+                ui.close();
+            }
+            if ui.button("Database Info…").clicked() {
+                self.dialog = Dialog::DbInfo;
+                ui.close();
+            }
+            if ui.button("SSH Agent…").clicked() {
+                self.dialog = Dialog::SshAgent;
+                ui.close();
+            }
+            if ui.button("Browser…").clicked() {
+                self.dialog = Dialog::Browser;
+                ui.close();
+            }
+            ui.separator();
+            ui.checkbox(&mut self.show_passwords, "Show passwords");
+            if ui.button("Save As…").clicked() {
+                self.dialog = Dialog::SaveAs(self.db_path.clone());
+                ui.close();
+            }
+            if ui.button("Settings…").clicked() {
+                self.launch_at_login = startup::launch_at_login_enabled();
+                self.dialog = Dialog::Settings;
+                ui.close();
+            }
+            if ui.button("Shortcuts…").clicked() {
+                self.dialog = Dialog::Shortcuts;
+                ui.close();
+            }
+        });
+    }
+
+    /// Record a user navigation step whenever the selected entry changes, so
+    /// the toolbar arrows can walk back and forth between entries.
+    fn record_navigation(&mut self) {
+        if self.nav_internal {
+            self.nav_internal = false;
+            self.nav_last = self.selected_entry;
+            return;
+        }
+        if self.selected_entry != self.nav_last {
+            if let (Some(previous), Some(_)) = (self.nav_last, self.selected_entry) {
+                self.nav_back.push(previous);
+                self.nav_forward.clear();
+            }
+            self.nav_last = self.selected_entry;
+        }
+    }
+
+    /// Show `id`, revealing the group it lives in and clearing filters that
+    /// would hide it. Used by Back/Forward.
+    fn reveal_entry(&mut self, id: EntryId) {
+        let parent = self.db.as_ref().and_then(|db| db.entry(id)).map(|e| e.parent().id());
+        if let Some(parent) = parent {
+            let is_root = self
+                .db
+                .as_ref()
+                .is_some_and(|db| db.root().id() == parent);
+            self.selected_group = if is_root { None } else { Some(parent) };
+        }
+        self.selected_tag = None;
+        self.filter_favorites = false;
+        self.filter_attachments = false;
+        self.search.clear();
+        self.selected_entries.clear();
+        self.selected_entries.insert(id);
+        self.selected_entry = Some(id);
+        self.nav_internal = true;
+    }
+
+    /// Go back to the previously selected entry (toolbar Back arrow).
+    pub fn navigate_back(&mut self) {
+        let Some(target) = self.nav_back.pop() else { return };
+        if let Some(current) = self.selected_entry {
+            self.nav_forward.push(current);
+        }
+        self.reveal_entry(target);
+        self.nav_last = self.selected_entry;
+        self.status = "Went back".into();
+    }
+
+    /// Go forward again after going back (toolbar Forward arrow).
+    pub fn navigate_forward(&mut self) {
+        let Some(target) = self.nav_forward.pop() else { return };
+        if let Some(current) = self.selected_entry {
+            self.nav_back.push(current);
+        }
+        self.reveal_entry(target);
+        self.nav_last = self.selected_entry;
+        self.status = "Went forward".into();
+    }
+
     /// Attach `data` to entry `id` under `name`, overwriting an attachment of
     /// the same name (KeePassXC replaces rather than rejects duplicates).
     /// Like every other mutation this records an entry history revision, so
@@ -1460,6 +1634,11 @@ impl App {
             return; // e.g. Cmd+L locked the database this frame
         }
 
+        // Full window width, read before any panel takes space: the one input
+        // for every responsive decision below (toolbar wrapping, sidebar,
+        // list/details stacking).
+        let window_w = root.available_width();
+
         // Toolbar ---------------------------------------------------------
         egui::Panel::top("toolbar")
             .resizable(false)
@@ -1472,11 +1651,33 @@ impl App {
                     .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
             )
             .show(root, |ui| {
+                // The toolbar has two arrangements: everything on one row when
+                // there is room, and a search row of its own when the window is
+                // narrow (otherwise the fixed-width search box was drawn over
+                // the action buttons).
+                let narrow = ui.available_width() < 860.0;
+                let db_name = std::path::Path::new(&self.db_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "database".into());
+
                 ui.horizontal(|ui| {
-                    let db_name = std::path::Path::new(&self.db_path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "database".into());
+                    let sidebar_visible = self.sidebar_visible(window_w);
+                    let resp = crate::theme::icon_button(
+                        ui,
+                        "sidebar-toggle",
+                        if sidebar_visible {
+                            "Hide the library sidebar"
+                        } else {
+                            "Show the library sidebar"
+                        },
+                        sidebar_visible,
+                        crate::theme::draw_sidebar_icon,
+                    );
+                    if resp.clicked() {
+                        self.sidebar_override = Some(!sidebar_visible);
+                    }
+                    ui.add_space(6.0);
                     ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new(crate::brand::NAME)
@@ -1494,104 +1695,75 @@ impl App {
                         );
                     });
                     ui.add_space(16.0);
-                    crate::theme::draw_nav_arrow(ui, true, crate::theme::MUTED);
-                    crate::theme::draw_nav_arrow(ui, false, crate::theme::MUTED);
-                    ui.add_space(6.0);
-                    crate::theme::draw_search_icon(ui, crate::theme::MUTED);
-
-                    let search_label = ui.label(
-                        egui::RichText::new("Search:")
-                            .size(11.0)
-                            .color(crate::theme::MUTED),
-                    );
-                    let search_resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.search)
-                            .hint_text(format!("Search in {db_name}"))
-                            .desired_width(300.0),
-                    );
-                    if self.focus_search {
-                        search_resp.request_focus();
-                        self.focus_search = false;
+                    let can_back = !self.nav_back.is_empty();
+                    let can_forward = !self.nav_forward.is_empty();
+                    if crate::theme::nav_arrow_button(ui, true, can_back).clicked() && can_back {
+                        self.navigate_back();
                     }
-                    search_resp.labelled_by(search_label.id);
-                    if !self.search.is_empty()
-                        && ui
-                            .add(crate::theme::subtle_button("Clear"))
-                            .clicked()
+                    if crate::theme::nav_arrow_button(ui, false, can_forward).clicked()
+                        && can_forward
                     {
-                        self.search.clear();
+                        self.navigate_forward();
+                    }
+                    if !narrow {
+                        ui.add_space(6.0);
+                        crate::theme::draw_search_icon(ui, crate::theme::MUTED);
+                        let search_label = ui.label(
+                            egui::RichText::new("Search:")
+                                .size(11.0)
+                                .color(crate::theme::MUTED),
+                        );
+                        let search_resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .hint_text(format!("Search in {db_name}"))
+                                .desired_width(260.0),
+                        );
+                        if self.focus_search {
+                            search_resp.request_focus();
+                            self.focus_search = false;
+                        }
+                        search_resp.labelled_by(search_label.id);
+                        if !self.search.is_empty()
+                            && ui.add(crate::theme::subtle_button("Clear")).clicked()
+                        {
+                            self.search.clear();
+                        }
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(crate::theme::primary_button("New Entry")).clicked() {
-                            self.new_entry_dialog(self.selected_group);
-                        }
-                        if ui.button("Lock").clicked() {
-                            self.lock();
-                        }
-                        let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));
-                        if save.clicked() {
-                            self.request_save();
-                        }
-                        ui.menu_button("More…", |ui| {
-                            if ui.button("New Group").clicked() {
-                                let parent = self
-                                    .selected_group
-                                    .unwrap_or_else(|| self.db.as_ref().unwrap().root().id());
-                                self.dialog = Dialog::GroupNew(Box::new(dialogs::GroupEdit::new(parent)));
-                                ui.close();
-                            }
-                            if ui.button("Password Generator…").clicked() {
-                                self.dialog = Dialog::Generator(Box::new(dialogs::Generator::default()));
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Import…").clicked() {
-                                self.dialog = Dialog::Import(Box::default());
-                                ui.close();
-                            }
-                            if ui.button("Export…").clicked() {
-                                self.dialog = Dialog::Export(Box::new(dialogs::ExportDialog::new(
-                                    &self.db_path,
-                                    "XML",
-                                )));
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Columns…").clicked() {
-                                self.dialog = Dialog::Columns;
-                                ui.close();
-                            }
-                            if ui.button("Database Info…").clicked() {
-                                self.dialog = Dialog::DbInfo;
-                                ui.close();
-                            }
-                            if ui.button("SSH Agent…").clicked() {
-                                self.dialog = Dialog::SshAgent;
-                                ui.close();
-                            }
-                            if ui.button("Browser…").clicked() {
-                                self.dialog = Dialog::Browser;
-                                ui.close();
-                            }
-                            ui.separator();
-                            ui.checkbox(&mut self.show_passwords, "Show passwords");
-                            if ui.button("Save As…").clicked() {
-                                self.dialog = Dialog::SaveAs(self.db_path.clone());
-                                ui.close();
-                            }
-                            if ui.button("Settings…").clicked() {
-                                self.launch_at_login = startup::launch_at_login_enabled();
-                                self.dialog = Dialog::Settings;
-                                ui.close();
-                            }
-                            if ui.button("Shortcuts…").clicked() {
-                                self.dialog = Dialog::Shortcuts;
-                                ui.close();
-                            }
-                        });
+                        self.toolbar_actions(ui);
                     });
                 });
+
+                // Second row on narrow windows: the search field gets the
+                // full width so it never collides with the actions.
+                if narrow {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        crate::theme::draw_search_icon(ui, crate::theme::MUTED);
+                        let search_label = ui.label(
+                            egui::RichText::new("Search:")
+                                .size(11.0)
+                                .color(crate::theme::MUTED),
+                        );
+                        let width = (ui.available_width() - 8.0).max(120.0);
+                        let search_resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .hint_text(format!("Search in {db_name}"))
+                                .desired_width(width),
+                        );
+                        if self.focus_search {
+                            search_resp.request_focus();
+                            self.focus_search = false;
+                        }
+                        search_resp.labelled_by(search_label.id);
+                        if !self.search.is_empty()
+                            && ui.add(crate::theme::subtle_button("Clear")).clicked()
+                        {
+                            self.search.clear();
+                        }
+                    });
+                }
 
                 // Batch operations on the multi-selection get their own row
                 // so the toolbar never overflows.
@@ -1637,30 +1809,42 @@ impl App {
                 });
             });
 
+        // Responsive layout ------------------------------------------------
+        // Three columns need roughly 1000 px. Below that the sidebar is
+        // dropped, and below ~820 px the list and the details are stacked in
+        // one column instead of being squeezed side by side (which used to
+        // clip the details pane entirely).
+        let show_sidebar = self.sidebar_visible(window_w);
+        let stacked = !self.prefs.list_view || window_w < 820.0;
+
         // Sidebar: groups ---------------------------------------------------
-        egui::Panel::left("sidebar")
-            .resizable(true)
-            .default_size(225.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(crate::theme::SIDEBAR)
-                    .inner_margin(egui::Margin::symmetric(14, 14))
-                    .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
-            )
-            .show(root, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("groups-scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        browser::group_tree(ui, self);
-                    });
-            });
+        if show_sidebar {
+            egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(225.0)
+                .size_range(170.0..=320.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::SIDEBAR)
+                        .inner_margin(egui::Margin::symmetric(14, 14))
+                        .stroke(egui::Stroke::new(1.0, crate::theme::BORDER)),
+                )
+                .show(root, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("groups-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            browser::group_tree(ui, self);
+                        });
+                });
+        }
 
         // Middle column and details --------------------------------------
-        if self.prefs.list_view {
+        if !stacked {
             egui::Panel::left("entry-list")
                 .resizable(true)
                 .default_size(340.0)
+                .size_range(240.0..=520.0)
                 .frame(
                     egui::Frame::new()
                         .fill(crate::theme::PANEL)
@@ -1729,11 +1913,16 @@ impl App {
                             .resizable(true)
                             .default_size(300.0)
                             .show_inside(ui, |ui| {
+                                // Cap the reading width but never exceed the
+                                // pane: a hard 900 px used to overflow (and get
+                                // clipped) in narrow windows.
+                                let pane_w = (ui.available_width() - 16.0).max(240.0);
                                 egui::ScrollArea::vertical()
                                     .id_salt("details-table-scroll")
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
-                                        ui.set_max_width(900.0);
+                                        ui.set_max_width(pane_w.min(900.0));
+                                        ui.set_width(pane_w.min(900.0));
                                         browser::entry_details(ui, self, Some(selected));
                                     });
                             });
@@ -1743,6 +1932,9 @@ impl App {
         }
 
         dialogs::show(self, &ctx);
+
+        // Track entry-to-entry moves for the back/forward arrows.
+        self.record_navigation();
 
         // Transient copy-confirmation toasts (bottom-right overlay).
         self.render_toasts(&ctx);

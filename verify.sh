@@ -94,6 +94,8 @@ check "friendlypass attachment-remove drops it again" \
     env sh -c "printf 'vpass\n' | '$FRIENDLYPASS' attachment-remove v.kdbx 'V Entry' notes.md && ! printf 'vpass\n' | '$FRIENDLYPASS' show v.kdbx 'V Entry' | grep -q 'Attachment: notes.md'"
 check "friendlypass GUI attachment tests (attachments card: add/replace/delete + history + persistence)" \
     cargo test --release -p friendlypass-gui --manifest-path "$ROOT/Cargo.toml" --test attachments
+check "friendlypass GUI layout/UX tests (responsive panes, no button overlap at any width, attachment markers + filter, back/forward, collapsible sections, working menus)" \
+    cargo test --release -p friendlypass-gui --manifest-path "$ROOT/Cargo.toml" --test ui_polish
 
 echo
 echo "== 4. cipher/KDF variants written by friendlypass open in keepassxc-cli =="

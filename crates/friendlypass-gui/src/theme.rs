@@ -23,10 +23,15 @@ pub const ACCENT: Color32 = Color32::from_rgb(0x18, 0x6A, 0xDE);
 pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0xE8, 0xF0, 0xFE);
 pub const HOVER: Color32 = Color32::from_rgb(0xEF, 0xF2, 0xF6);
 pub const DANGER: Color32 = Color32::from_rgb(0xD9, 0x3B, 0x3B);
+pub const DANGER_SOFT: Color32 = Color32::from_rgb(0xFD, 0xEC, 0xEC);
+pub const DANGER_SOFT_PRESSED: Color32 = Color32::from_rgb(0xF8, 0xD9, 0xD9);
 pub const GOOD: Color32 = Color32::from_rgb(0x2E, 0xA8, 0x3A);
 pub const WARN: Color32 = Color32::from_rgb(0xE5, 0x93, 0x1A);
 pub const GOLD: Color32 = Color32::from_rgb(0xF5, 0xB8, 0x1D);
 pub const TAG_GREEN: Color32 = Color32::from_rgb(0x2F, 0x9E, 0x62);
+
+/// Horizontal padding inside a quiet action button.
+const ACTION_BUTTON_PAD_X: f32 = 10.0;
 
 /// Apply the theme once per egui context.
 pub fn setup(ctx: &egui::Context) {
@@ -157,6 +162,23 @@ pub enum ActionIcon {
     Eye { shown: bool },
     /// Box with an arrow leaving to the top right ("open in browser").
     Open,
+    /// Pencil ("edit").
+    Pencil,
+    /// Box with an arrow leaving upwards ("share").
+    Share,
+    /// Arrow pointing down into a tray ("download" / "export to file").
+    Download,
+    /// Waste bin ("delete").
+    Trash,
+}
+
+/// How an action button should look. `Quiet` is the default; `Danger` tints
+/// the label and hover pill red so destructive actions read as such before
+/// they are clicked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ActionTone {
+    Quiet,
+    Danger,
 }
 
 /// A quiet action button: no chrome at rest, a soft pill on hover, a darker
@@ -183,22 +205,68 @@ pub fn action_button_ex(
     hover_text: &str,
     forced_color: Option<Color32>,
 ) -> egui::Response {
+    action_button_styled(
+        ui,
+        id_salt,
+        label,
+        icon,
+        hover_text,
+        ActionTone::Quiet,
+        forced_color,
+    )
+}
+
+/// A destructive action button: muted at rest, red on hover/click.
+pub fn action_button_danger(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    label: &str,
+    icon: ActionIcon,
+    hover_text: &str,
+) -> egui::Response {
+    action_button_styled(ui, id_salt, label, icon, hover_text, ActionTone::Danger, None)
+}
+
+/// The width [`action_button`] will occupy, so callers can lay out a row
+/// before drawing it (responsive layouts, truncating a label to fit).
+pub fn action_button_width(ui: &egui::Ui, label: &str, icon: ActionIcon) -> f32 {
     let font = FontId::new(13.0, FontFamily::Proportional);
     let galley = ui.painter().layout_no_wrap(label.to_owned(), font, TEXT);
     let has_icon = icon != ActionIcon::None;
     let icon_w = if has_icon { 15.0 } else { 0.0 };
     let gap = if has_icon { 5.0 } else { 0.0 };
-    let pad_x = 10.0;
+    icon_w + gap + galley.size().x + ACTION_BUTTON_PAD_X * 2.0
+}
+
+fn action_button_styled(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    label: &str,
+    icon: ActionIcon,
+    hover_text: &str,
+    tone: ActionTone,
+    forced_color: Option<Color32>,
+) -> egui::Response {
+    let font = FontId::new(13.0, FontFamily::Proportional);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, TEXT);
+    let has_icon = icon != ActionIcon::None;
+    let icon_w = if has_icon { 15.0 } else { 0.0 };
+    let gap = if has_icon { 5.0 } else { 0.0 };
+    let pad_x = ACTION_BUTTON_PAD_X;
     let size = Vec2::new(icon_w + gap + galley.size().x + pad_x * 2.0, 28.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let hovered = ui.rect_contains_pointer(rect);
     let pressed = hovered && ui.input(|i| i.pointer.primary_down());
     if ui.is_rect_visible(rect) {
-        let fg = forced_color.unwrap_or(if hovered || pressed { TEXT } else { MUTED });
+        let (rest, active, hover_bg, press_bg) = match tone {
+            ActionTone::Quiet => (MUTED, TEXT, HOVER, Color32::from_rgb(0xE2, 0xE5, 0xEA)),
+            ActionTone::Danger => (MUTED, DANGER, DANGER_SOFT, DANGER_SOFT_PRESSED),
+        };
+        let fg = forced_color.unwrap_or(if hovered || pressed { active } else { rest });
         let bg = if pressed {
-            Color32::from_rgb(0xE2, 0xE5, 0xEA)
+            press_bg
         } else if hovered {
-            HOVER
+            hover_bg
         } else {
             Color32::TRANSPARENT
         };
@@ -232,6 +300,22 @@ pub fn action_button_ex(
             }
             ActionIcon::Open => {
                 draw_open_icon(painter, egui::pos2(x + 7.5, cy), fg);
+                x += icon_w + gap;
+            }
+            ActionIcon::Pencil => {
+                draw_pencil_icon(painter, egui::pos2(x + 7.5, cy), fg);
+                x += icon_w + gap;
+            }
+            ActionIcon::Share => {
+                draw_share_icon(painter, egui::pos2(x + 7.5, cy), fg);
+                x += icon_w + gap;
+            }
+            ActionIcon::Download => {
+                draw_download_icon(painter, egui::pos2(x + 7.5, cy), fg);
+                x += icon_w + gap;
+            }
+            ActionIcon::Trash => {
+                draw_trash_icon(painter, egui::pos2(x + 7.5, cy), fg);
                 x += icon_w + gap;
             }
         }
@@ -385,6 +469,39 @@ pub fn draw_chevron_down(ui: &mut egui::Ui, color: Color32) {
     ui.painter().line_segment([p2, p3], Stroke::new(1.5, color));
 }
 
+/// A clickable section chevron: points down when open, right when collapsed.
+/// Returns the click response so the caller can toggle the section.
+pub fn chevron_toggle(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    open: bool,
+    color: Color32,
+) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+    let resp = ui
+        .interact(rect, ui.id().with(("chevron", id_salt)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(4), HOVER);
+    }
+    let c = rect.center();
+    let color = if resp.hovered() { TEXT } else { color };
+    if open {
+        let p1 = c + egui::vec2(-3.5, -1.5);
+        let p2 = c + egui::vec2(0.0, 2.0);
+        let p3 = c + egui::vec2(3.5, -1.5);
+        ui.painter().line_segment([p1, p2], Stroke::new(1.5, color));
+        ui.painter().line_segment([p2, p3], Stroke::new(1.5, color));
+    } else {
+        let p1 = c + egui::vec2(-1.5, -3.5);
+        let p2 = c + egui::vec2(2.0, 0.0);
+        let p3 = c + egui::vec2(-1.5, 3.5);
+        ui.painter().line_segment([p1, p2], Stroke::new(1.5, color));
+        ui.painter().line_segment([p2, p3], Stroke::new(1.5, color));
+    }
+    resp
+}
+
 /// Draw a small right chevron (`>`).
 pub fn draw_chevron_right(ui: &mut egui::Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -396,19 +513,55 @@ pub fn draw_chevron_right(ui: &mut egui::Ui, color: Color32) {
     ui.painter().line_segment([p2, p3], Stroke::new(1.5, color));
 }
 
-/// Draw a left or right navigation arrow (`<-` / `->`).
+/// A working back/forward arrow: a 26x26 hit area that shows a hover pill
+/// and dims when disabled. Returns the click response.
+pub fn nav_arrow_button(ui: &mut egui::Ui, left: bool, enabled: bool) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+    let resp = ui
+        .interact(
+            rect,
+            ui.id().with(("nav-arrow", left)),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(if enabled {
+            egui::CursorIcon::PointingHand
+        } else {
+            egui::CursorIcon::Default
+        });
+    let hovered = enabled && resp.hovered();
+    let color = if enabled {
+        if hovered {
+            TEXT
+        } else {
+            MUTED
+        }
+    } else {
+        BORDER
+    };
+    if hovered {
+        ui.painter().rect_filled(rect, CornerRadius::same(7), HOVER);
+    }
+    draw_nav_arrow_at(ui.painter(), rect.center(), left, color);
+    resp.on_hover_text(if left { "Back" } else { "Forward" })
+}
+
+/// Draw a left or right navigation arrow (`<-` / `->`) as a sized widget.
 pub fn draw_nav_arrow(ui: &mut egui::Ui, left: bool, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
-    let c = rect.center();
+    draw_nav_arrow_at(ui.painter(), rect.center(), left, color);
+}
+
+/// Paint a navigation arrow centred at `c`.
+fn draw_nav_arrow_at(painter: &egui::Painter, c: egui::Pos2, left: bool, color: Color32) {
     let dir = if left { -1.0 } else { 1.0 };
     let head = c + egui::vec2(dir * 5.0, 0.0);
     let tail = c + egui::vec2(-dir * 5.0, 0.0);
-    ui.painter().line_segment([tail, head], Stroke::new(1.6, color));
-    ui.painter().line_segment(
+    painter.line_segment([tail, head], Stroke::new(1.6, color));
+    painter.line_segment(
         [head, head + egui::vec2(-dir * 3.8, -3.8)],
         Stroke::new(1.6, color),
     );
-    ui.painter().line_segment(
+    painter.line_segment(
         [head, head + egui::vec2(-dir * 3.8, 3.8)],
         Stroke::new(1.6, color),
     );
@@ -436,10 +589,260 @@ pub fn draw_pencil_icon(painter: &egui::Painter, center: egui::Pos2, color: Colo
 /// Draw a 3-vertical-dots overflow icon.
 pub fn draw_kebab_icon(ui: &mut egui::Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 16.0), egui::Sense::hover());
-    let c = rect.center();
+    draw_kebab_at(ui.painter(), rect.center(), color);
+}
+
+/// Paint a 3-vertical-dots ("more") icon centred at `c`.
+pub fn draw_kebab_at(painter: &egui::Painter, c: egui::Pos2, color: Color32) {
     for dy in [-4.5_f32, 0.0, 4.5] {
-        ui.painter().circle_filled(c + egui::vec2(0.0, dy), 1.4, color);
+        painter.circle_filled(c + egui::vec2(0.0, dy), 1.4, color);
     }
+}
+
+/// A square icon-only button (26x26) with hover/pressed chrome. The glyph is
+/// painted by `paint`, so no font coverage is needed.
+pub fn icon_button(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    hover_text: &str,
+    active: bool,
+    paint: impl Fn(&egui::Painter, egui::Pos2, Color32),
+) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+    let resp = ui
+        .interact(rect, ui.id().with(("icon-btn", id_salt)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = resp.hovered();
+    let pressed = hovered && ui.input(|i| i.pointer.primary_down());
+    if hovered || active {
+        let bg = if pressed {
+            Color32::from_rgb(0xE2, 0xE5, 0xEA)
+        } else if hovered {
+            HOVER
+        } else {
+            ACCENT_SOFT
+        };
+        ui.painter().rect_filled(rect, CornerRadius::same(7), bg);
+    }
+    let color = if active || hovered { TEXT } else { MUTED };
+    paint(ui.painter(), rect.center(), color);
+    let resp = resp.on_hover_text(hover_text);
+    resp
+}
+
+/// Paint a "sidebar / panel" icon: a rounded rectangle with a left divider.
+pub fn draw_sidebar_icon(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let rect = egui::Rect::from_center_size(center, egui::vec2(14.0, 11.0));
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(2),
+        Stroke::new(1.3, color),
+        egui::StrokeKind::Middle,
+    );
+    let x = rect.left() + 4.6;
+    painter.line_segment(
+        [egui::pos2(x, rect.top() + 1.0), egui::pos2(x, rect.bottom() - 1.0)],
+        Stroke::new(1.3, color),
+    );
+}
+
+/// An icon-only "more" button that opens a menu. Drawn as three dots so it
+/// does not depend on a font glyph, and it really opens the menu (the old
+/// static kebab glyphs in the details bar did nothing when clicked).
+pub fn overflow_menu(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    hover_text: &str,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+    let resp = ui
+        .interact(rect, ui.id().with(("overflow", id_salt)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hover_text);
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(7), HOVER);
+    }
+    let color = if resp.hovered() { TEXT } else { MUTED };
+    draw_kebab_at(ui.painter(), rect.center(), color);
+    egui::Popup::menu(&resp).show(|ui| add(ui));
+}
+
+/// Draw a download icon: an arrow pointing into a tray ("export to file").
+pub fn draw_download_icon(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    // Arrow shaft + head.
+    let top = center + egui::vec2(0.0, -5.5);
+    let tip = center + egui::vec2(0.0, 2.0);
+    painter.line_segment([top, tip], Stroke::new(1.5, color));
+    painter.line_segment([tip, tip + egui::vec2(-2.6, -2.6)], Stroke::new(1.5, color));
+    painter.line_segment([tip, tip + egui::vec2(2.6, -2.6)], Stroke::new(1.5, color));
+    // Tray (open at the top).
+    let tray = egui::Rect::from_min_max(
+        center + egui::vec2(-5.0, 3.0),
+        center + egui::vec2(5.0, 6.0),
+    );
+    painter.line_segment([tray.left_top(), tray.left_bottom()], Stroke::new(1.5, color));
+    painter.line_segment([tray.left_bottom(), tray.right_bottom()], Stroke::new(1.5, color));
+    painter.line_segment([tray.right_bottom(), tray.right_top()], Stroke::new(1.5, color));
+}
+
+/// Draw a waste-bin ("delete") icon.
+pub fn draw_trash_icon(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let stroke = Stroke::new(1.4, color);
+    // Lid.
+    painter.line_segment(
+        [center + egui::vec2(-5.5, -3.5), center + egui::vec2(5.5, -3.5)],
+        stroke,
+    );
+    // Handle.
+    painter.line_segment(
+        [center + egui::vec2(-2.0, -3.5), center + egui::vec2(-2.0, -5.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + egui::vec2(-2.0, -5.0), center + egui::vec2(2.0, -5.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + egui::vec2(2.0, -5.0), center + egui::vec2(2.0, -3.5)],
+        stroke,
+    );
+    // Body, tapering slightly.
+    let body = [
+        center + egui::vec2(-4.2, -3.5),
+        center + egui::vec2(-3.2, 5.5),
+        center + egui::vec2(3.2, 5.5),
+        center + egui::vec2(4.2, -3.5),
+    ];
+    painter.add(egui::Shape::line(body.to_vec(), stroke));
+    // Two ribs.
+    painter.line_segment(
+        [center + egui::vec2(-1.4, -1.4), center + egui::vec2(-1.1, 3.4)],
+        Stroke::new(1.1, color),
+    );
+    painter.line_segment(
+        [center + egui::vec2(1.4, -1.4), center + egui::vec2(1.1, 3.4)],
+        Stroke::new(1.1, color),
+    );
+}
+
+/// Shorten `text` to `max_width` by replacing its middle with an ellipsis.
+///
+/// End-truncation would hide the extension of a long file name; keeping both
+/// ends leaves something like `1PasswordExport…151905.1pux` readable.
+pub fn truncate_middle(ui: &egui::Ui, text: &str, font: FontId, max_width: f32) -> String {
+    let measure = |candidate: &str| {
+        ui.painter()
+            .layout_no_wrap(candidate.to_owned(), font.clone(), TEXT)
+            .size()
+            .x
+    };
+    truncate_middle_with(text, max_width, measure)
+}
+
+/// The measuring-free core of [`truncate_middle`], so the shortening policy
+/// can be unit-tested without a live `Ui`.
+pub fn truncate_middle_with(
+    text: &str,
+    max_width: f32,
+    measure: impl Fn(&str) -> f32,
+) -> String {
+    if max_width <= 0.0 || measure(text) <= max_width {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // Binary search the largest number of kept characters that still fits.
+    let build = |keep: usize| -> String {
+        // Favour the tail so extensions and numeric suffixes stay visible.
+        let head = keep * 2 / 5;
+        let tail = keep - head;
+        let mut out: String = chars[..head].iter().collect();
+        out.push('…');
+        if tail > 0 {
+            out.extend(&chars[chars.len() - tail..]);
+        }
+        out
+    };
+    let (mut lo, mut hi) = (0usize, chars.len().saturating_sub(1));
+    let mut best = build(0);
+    while lo <= hi {
+        let mid = (lo + hi) / 2;
+        let candidate = build(mid);
+        if measure(&candidate) <= max_width {
+            best = candidate;
+            lo = mid + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    best
+}
+
+/// Draw a paperclip — the "this entry has attachments" marker.
+///
+/// Drawn as a slanted outlined capsule with an inner wire (the conventional
+/// paperclip rendering) rather than a lock-like stem + loop, which read as an
+/// "8" at badge sizes. `size` is the icon's overall width in points.
+pub fn draw_paperclip_icon(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    size: f32,
+    color: Color32,
+) {
+    let s = size / 16.0;
+    let ang = 40f32.to_radians();
+    let dir = egui::vec2(ang.cos(), -ang.sin());
+    let perp = egui::vec2(-dir.y, dir.x);
+    let half = 4.6 * s;
+    let radius = 2.3 * s;
+    let stroke = Stroke::new((1.4 * s).max(1.0), color);
+    let top = center + dir * half;
+    let bottom = center - dir * half;
+
+    let mut outline = Vec::with_capacity(28);
+    for i in 0..=12 {
+        let t = i as f32 / 12.0 * std::f32::consts::PI;
+        outline.push(top + (perp * t.cos() + dir * t.sin()) * radius);
+    }
+    for i in 0..=12 {
+        let t = i as f32 / 12.0 * std::f32::consts::PI;
+        outline.push(bottom + (-perp * t.cos() - dir * t.sin()) * radius);
+    }
+    painter.add(egui::Shape::closed_line(outline, stroke));
+    // The wire that runs through the middle of a real clip.
+    painter.line_segment(
+        [center - dir * (half * 0.45), center + dir * (half * 0.95)],
+        Stroke::new((1.2 * s).max(0.9), color),
+    );
+}
+
+/// An inline paperclip + count marker in a list/table row.
+pub fn draw_attachment_badge(ui: &mut egui::Ui, count: usize, color: Color32) {
+    let label = if count > 1 { count.to_string() } else { String::new() };
+    let font = FontId::new(11.0, FontFamily::Proportional);
+    let galley = ui.painter().layout_no_wrap(label.clone(), font, color);
+    let icon = 13.0;
+    let text_w = if label.is_empty() { 0.0 } else { galley.size().x + 3.0 };
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(icon + text_w + 2.0, 16.0), egui::Sense::hover());
+    let center = egui::pos2(rect.left() + icon / 2.0 + 1.0, rect.center().y);
+    draw_paperclip_icon(ui.painter(), center, icon, color);
+    if !label.is_empty() {
+        ui.painter().galley(
+            egui::pos2(center.x + icon / 2.0 + 1.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            color,
+        );
+    }
+    let text = if count == 1 {
+        "1 attachment".to_owned()
+    } else {
+        format!("{count} attachments")
+    };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text.as_str()));
+    resp.on_hover_text(text);
 }
 
 /// Draw a share / upload icon (box with upward arrow).
