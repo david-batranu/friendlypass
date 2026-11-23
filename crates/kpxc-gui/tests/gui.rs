@@ -1882,6 +1882,123 @@ fn auto_unlock_failure_falls_back_to_the_unlock_screen() {
 }
 
 // ---------------------------------------------------------------------------
+// scrolling
+// ---------------------------------------------------------------------------
+
+#[test]
+fn details_panel_is_under_the_table_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1200.0, 800.0));
+    harness.run();
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+
+    // The details title ("Sample Entry") is rendered twice: once in the
+    // table row and once in the details pane. The lower one must share the
+    // table's left edge, not start under the group tree.
+    let table_left = harness.get_by_label("Title ^").rect().left();
+    let mut titles: Vec<egui::Rect> = harness
+        .query_all_by_label("Sample Entry")
+        .map(|n| n.rect())
+        .collect();
+    assert!(titles.len() >= 2, "table row + details title");
+    titles.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    let details_title = *titles.last().unwrap();
+    assert!(
+        (details_title.left() - table_left).abs() < 40.0,
+        "details pane starts under the table (table x {table_left}, details x {})",
+        details_title.left()
+    );
+    assert!(
+        details_title.top() > titles[0].top(),
+        "details title is below the table row"
+    );
+}
+
+#[test]
+fn details_panel_scrolls_to_deep_attributes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1100.0, 600.0));
+    harness.run();
+
+    // Give the selected entry more attributes than the details panel can show.
+    let entry_id = {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        let id = db
+            .iter_all_entries()
+            .find(|e| e.get("Title") == Some("Sample Entry"))
+            .map(|e| e.id())
+            .unwrap();
+        if let Some(mut entry) = db.entry_mut(id) {
+            for i in 0..50 {
+                entry.set_unprotected(format!("attr_{i:02}"), format!("value {i}"));
+            }
+        }
+        id
+    };
+    harness.run();
+    harness.get_by_label("Sample Entry").click();
+    harness.run();
+    assert_eq!(harness.state().selected_entry, Some(entry_id));
+
+    let before = harness.get_by_label("attr_49").rect().top();
+    assert!(before > 600.0, "deep attribute starts off-screen: {before}");
+    harness.get_by_label("attr_49").scroll_to_me();
+    harness.run();
+    let after = harness.get_by_label("attr_49").rect().top();
+    assert!(
+        after < 600.0,
+        "the details ScrollArea scrolled the attribute into view: {after}"
+    );
+    assert!(after < before, "content moved up ({before} -> {after})");
+}
+
+#[test]
+fn group_tree_scrolls_to_overflowing_groups() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fresh_sample(&dir);
+    let key = DatabaseKey::new().with_password("testpassword");
+    let path_str = path.display().to_string();
+    let mut harness =
+        Harness::new_eframe(move |_cc| kpxc_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1000.0, 500.0));
+    harness.run();
+
+    {
+        let state = harness.state_mut();
+        let db = state.db.as_mut().unwrap();
+        let mut root = db.root_mut();
+        for i in 0..60 {
+            let mut group = root.add_group();
+            group.name = format!("Group {i:02}");
+        }
+    }
+    harness.run();
+
+    let before = harness.get_by_label("Group 59 (0)").rect().top();
+    assert!(before > 500.0, "last group starts off-screen: {before}");
+    harness.get_by_label("Group 59 (0)").scroll_to_me();
+    harness.run();
+    let after = harness.get_by_label("Group 59 (0)").rect().top();
+    assert!(
+        after < 500.0,
+        "the group ScrollArea scrolled the group into view: {after}"
+    );
+    assert!(after < before, "content moved up ({before} -> {after})");
+}
+
+// ---------------------------------------------------------------------------
 // unit tests for the pure logic helpers
 // ---------------------------------------------------------------------------
 

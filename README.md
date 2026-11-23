@@ -108,7 +108,7 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 4. attachments and generated keyfiles round-trip byte-identically;
 5. `cargo test --release` — 13 integration tests over the same fixtures.
 
-Current result: **66/66 checks, all workspace tests green.**
+Current result: **68/68 checks, all workspace tests green.**
 
 ## Layout
 
@@ -313,7 +313,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
 the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
 (classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 66 checks; GUI kittest, import/export, startup/auto-unlock, ssh-agent, browser, KeeShare and
+(`./verify.sh`: 68 checks; GUI kittest, import/export, startup/auto-unlock, ssh-agent, browser, KeeShare and
 CLI test suites all green).
 
 ### Feature matrix (GUI)
@@ -328,6 +328,8 @@ CLI test suites all green).
 | Multi-selection & batch operations (move to group, recycle) | ✅ tested (Cmd/Ctrl-click) |
 | Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
 | Import / export (XML, CSV, HTML; Bitwarden, Proton Pass, 1PUX, KeePass 1 KDB AES/Twofish, KDBX) | ✅ tested: XML round-trip, byte-identical CSV export, real `keepassxc-cli` imports our XML (entries + attachments) and our importer reads its XML; KeePassXC's own KDB test databases (AES and Twofish) import with entries/attachments; Bitwarden/Proton Pass/1PUX fixtures tested. **Per-group export** via the group tree's right-click menu (XML/CSV/HTML, subtree only). ❌ 1Password legacy `.opvault` and encrypted third-party JSON |
+| Scrollable panels | ✅ the group tree, entry details and unlock screen scroll when their content overflows (kittest ScrollIntoView checks); the entry table already virtual-scrolls |
+| Entry details layout | ✅ details are docked under the entry table only (like KeePassXC); the group/table divider and table column separators stop at the details pane and never cross it — kittest geometry check |
 | Entry details + clipboard copy + attachment export | ✅ tested |
 | TOTP one-time passwords (live code + countdown + copy in details; RFC 6238 vectors SHA-1/8-digit/6-digit) | ✅ tested |
 | Entry editor (all fields, tags, password generator; wide form fields) | ✅ tested |

@@ -240,6 +240,13 @@ check "auto-unlock rebuilds password+keyfile keys from the store; failures fall 
     env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui auto_unlock"
 
 echo
+echo "== 18. Scrolling and panel layout =="
+check "group tree and entry details scroll their overflowing content (kittest ScrollIntoView)" \
+    env sh -c "timeout 180 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui scrolls_to"
+check "details pane sits under the entry table only, so the group/table divider does not cross it" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui details_panel_is_under_the_table_only"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

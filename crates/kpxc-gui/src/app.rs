@@ -1014,6 +1014,10 @@ impl App {
     fn unlock_screen(&mut self, root: &mut Ui) {
         let ctx = root.ctx().clone();
         egui::CentralPanel::default().show(root, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("unlock-scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(40.0);
                 ui.heading("KeePassXC-RS");
@@ -1173,6 +1177,7 @@ impl App {
                 ui.colored_label(egui::Color32::RED, &self.unlock_error);
             }
 
+                });
             dialogs::show(self, &ctx);
         });
     }
@@ -1307,28 +1312,42 @@ impl App {
                 });
             });
 
-        // Details panel ----------------------------------------------------
-        let selected_entry = self.selected_entry;
-        if selected_entry.is_some() {
-            egui::Panel::bottom("details")
-                .resizable(true)
-                .default_size(170.0)
-                .show(root, |ui| {
-                    browser::entry_details(ui, self, selected_entry);
-                });
-        }
-
         // Group tree --------------------------------------------------------
         egui::Panel::left("groups")
             .resizable(true)
             .default_size(230.0)
             .show(root, |ui| {
-                browser::group_tree(ui, self);
+                egui::ScrollArea::vertical()
+                    .id_salt("groups-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        browser::group_tree(ui, self);
+                    });
             });
 
-        // Entry list ---------------------------------------------------------
+        // Entry list + entry details (details only under the table, like
+        // KeePassXC, so the group/table divider never crosses it) -----------
         egui::CentralPanel::default().show(root, |ui| {
-            browser::entry_table(ui, self);
+            if let Some(selected) = self.selected_entry {
+                egui::Panel::bottom("details")
+                    .resizable(true)
+                    .default_size(280.0)
+                    .show_inside(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("details-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                browser::entry_details(ui, self, Some(selected));
+                            });
+                    });
+            }
+            let table_rect = ui.available_rect_before_wrap();
+            let mut table_ui = ui.new_child(egui::UiBuilder::new().max_rect(table_rect));
+            table_ui.set_clip_rect(table_rect.intersect(ui.clip_rect()));
+            // egui_extras ends column separators at `min_rect().bottom()`;
+            // include the table's full height so they reach its bottom edge.
+            table_ui.expand_to_include_rect(table_rect);
+            browser::entry_table(&mut table_ui, self);
         });
 
         dialogs::show(self, &ctx);
