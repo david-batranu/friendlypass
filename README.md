@@ -186,7 +186,7 @@ above) and the GUI workflow described above — verified against KeePassXC
 | Entry table: sort, search, masked passwords | ✅ tested |
 | Icons: 69 standard icons + custom icon pool, rendered in tree/table, per-entry picker | ✅ tested (standard + custom persisted; rendered from the original KeePassXC assets) |
 | Multi-selection & batch operations (move to group, recycle) | ✅ tested (Cmd/Ctrl-click) |
-| Drag & drop (entries onto groups, incl. root and Recycle Bin) | ✅ tested (simulated pointer drags) |
+| Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
 | Entry details + clipboard copy + attachment export | ✅ tested |
 | Entry editor (all fields, tags, password generator) | ✅ tested |
 | Custom attributes with protection toggles | ✅ tested + C++ cross-checked |
@@ -197,7 +197,6 @@ above) and the GUI workflow described above — verified against KeePassXC
 | Save / Save As / KDBX 3→4.1 upgrade       | ✅ tested + C++ cross-checked |
 | New database (Argon2id, generated keyfile) | ✅ tested + C++ cross-checked |
 | Database info / lock                     | ✅ tested |
-| Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
 | Auto-type execution (keystroke injection via `enigo`) | ✅ implemented + pipeline unit-tested with a recording injector; end-to-end injection requires the user to grant the macOS Accessibility permission (manual step) |
 | SSH agent (key serving) | ✅ implemented + tested against the REAL ssh tooling: our parser reads `ssh-keygen` output; `ssh-keygen -y/-lf` accepts our written keys; `ssh-add -l` lists keys served from database attachments via the `kpxc-ssh-agent` binary, the library server, AND the GUI's SSH Agent window; signatures verify. Subset: unencrypted `ssh-ed25519` (RSA/ECDSA + passphrase-encrypted documented as unsupported) |
 | Browser integration (KeepassXC-Browser protocol) | ✅ implemented + verified against the REAL shipped `keepassxc-proxy` binary: X25519 `change-public-keys` handshake, nonce-increment responses, encrypted `associate` / `test-associate` / `get-logins` / `generate-password` / `lock-database` with KeePassXC 2.8.0's exact message shapes and error codes; the full flow (handshake → associate → test-associate → get-logins with base64 credentials → error replies) round-trips through the actual proxy from the KeePassXC.app bundle; the GUI's Browser window starts/stops the server on the socket the proxy connects to |
