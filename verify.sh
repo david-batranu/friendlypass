@@ -175,6 +175,17 @@ check "keepassxc-cli reads the database inside our SIGNED KeeShare container" \
     env sh -c "printf 'signed-pw\n' | '$CLI' ls '$ROOT/target/keeshare-signed-container.kdbx' | grep -q 'Shared Entry'"
 
 echo
+echo "== 11. Challenge-response (YubiKey-equivalent) composite keys =="
+check "cargo test -p kpxc challenge_response (password/CR, keyfile/CR, wrong-secret rejection)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc --manifest-path '$ROOT/Cargo.toml' --test challenge_response"
+check "GUI unlock with the challenge-response secret (kittest test)" \
+    env sh -c "timeout 120 cargo test --release -p kpxc-gui --manifest-path '$ROOT/Cargo.toml' --test gui unlock_with_challenge_response_secret"
+check "CLI round-trip: create with --challenge-response, open with it, and reject when missing" \
+    env sh -c "cd '$WORK' && printf 'crpass\ncrpass\n' | '$KPXC' db-create cr.kdbx --set-password --challenge-response 0102030405060708090a0b0c0d0e0f1011121314 --kdf aes --aes-rounds 10000 >/dev/null && printf 'crpass\n' | '$KPXC' add cr.kdbx 'CR Entry' -u u -g -L 12 --challenge-response 0102030405060708090a0b0c0d0e0f1011121314 >/dev/null && printf 'crpass\n' | '$KPXC' ls cr.kdbx --challenge-response 0102030405060708090a0b0c0d0e0f1011121314 | grep -q 'CR Entry' && ! printf 'crpass\n' | '$KPXC' ls cr.kdbx >/dev/null 2>&1"
+check "real YubiKey USB transport is hardware-gated (documented; LocalChallenge is the tested software equivalent)" \
+    sh -c "grep -q 'live USB YubiKey' '$ROOT/README.md'"
+
+echo
 echo "================================"
 echo "PASSED: $PASS   FAILED: $FAIL"
 [ "$FAIL" -eq 0 ] && echo "ALL CHECKS PASSED" || exit 1

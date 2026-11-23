@@ -42,6 +42,9 @@ pub struct App {
     pub db_path: String,
     pub password: String,
     pub key_file: String,
+    /// Optional local challenge-response secret (hex) — the software
+    /// equivalent of a YubiKey HMAC-SHA1 response.
+    pub challenge_response: String,
     pub unlock_error: String,
 
     // -- open database state --------------------------------------------
@@ -81,6 +84,7 @@ impl Default for App {
             db_path: String::new(),
             password: String::new(),
             key_file: String::new(),
+            challenge_response: String::new(),
             unlock_error: String::new(),
             db: None,
             db_key: None,
@@ -157,6 +161,16 @@ impl App {
                 },
                 Err(e) => {
                     self.unlock_error = format!("unable to open key file: {e}");
+                    return;
+                }
+            }
+        }
+
+        if !self.challenge_response.trim().is_empty() {
+            match kpxc::key::with_challenge_response(key, &self.challenge_response) {
+                Ok(k) => key = k,
+                Err(e) => {
+                    self.unlock_error = format!("{e:#}");
                     return;
                 }
             }
@@ -687,6 +701,15 @@ impl App {
                             self.key_file = p.display().to_string();
                         }
                     }
+                    ui.end_row();
+
+                    let cr_label = ui.label("Challenge-response secret (hex, optional):");
+                    let cr_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.challenge_response)
+                            .hint_text("YubiKey-equivalent HMAC-SHA1 secret"),
+                    );
+                    cr_resp.labelled_by(cr_label.id);
+                    ui.label("");
                     ui.end_row();
                 });
 

@@ -27,6 +27,9 @@ pub fn db_create(args: DbCreateArgs, stdin_is_tty: bool) -> Result<()> {
     } else {
         println!("Note: creating a database without a password key.");
     }
+    if let Some(secret) = &args.challenge_response {
+        key = key::with_challenge_response(key, secret)?;
+    }
     if let Some(kf) = &args.key_file {
         key::ensure_key_file(kf)?;
         let mut f = std::fs::File::open(kf)?;

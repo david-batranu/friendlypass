@@ -16,6 +16,12 @@ pub struct DbArgs {
     /// Deactivate the password key for the database (use keyfile only)
     #[arg(long = "no-password")]
     pub no_password: bool,
+
+    /// Local challenge-response secret (hex). This is the software equivalent
+    /// of a YubiKey's HMAC-SHA1 challenge-response (the same construction
+    /// KeePassXC uses); live USB YubiKey hardware is not supported.
+    #[arg(long = "challenge-response")]
+    pub challenge_response: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -140,6 +146,12 @@ pub struct DbCreateArgs {
     /// Set (or create, if missing) a key file for the database
     #[arg(short = 'k', long = "set-key-file")]
     pub key_file: Option<PathBuf>,
+
+    /// Local challenge-response secret (hex): protects the database with an
+    /// HMAC-SHA1 challenge-response component (the software equivalent of a
+    /// YubiKey; live USB hardware is not supported).
+    #[arg(long = "challenge-response")]
+    pub challenge_response: Option<String>,
 
     /// Database name
     #[arg(long)]

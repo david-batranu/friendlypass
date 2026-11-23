@@ -24,6 +24,10 @@ pub fn build_key(db: &DbArgs, stdin_is_tty: bool) -> Result<DatabaseKey> {
             .with_context(|| format!("unable to read key file {}", kf.display()))?;
     }
 
+    if let Some(secret) = &db.challenge_response {
+        key = with_challenge_response(key, secret)?;
+    }
+
     if db.no_password && db.key_file.is_none() {
         anyhow::bail!("refusing to open with an empty key (use a password and/or key file)");
     }
@@ -40,6 +44,17 @@ pub fn read_password(db_name: &str, stdin_is_tty: bool) -> Result<String> {
     } else {
         read_password_stdin()
     }
+}
+
+/// Attach a local challenge-response key to the database key.
+/// The secret is hex-encoded, like a YubiKey HMAC-SHA1 secret.
+pub fn with_challenge_response(key: DatabaseKey, secret_hex: &str) -> Result<DatabaseKey> {
+    // Validate the hex up front for a clear error message.
+    hex::decode(secret_hex.trim())
+        .map_err(|e| anyhow::anyhow!("challenge-response secret must be hex: {e}"))?;
+    Ok(key.with_challenge_response_key(keepass::ChallengeResponseKey::LocalChallenge(
+        secret_hex.trim().to_string(),
+    )))
 }
 
 /// Read a password from stdin (one line) when stdin is not a terminal.

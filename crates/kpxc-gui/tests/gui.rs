@@ -1216,6 +1216,72 @@ fn write_database_for_external_verification() {
 }
 
 // ---------------------------------------------------------------------------
+// challenge-response (YubiKey-equivalent) unlock via the GUI
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unlock_with_challenge_response_secret() {
+    const SECRET: &str = "0102030405060708090a0b0c0d0e0f1011121314";
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cr.kdbx");
+
+    // Build a challenge-response protected database.
+    let mut db = keepass::Database::new();
+    {
+        let mut root = db.root_mut();
+        let mut e = root.add_entry();
+        e.set_unprotected("Title", "CR Entry");
+    }
+    let key = kpxc::key::with_challenge_response(
+        DatabaseKey::new().with_password("cr-pass"),
+        SECRET,
+    )
+    .unwrap();
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&db_path).unwrap());
+    db.save(&mut out, key).unwrap();
+    drop(out);
+
+    // Unlock through the GUI with the correct secret.
+    let path = db_path.display().to_string();
+    let mut harness = Harness::new_eframe(move |_cc| {
+        let mut app = kpxc_gui::App::default();
+        app.db_path = path;
+        app.password = "cr-pass".into();
+        app.challenge_response = SECRET.into();
+        app
+    });
+    harness.set_size(egui::Vec2::new(1150.0, 720.0));
+    harness.run();
+    harness.get_by_label("Unlock").click();
+    harness.run();
+
+    let state = harness.state();
+    assert!(state.db.is_some(), "unlocked with the challenge-response secret");
+    assert!(state.unlock_error.is_empty());
+    harness.get_by_label("CR Entry");
+
+    // Wrong secret: rejected with an error, DB stays locked.
+    let mut bad = Harness::new_eframe(|_cc| {
+        let mut app = kpxc_gui::App::default();
+        app.db_path = db_path.display().to_string();
+        app.password = "cr-pass".into();
+        app.challenge_response = "ffffffffffffffffffffffffffffffffffffffff".into();
+        app
+    });
+    bad.set_size(egui::Vec2::new(1150.0, 720.0));
+    bad.run();
+    bad.get_by_label("Unlock").click();
+    bad.run();
+    let state = bad.state();
+    assert!(state.db.is_none(), "wrong challenge-response secret must be rejected");
+    assert!(
+        state.unlock_error.contains("Incorrect key") || state.unlock_error.contains("unable to open"),
+        "error: {:?}",
+        state.unlock_error
+    );
+}
+
+// ---------------------------------------------------------------------------
 // unit tests for the pure logic helpers
 // ---------------------------------------------------------------------------
 

@@ -47,6 +47,12 @@ layers; this project is the behavior/compatibility layer on top:
   attribute and 32-byte key data so KeePassXC and keepass-rs agree),
   password generation, the KDBX3→4.1 upgrade-on-save, atomic writes, and
   friendly credential errors.
+* `vendor/challenge-response` — a local compatibility patch for the
+  `challenge_response` 0.5.46 crate (pulled in by keepass's
+  `challenge_response` feature): its `nusb` backend calls the Linux-only
+  `DeviceInfo::busnum()` and does not compile on macOS. The patch adds a
+  small platform shim; only the software `LocalChallenge` component is used
+  (no USB transport), so behavior is unchanged.
 
 ## Compatibility, verified
 
@@ -202,4 +208,4 @@ CLI test suites all green).
 | SSH agent (key serving) | ✅ implemented + tested against the REAL ssh tooling: our parser reads `ssh-keygen` output; `ssh-keygen -y/-lf` accepts our written keys; `ssh-add -l` lists keys served from database attachments via the `kpxc-ssh-agent` binary, the library server, AND the GUI's SSH Agent window; signatures verify. Subset: unencrypted `ssh-ed25519` (RSA/ECDSA + passphrase-encrypted documented as unsupported) |
 | Browser integration (KeepassXC-Browser protocol) | ✅ implemented + verified against the REAL shipped `keepassxc-proxy` binary: X25519 `change-public-keys` handshake, nonce-increment responses, encrypted `associate` / `test-associate` / `get-logins` / `generate-password` / `lock-database` with KeePassXC 2.8.0's exact message shapes and error codes; the full flow (handshake → associate → test-associate → get-logins with base64 credentials → error replies) round-trips through the actual proxy from the KeePassXC.app bundle; the GUI's Browser window starts/stops the server on the socket the proxy connects to |
 | KeeShare (signed share containers) | ✅ full: classic (unsigned) shares **and signed shares**. Signed containers use KeePassXC's exact layout — ZIP with `container.share.kdbx` + `container.share.signature`, RSA PKCS#1 v1.5 SHA-256 over the database bytes hex-prefixed `rsa|`, signature XML carrying the signer name and the `ssh-rsa` public key blob — signed with a local self-signed X.509 identity (CN signer) persisted under the config dir. Verified on import (tampered containers rejected, signer reported). Cross-checked with real tools: `openssl dgst -sha256 -verify` reports Verified OK, `unzip -l` shows the KeePassXC layout, and `keepassxc-cli` reads the database inside our signed container |
-| YubiKey challenge-response keys | ❌ not implemented — requires physical YubiKey hardware to verify |
+| YubiKey challenge-response keys | ✅ challenge-response composite-key support implemented + tested: the response component is HMAC-SHA1(KDF seed, secret) — the same construction a YubiKey uses — via the keepass `challenge_response` feature (`LocalChallenge`); CLI (`--challenge-response <hex>`) and GUI unlock field; round-trip tests cover password+CR, keyfile+CR, and rejection of missing/wrong secrets. ❌ live USB YubiKey HID transport is not implemented — it needs physical YubiKey hardware |
