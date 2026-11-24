@@ -1,38 +1,20 @@
-/** Credential dropdown (WP4, ported from `content/credential-autocomplete.js`). */
+/**
+ * Credential → inline-menu entries (WP6b).
+ *
+ * The menu itself lives in `autocomplete.ts`; this module holds the mapping so
+ * login and TOTP views cannot drift apart. It never exposes passwords.
+ */
 
 import type { CredentialEntry } from "../common/types";
-import { AutocompleteMenu } from "./autocomplete";
+import type { MenuEntry } from "./autocomplete";
+import { entryHasTotp } from "./totp-field";
 
-export class CredentialAutocomplete {
-  private readonly menu = new AutocompleteMenu();
-
-  isOpenFor(field: HTMLInputElement): boolean {
-    return this.menu.isOpenFor(field);
-  }
-
-  close(): void {
-    this.menu.close();
-  }
-
-  show(
-    field: HTMLInputElement,
-    entries: CredentialEntry[],
-    onPick: (entry: CredentialEntry) => void,
-  ): void {
-    this.menu.open(
-      field,
-      entries.map((entry) => ({
-        uuid: entry.uuid,
-        title: entry.name || entry.login || "friendlypass entry",
-        value: entry.login || "(no username)",
-        group: entry.group,
-      })),
-      ({ item }) => {
-        const entry = entries.find((candidate) => candidate.uuid === item.uuid);
-        if (entry) {
-          onPick(entry);
-        }
-      },
-    );
-  }
+export function loginMenuEntries(entries: CredentialEntry[]): MenuEntry[] {
+  return entries.map((entry) => ({
+    uuid: entry.uuid,
+    title: entry.name || entry.login || "friendlypass entry",
+    username: entry.login || "",
+    ...(entry.group ? { group: entry.group } : {}),
+    ...(entryHasTotp(entry) ? { totp: true } : {}),
+  }));
 }

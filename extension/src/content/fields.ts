@@ -293,3 +293,33 @@ export function getNewPassword(passwordInputs: Array<HTMLInputElement> = []): st
 export function passwordInputsForForm(form: HTMLFormElement): HTMLInputElement[] {
   return Array.from(form.querySelectorAll('input[type="password"]'));
 }
+
+/**
+ * True for a field that accepts a *new* password: it opts in with
+ * `autocomplete=new-password`, its form has more than one password input
+ * (current/new/repeat), or a sibling password input marks the new-password
+ * role. Used for the inline "Generate password" action.
+ */
+export function isNewPasswordField(
+  field: HTMLInputElement,
+  combination?: FieldCombination,
+): boolean {
+  const autocomplete = (
+    field.getAttribute("autocomplete") ?? ""
+  ).toLowerCase();
+  if (autocomplete === "new-password") {
+    return true;
+  }
+  const form = combination?.form ?? findForm(field);
+  if (!form) {
+    return false;
+  }
+  const passwords = passwordInputsForForm(form);
+  if (passwords.length >= 2) {
+    return true;
+  }
+  return passwords.some(
+    (input) =>
+      (input.getAttribute("autocomplete") ?? "").toLowerCase() === "new-password",
+  );
+}

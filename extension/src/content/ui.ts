@@ -6,10 +6,12 @@
  * service worker stays in `index.ts`.
  *
  * Upstream relies on `Element.prototype` monkey-patching and closed shadow
- * roots; both are dropped deliberately. Icons, menus and banners are ordinary
- * hosts with an **open** shadow root (`icon.ts`) or light-DOM markup, which
- * keeps page CSS out without hiding the elements from tests and WP6.
+ * roots; both are dropped deliberately. Icons, menus, banners and toasts are
+ * ordinary hosts with an **open** shadow root (`styles.ts`), which keeps page
+ * CSS out without hiding the elements from tests and WP6.
  */
+
+import { appendShadowStyle, createShadowHost } from "./styles";
 
 export const MIN_INPUT_FIELD_WIDTH_PX = 8;
 export const MIN_INPUT_FIELD_OFFSET_WIDTH = 60;
@@ -191,7 +193,12 @@ export function createElement<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
-/** A small, self-dismissing toast. Never receives passwords. */
+/**
+ * A small, self-dismissing toast. Never receives passwords.
+ *
+ * Rendered in its own open shadow root with the shared tokens (WP6b), so page
+ * CSS cannot hide it or change its text.
+ */
 export function showNotification(
   type: "success" | "info" | "warning" | "error",
   message: string,
@@ -202,32 +209,40 @@ export function showNotification(
 
   document.querySelector(`[${FP_ATTR}="notification"]`)?.remove();
 
-  const host = createElement("div", undefined, {
+  const { host, shadow } = createShadowHost({
     [FP_ATTR]: "notification",
     "data-friendlypass-type": type,
-    role: "status",
+    role: type === "error" ? "alert" : "status",
+    "aria-live": type === "error" ? "assertive" : "polite",
   });
-  host.style.cssText = [
-    "all: initial",
-    "display: block",
-    "position: fixed",
-    "z-index: 2147483647",
-    "right: 16px",
-    "top: 16px",
-    "max-width: 360px",
-    "font: 13px/1.4 system-ui, -apple-system, sans-serif",
-    "color: #1f2933",
-    "background: #ffffff",
-    "border: 1px solid rgba(0, 0, 0, 0.18)",
-    "border-left: 4px solid " +
-      (type === "error" ? "#c0392b" : type === "warning" ? "#b7791f" : "#2f855a"),
-    "border-radius: 6px",
-    "box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18)",
-    "padding: 10px 12px",
-  ].join(";");
-  host.textContent = message;
-  host.addEventListener("click", () => host.remove());
-  document.body.append(host);
+  host.style.setProperty("right", "16px", "important");
+  host.style.setProperty("bottom", "16px", "important");
+  host.style.setProperty("max-width", "360px", "important");
+
+  const accent =
+    type === "error"
+      ? "var(--fp-danger)"
+      : type === "warning"
+        ? "var(--fp-warning, #b7791f)"
+        : type === "success"
+          ? "var(--fp-ok)"
+          : "var(--fp-accent)";
+  appendShadowStyle(
+    shadow,
+    `.toast{
+        display:block;font-family:var(--fp-font);font-size:13px;line-height:1.4;
+        color:var(--fp-text);background:var(--fp-bg);
+        border:1px solid var(--fp-border);border-left:4px solid ${accent};
+        border-radius:var(--fp-radius);box-shadow:var(--fp-shadow);
+        padding:10px 12px;cursor:pointer;
+      }`,
+  );
+  const toast = document.createElement("div");
+  toast.className = "fp-panel toast";
+  toast.textContent = message;
+  shadow.append(toast);
+  toast.addEventListener("click", () => host.remove());
+  document.documentElement.append(host);
   window.setTimeout(() => host.remove(), 6000);
 }
 
