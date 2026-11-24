@@ -38,10 +38,21 @@ contract and `../protocol/OWNERSHIP.md` for file ownership.
 ```sh
 npm install          # first time
 npm run build        # esbuild bundle -> dist/ (+ manifest.json)
-npm run typecheck    # tsc --noEmit
-npm test             # vitest
-npm run e2e          # playwright (WP8 adds the config and fixtures)
+npm run typecheck    # tsc: src/ (tsconfig.json) + tests/ (tsconfig.tests.json)
+npm test             # vitest (tests/unit only)
+npm run e2e          # playwright (config in playwright.config.ts)
 ```
 
 `dist/` and `node_modules/` are git-ignored. The built `dist/manifest.json` is
 generated from `src/manifest.json`; edit the source, never `dist/`.
+
+## Stable extension id
+
+`src/manifest.json` pins an RSA public `key`; Chrome therefore derives the same
+32-character id for every load path: `pfdmagadklmhbghfipamhfbphcljdkbi`. The
+installer defaults to that id, so `installer/install.sh` needs no
+`--extension-id`. The private key lives outside the repository at
+`../secrets/extension-key.pem` and must never be committed or shipped.
+`browser_specific_settings.gecko.id` (`friendlypass@friendlypass.org`) is the
+Firefox equivalent; Chrome warns about the unknown key but loads the extension
+(the e2e harness proves it).

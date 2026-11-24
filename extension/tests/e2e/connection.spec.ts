@@ -1,3 +1,5 @@
+export {};
+
 /**
  * WP2 end-to-end connection spec.
  *

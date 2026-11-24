@@ -1,10 +1,13 @@
 /**
- * friendlypass extension service worker (WP2).
+ * friendlypass extension service worker (WP2 + WP3 integration).
  *
  * Entry point of the MV3 background. It must:
  *   1. register every listener synchronously (no top-level `await`), so a
  *      message that wakes the worker can never race the initialiser;
- *   2. start the idempotent native connection at top level;
+ *   2. create the state store, the protocol session and the native transport
+ *      in WP3's order (`createStateStore` → `createSession` →
+ *      `createNativeTransport(session.transportHandlers)`) and start the
+ *      idempotent connection;
  *   3. install the HTTP-auth listener before the first navigation.
  *
  * Build: `npm run build` bundles this file to `dist/background/sw.js`.
@@ -13,29 +16,20 @@
 import {
   KpxcErrorCode,
   NATIVE_HOST_NAME,
-  PushAction,
   SUPPORTED_PROTOCOL_VERSION,
 } from "../common/types";
 import type {
+  BackgroundRequestAction,
+  BackgroundRequestArgs,
+  BackgroundRequestResult,
   ConnectionSnapshot,
-  DbHash,
   HostPingResponse,
-  HostToExtensionFrame,
-  NativeRequestFrame,
   ProtocolError,
   StatusSummary,
 } from "../common/types";
-import {
-  isRecord,
-  makeProtocolError,
-  onBackgroundMessage,
-} from "../common/messages";
+import { makeProtocolError, onBackgroundMessage } from "../common/messages";
 import { createNativeTransport } from "./transport";
-import type {
-  NativeTransport,
-  TransportHandlers,
-  TransportStateEvent,
-} from "./transport";
+import type { NativeTransport, TransportStateEvent } from "./transport";
 import { ensureWatchdogAlarm, registerLifecycleListeners } from "./lifecycle";
 import { createSession } from "./session";
 import type { ProtocolSession } from "./session";
@@ -58,22 +52,20 @@ const EXTENSION_VERSION = "0.1.0";
 let transport: NativeTransport | null = null;
 let stateStore: StateStore | null = null;
 let protocolSession: ProtocolSession | null = null;
+let cachedClientId: string | null = null;
 let bootstrapped = false;
+let started = false;
+
+/**
+ * Unhandled rejections observed in this service worker. The e2e suite reads
+ * this through the debug bridge below; it keeps working across an SW wake-up
+ * for the lifetime of the worker.
+ */
+const rejectionLog: string[] = [];
 
 // ---------------------------------------------------------------------------
-// Lazy WP3 wiring
-//
-// WP3 lands in parallel. Constructing its modules lazily keeps a partially
-// merged tree from killing the service worker before the transport exists, and
-// still uses only the exported signatures declared in the scaffold.
+// Lazy accessors
 // ---------------------------------------------------------------------------
-
-function getTransport(): NativeTransport {
-  if (transport === null) {
-    throw new Error("Native transport has not been initialised");
-  }
-  return transport;
-}
 
 function getStateStore(): StateStore {
   if (stateStore === null) {
@@ -82,37 +74,55 @@ function getStateStore(): StateStore {
   return stateStore;
 }
 
+/**
+ * A transport facade that lets the session be constructed before the native
+ * port exists. `session.transportHandlers` needs the session, and the session
+ * needs a `NativeTransport`; the facade breaks the cycle without weakening
+ * either half (every call is forwarded to the real implementation).
+ */
+function createTransportFacade(): NativeTransport {
+  const impl = (): NativeTransport => {
+    if (transport === null) {
+      throw new Error("Native transport has not been initialised");
+    }
+    return transport;
+  };
+  return {
+    get connected() {
+      return transport?.connected ?? false;
+    },
+    get state() {
+      return transport?.state ?? "DISCONNECTED";
+    },
+    get appRunning() {
+      return transport?.appRunning ?? false;
+    },
+    get hello() {
+      return transport?.hello ?? null;
+    },
+    get status() {
+      return impl().status;
+    },
+    connect: () => impl().connect(),
+    disconnect: () => impl().disconnect(),
+    ping: () => impl().ping(),
+    send: (frame) => impl().send(frame),
+    request: (frame, timeoutMs) => impl().request(frame, timeoutMs),
+  };
+}
+
+function getTransport(): NativeTransport {
+  if (transport === null) {
+    throw new Error("Native transport has not been initialised");
+  }
+  return transport;
+}
+
 function getSession(): ProtocolSession {
   if (protocolSession === null) {
-    const store = getStateStore();
     protocolSession = createSession({
-      send: (frame: unknown, timeoutMs?: number) =>
-        getTransport().request(frame as NativeRequestFrame, timeoutMs),
-      loadKeyRing: async () => {
-        const ring = await store.keyRing();
-        const result: Record<DbHash, { id: string; key: string }> = {};
-        for (const [hash, record] of Object.entries(ring)) {
-          result[hash] = { id: record.id, key: record.key };
-        }
-        return result;
-      },
-      saveAssociation: async (hash: DbHash, id: string, key: string) => {
-        const now = Date.now();
-        await store.putAssociation(hash, {
-          id,
-          key,
-          hash,
-          created: now,
-          lastUsed: now,
-        });
-      },
-      onSnapshot: (snapshot: ConnectionSnapshot) => {
-        try {
-          store.setSnapshot(snapshot);
-        } catch (cause) {
-          debug("state", `cannot persist snapshot: ${messageOf(cause)}`);
-        }
-      },
+      transport: createTransportFacade(),
+      store: getStateStore(),
     });
   }
   return protocolSession;
@@ -157,15 +167,17 @@ async function usableSnapshot(triggerUnlock = false): Promise<ConnectionSnapshot
 }
 
 async function actionContext(snapshot?: ConnectionSnapshot): Promise<ActionContext> {
+  const session = getSession();
   const store = getStateStore();
   const current = snapshot ?? store.snapshot();
-  const persisted = await store.load();
   const ring = await store.keyRing();
   const hash = current.databaseHash;
   const association = hash ? ring[hash] : undefined;
+  const clientID = cachedClientId ?? (await session.getClientId());
 
   return {
-    clientID: persisted.clientId ?? "",
+    session,
+    clientID,
     dbHash: hash ?? "",
     association: association
       ? { id: association.id, key: association.key }
@@ -174,76 +186,12 @@ async function actionContext(snapshot?: ConnectionSnapshot): Promise<ActionConte
 }
 
 function currentStatus(): StatusSummary {
-  try {
-    return getStateStore().status();
-  } catch {
-    // WP3 not merged yet: keep the connection status visible.
-    const status = getTransport().status;
-    return {
-      connected: status.connected,
-      appRunning: status.appRunning,
-      databaseOpen: false,
-      locked: !status.appRunning,
-      associated: false,
-      databaseHash: null,
-      state: status.state,
-      hostVersion: status.hostVersion,
-      appVersion: status.appVersion,
-      protocolVersion: status.protocolVersion,
-      error: status.lastError,
-    };
-  }
+  return getStateStore().status();
 }
 
 // ---------------------------------------------------------------------------
 // Transport callbacks
 // ---------------------------------------------------------------------------
-
-function handleFrame(frame: HostToExtensionFrame): void {
-  if (!isRecord(frame) || typeof frame.action !== "string") {
-    return;
-  }
-  const action = frame.action;
-  if (
-    action !== PushAction.DATABASE_LOCKED &&
-    action !== PushAction.DATABASE_UNLOCKED &&
-    action !== PushAction.DATABASE_CHANGED
-  ) {
-    // Responses are correlated by `transport.request()`; pushes are the only
-    // frames the service worker itself needs to act on.
-    return;
-  }
-
-  try {
-    const session = getSession();
-    session.reset(`push:${action}`);
-    if (action !== PushAction.DATABASE_LOCKED) {
-      // `database-unlocked` and `database-changed` may have changed the hash;
-      // revalidating in the background needs no user action.
-      void session.ensureSession().catch((cause: unknown) => {
-        debug("session", `revalidation after ${action} failed: ${messageOf(cause)}`);
-      });
-    }
-  } catch (cause) {
-    debug("session", `cannot handle ${action}: ${messageOf(cause)}`);
-  }
-  ensureWatchdogAlarm();
-}
-
-function handleConnect(): void {
-  debug("transport", "native port opened");
-}
-
-function handleDisconnect(reason: string, detail?: string): void {
-  debug("transport", `native port lost (${reason})${detail ? `: ${detail}` : ""}`);
-  if (protocolSession !== null) {
-    try {
-      protocolSession.reset(`transport:${reason}`);
-    } catch (cause) {
-      debug("session", `reset after disconnect failed: ${messageOf(cause)}`);
-    }
-  }
-}
 
 function handleTransportState(event: TransportStateEvent): void {
   try {
@@ -280,20 +228,18 @@ function handleTransportState(event: TransportStateEvent): void {
     }
 
     store.setSnapshot({ ...snapshot, ...patch });
-  } catch {
-    // WP3 state store not available yet; status falls back to transport.
+  } catch (cause) {
+    debug("state", `cannot update connection snapshot: ${messageOf(cause)}`);
   }
 
   if (event.type === "appUp") {
     // Recovery must not wait for the user: rebuild the session in the
-    // background as soon as the app starts answering.
-    try {
-      void getSession().ensureSession().catch((cause: unknown) => {
+    // background as soon as the app starts answering again.
+    void getSession()
+      .ensureSession()
+      .catch((cause: unknown) => {
         debug("session", `recovery handshake failed: ${messageOf(cause)}`);
       });
-    } catch (cause) {
-      debug("session", `cannot start recovery handshake: ${messageOf(cause)}`);
-    }
   }
 }
 
@@ -303,8 +249,8 @@ function handleTransportState(event: TransportStateEvent): void {
 
 type BackgroundHandlers = Parameters<typeof onBackgroundMessage>[0];
 
-function registerBackgroundMessageHandlers(): void {
-  const handlers: BackgroundHandlers = {
+function buildBackgroundHandlers(): BackgroundHandlers {
+  return {
     "status.get": async () => currentStatus(),
 
     "status.refresh": async (args) => {
@@ -330,19 +276,15 @@ function registerBackgroundMessageHandlers(): void {
 
     "connection.ping": async (): Promise<HostPingResponse> => getTransport().ping(),
 
+    "association.create": async () => getSession().associate(),
+
     "logins.get": async (args) => {
       const snapshot = await usableSnapshot(args.triggerUnlock === true);
-      const context = await actionContext(snapshot);
-      const ring = await getStateStore().keyRing();
-      const keys = Object.values(ring).map((record) => ({
-        id: record.id,
-        key: record.key,
-      }));
-      return getLogins(context, {
+      return getLogins(await actionContext(snapshot), {
         url: args.url,
         ...(args.submitUrl ? { submitUrl: args.submitUrl } : {}),
         ...(args.httpAuth ? { httpAuth: true } : {}),
-        keys,
+        ...(args.triggerUnlock ? { triggerUnlock: true } : {}),
       });
     },
 
@@ -398,8 +340,43 @@ function registerBackgroundMessageHandlers(): void {
     "settings.set": async (args) => getStateStore().setSettings(args),
     "diagnostics.get": async () => getStateStore().diagnostics(),
   };
+}
 
-  onBackgroundMessage(handlers);
+/**
+ * Test/diagnostics bridge.
+ *
+ * Reachable only from the extension's own service-worker context (Playwright
+ * `worker.evaluate`, the DevTools console). It dispatches through exactly the
+ * same handlers the popup uses, so the e2e suite exercises the real code path
+ * without a hidden production backdoor: content scripts and web pages cannot
+ * reach a service-worker global.
+ */
+interface DebugBridge {
+  request<A extends BackgroundRequestAction>(
+    action: A,
+    args?: BackgroundRequestArgs<A>,
+  ): Promise<BackgroundRequestResult<A>>;
+  rejections(): string[];
+}
+
+function installDebugBridge(handlers: BackgroundHandlers): void {
+  const debugBridge: DebugBridge = {
+    async request(action, args) {
+      const handler = (handlers as unknown as Record<
+        string,
+        (value: unknown) => unknown
+      >)[action];
+      if (typeof handler !== "function") {
+        throw new Error(`No internal handler for "${action}"`);
+      }
+      return (await handler(args)) as BackgroundRequestResult<typeof action>;
+    },
+    rejections() {
+      return [...rejectionLog];
+    },
+  };
+  (globalThis as unknown as { __friendlypassDebug?: DebugBridge }).__friendlypassDebug =
+    debugBridge;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,32 +389,38 @@ export function bootstrap(): void {
   }
   bootstrapped = true;
 
-  const transportHandlers: TransportHandlers = {
-    onFrame: handleFrame,
-    onConnect: handleConnect,
-    onDisconnect: handleDisconnect,
-    onStateChange: handleTransportState,
-  };
+  const session = getSession();
+  const store = getStateStore();
 
-  transport = createNativeTransport(transportHandlers, {
-    extensionVersion: EXTENSION_VERSION,
-    clientId: () => {
-      // WP3 persists the stable clientID; tolerate its absence during startup.
-      return null;
+  transport = createNativeTransport(
+    {
+      ...session.transportHandlers,
+      onStateChange: handleTransportState,
     },
-  });
+    {
+      extensionVersion: EXTENSION_VERSION,
+      clientId: () => cachedClientId,
+    },
+  );
+
+  // Resolve the stable clientID before any connect so every `hello` carries
+  // it; listeners registered below wait for this promise.
+  const ready = start(session, store);
 
   // All of the following registration is synchronous: a message that wakes
   // the worker can never arrive before the listeners exist.
   registerLifecycleListeners({
-    connect: () => getTransport().connect().then(() => undefined),
+    connect: () =>
+      ready.then(() => getTransport().connect()).then(() => undefined),
     shutdown: () => {
       protocolSession?.reset("shutdown");
       getTransport().disconnect();
     },
   });
 
-  registerBackgroundMessageHandlers();
+  const handlers = buildBackgroundHandlers();
+  onBackgroundMessage(handlers);
+  installDebugBridge(handlers);
 
   try {
     installHttpAuthListener();
@@ -452,11 +435,41 @@ export function bootstrap(): void {
     `[friendlypass] service worker loaded (protocol v${SUPPORTED_PROTOCOL_VERSION}, host ${NATIVE_HOST_NAME})`,
   );
 
-  void getTransport()
-    .connect()
-    .catch((cause: unknown) => {
-      debug("transport", `initial connect failed: ${messageOf(cause)}`);
-    });
+  // `start()` is already running (see above) and logs its own failures; this
+  // keeps the rejection from becoming an unhandled promise.
+  void ready.catch((cause: unknown) => {
+    debug("transport", `startup failed: ${messageOf(cause)}`);
+  });
+}
+
+async function start(session: ProtocolSession, store: StateStore): Promise<void> {
+  if (started) {
+    return;
+  }
+  started = true;
+  try {
+    cachedClientId = await session.getClientId();
+  } catch (cause) {
+    debug("state", `cannot read the stable clientID: ${messageOf(cause)}`);
+  }
+  try {
+    // `chrome.storage.local` may still be loading the persisted keyring; the
+    // session fetches it again per handshake, so a connect here is safe.
+    void store.load().catch(() => undefined);
+    await getTransport().connect();
+  } catch (cause) {
+    debug("transport", `initial connect failed: ${messageOf(cause)}`);
+  }
+}
+
+if (typeof self !== "undefined" && typeof self.addEventListener === "function") {
+  self.addEventListener("unhandledrejection", (event) => {
+    const reason = (event as PromiseRejectionEvent).reason;
+    rejectionLog.push(messageOf(reason));
+    if (rejectionLog.length > 50) {
+      rejectionLog.shift();
+    }
+  });
 }
 
 bootstrap();

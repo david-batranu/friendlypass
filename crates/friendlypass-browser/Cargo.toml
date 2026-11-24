@@ -17,3 +17,10 @@ keepass = { version = "0.17.0", features = ["totp"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Used only by `examples/test_server.rs`, the headless protocol server the
+# Phase-1 never-disconnect e2e suite runs against fixtures/sample4.kdbx.
+friendlypass = { path = "../friendlypass" }
+
+[[example]]
+name = "test_server"
+required-features = []

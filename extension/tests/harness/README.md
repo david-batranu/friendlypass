@@ -20,9 +20,10 @@ fresh `friendlypass-e2e-*` directory.
 
 | Path | Purpose |
 |---|---|
-| `frames.mjs` | 4-byte LE + UTF-8 framing, 1 MiB cap, `sodium_increment` nonce |
+| `frames.mjs` | host↔browser 4-byte LE framing **and** app-socket raw-object decoding, 1 MiB caps, `sodium_increment` nonce |
 | `stub-host.mjs` | Node stand-in for WP1: `ping`/`hello`, forwards the rest to the app socket, survives bad frames and a missing app |
 | `app-mock.ts` | unix-socket app mock: `change-public-keys`, `get-databasehash`, `associate`, `test-associate`, `get-logins`, `get-totp`, `lock-database`, pushes |
+| `rust-app.ts` | runs the real `friendlypass-browser` protocol server (`examples/test_server.rs`) as the app for `never-disconnect.spec.ts` |
 | `setup.ts` | temp HOME/profile, extension ID derivation, native-manifest install, host wrapper |
 | `host-probe.ts` | `FP_HOST=auto` liveness probe for the real host binary |
 | `harness.ts` | Playwright fixture + fault-injection API |
@@ -44,10 +45,10 @@ framed `ping`:
 `FP_HOST=real` fails loudly if the probe fails; `FP_HOST=stub` always uses the
 stub. CI uses `auto`.
 
-The real host's app-socket framing is an internal WP1 concern and may differ
-from the harness's 4-byte-LE JSON framing. `FP_HOST=real` therefore proves the
-stdio/`ping`/Chrome-manifest path; app actions through the real host need WP1's
-framing to match the app mock (listed as a known gap).
+Both the app mock and the stub host speak the **real** app-socket framing fixed
+in `protocol/ACTIONS.md` §1.1.1: raw concatenated compact JSON objects, no
+length prefix. `FP_HOST=real` therefore exercises the full
+extension → host → app-socket path, not just the stdio/manifest path.
 
 ## Fault injection API
 
@@ -71,6 +72,15 @@ cannot be used in the harness. A full context restart is the strongest fault
 that still leaves the extension loadable, and it kills the service worker and
 native host just like browser sleep plus a restart.
 
+## Real protocol server (Phase-1 exit test)
+
+`tests/e2e/never-disconnect.spec.ts` starts the harness with
+`{ hostMode: "real", appMode: "rust" }`. The app is
+`cargo build -p friendlypass-browser --example test_server`, which opens a copy
+of `fixtures/sample4.kdbx`, auto-approves the association and serves on
+`FP_APP_SOCKET`. Every app "kill" is a real process death, every "restart" a
+real re-open and re-listen. `scripts/e2e.sh` builds the example automatically.
+
 ## Native messaging from a spec
 
 `harness.ping(nonce)` / `harness.hello()` open a real
@@ -92,6 +102,7 @@ frames, such as the 1002 reply to a corrupt app frame.
 | `FP_CHANNEL` | `chromium` | Playwright channel (`chromium` or `chrome`) |
 | `FP_KEEP_TEMP` | unset | `1` keeps the temp HOME/profile/logs |
 | `FP_E2E_TMPDIR` | OS temp | base directory for temp roots |
+| `FP_TEST_SERVER_BINARY` | `target/debug/examples/test_server` | real protocol server used by the exit test |
 
 ## Security
 

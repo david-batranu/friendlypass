@@ -467,3 +467,59 @@ fn stdin_eof_exits_cleanly() {
     let status = host.close_stdin_and_wait(Duration::from_secs(5));
     assert!(status.success(), "host exited with {status:?}");
 }
+
+#[test]
+fn malformed_app_json_is_a_typed_host_error() {
+    let root = TempRoot::new();
+    let socket = root.socket_path();
+    // The mock's `serve` answers the host's status probes itself; every other
+    // request gets a brace-balanced but invalid JSON object, exactly what a
+    // buggy/desynchronised app could write on the raw-JSON app socket.
+    let _app = MockApp::start(&socket, |_raw| vec![b"{\"action\":}".to_vec()]);
+    let mut host = Host::spawn(root);
+
+    host.send(&forwarded("get-logins", "corrupt-app-json", None));
+    let error = host.recv(Duration::from_secs(5));
+    assert_eq!(error["hostError"], true, "expected a host error: {error}");
+    assert_eq!(
+        error["errorCode"], "1002",
+        "expected malformed frame: {error}"
+    );
+    assert!(host.is_running(), "host died on malformed app JSON");
+    assert_eq!(host.ping("still-alive")["action"], "ping");
+}
+
+#[test]
+fn status_push_is_opt_in_and_reports_app_down() {
+    let root = TempRoot::new();
+    let socket = root.socket_path();
+    let mut host = Host::spawn(root);
+
+    // Opt in through `hello`; without statusPush the host stays silent.
+    host.send(&json!({
+        "action": "hello",
+        "clientVersion": "0.1.0",
+        "statusPush": true
+    }));
+    let hello = host.recv(Duration::from_secs(5));
+    assert_eq!(hello["action"], "hello");
+    assert_eq!(hello["appRunning"], false);
+
+    let app = MockApp::start_echo(&socket);
+
+    // The first successful probe is announced without the browser asking.
+    let up = host.recv(Duration::from_secs(5));
+    assert_eq!(up["action"], "ping", "expected a status push: {up}");
+    assert_eq!(up["appRunning"], true);
+    assert_eq!(up["databaseHash"], DB_HASH);
+
+    // The socket going away is announced immediately too.
+    drop(app);
+    let down = host.recv(Duration::from_secs(5));
+    assert_eq!(down["action"], "ping", "expected a status push: {down}");
+    assert_eq!(down["appRunning"], false);
+
+    // And a normal ping agrees.
+    assert_eq!(host.ping("after-down")["appRunning"], false);
+    assert!(host.is_running());
+}

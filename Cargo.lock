@@ -2182,6 +2182,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "crypto_box",
+ "friendlypass",
  "getrandom 0.4.3",
  "keepass",
  "libc",

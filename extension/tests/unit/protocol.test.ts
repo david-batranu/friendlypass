@@ -67,7 +67,6 @@ import { errorMessageFor } from "../../src/common/messages";
 import {
   KpxcErrorCode,
   type AssociationRecord,
-  type DbHash,
   type HostHelloResponse,
   type HostToExtensionFrame,
   type NativeRequestFrame,
@@ -244,6 +243,19 @@ interface Harness {
 
 class FakeTransport implements NativeTransport {
   connected = false;
+  state: "DISCONNECTED" | "CONNECTING" | "READY" = "DISCONNECTED";
+  appRunning = true;
+  status: NativeTransport["status"] = {
+    state: "DISCONNECTED",
+    connected: false,
+    appRunning: true,
+    hostVersion: "0.1.0",
+    appVersion: "0.1.0",
+    protocolVersion: 1,
+    attempt: 0,
+    lastError: null,
+    legacyMode: false,
+  };
   frames: NativeRequestFrame[] = [];
   handlers!: TransportHandlers;
   responder: ((frame: NativeRequestFrame) => void) | null = null;
@@ -283,6 +295,22 @@ class FakeTransport implements NativeTransport {
     }
     this.frames.push(frame);
     this.responder?.(frame);
+  }
+
+  async request(
+    frame: NativeRequestFrame | { action: string; nonce?: string },
+  ): Promise<HostToExtensionFrame> {
+    await this.send(frame as NativeRequestFrame);
+    return {
+      action: "ping",
+      success: "true",
+      protocolVersion: 1,
+      hostVersion: "0.1.0",
+      appRunning: true,
+      appVersion: "0.1.0",
+      locked: false,
+      databaseHash: null,
+    };
   }
 }
 

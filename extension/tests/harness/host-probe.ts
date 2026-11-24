@@ -20,7 +20,17 @@ export interface HostProbe {
 
 export async function probeHostBinary(
   binary: string,
-  options: { timeoutMs?: number; env?: Record<string, string> } = {},
+  options: {
+    timeoutMs?: number;
+    env?: Record<string, string>;
+    /**
+     * The real host answers `ping` on stdin before its background manager
+     * thread opens the app socket. When supplied, the probe waits for this to
+     * become true before killing the process, so "real host usable" also means
+     * "it reached the harness app socket".
+     */
+    appConnected?: () => boolean;
+  } = {},
 ): Promise<HostProbe> {
   if (!fs.existsSync(binary)) {
     return { ok: false, error: `host binary not found at ${binary}` };
@@ -63,7 +73,24 @@ export async function probeHostBinary(
           return;
         }
         if (decoded.value.action === "ping") {
-          finish({ ok: true, frame: decoded.value });
+          const frame = decoded.value;
+          if (!options.appConnected) {
+            finish({ ok: true, frame });
+            return;
+          }
+          const deadline = Date.now() + 1500;
+          const poll = () => {
+            if (options.appConnected?.()) {
+              finish({ ok: true, frame });
+              return;
+            }
+            if (Date.now() > deadline) {
+              finish({ ok: false, frame, error: "host never connected to the app socket" });
+              return;
+            }
+            setTimeout(poll, 20);
+          };
+          poll();
           return;
         }
       }

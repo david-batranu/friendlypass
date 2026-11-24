@@ -14,6 +14,7 @@
 # Env knobs:
 #   FP_HOST=auto|stub|real     host selection (default: auto)
 #   FP_HOST_BINARY=<path>      override target/debug/friendlypass-browser-host
+#   FP_TEST_SERVER_BINARY=<p>  override target/debug/examples/test_server
 #   FP_HEADED=1                run a real window (CI uses xvfb on Linux)
 #   FP_CHANNEL=chromium|chrome Chromium channel (default: chromium)
 #   FP_KEEP_TEMP=1             keep the harness temp dirs for debugging
@@ -34,6 +35,9 @@ fi
 
 echo "==> building native host"
 cargo build --manifest-path "$ROOT/Cargo.toml" -p friendlypass-browser-host
+
+echo "==> building headless protocol server (Phase-1 exit test)"
+cargo build --manifest-path "$ROOT/Cargo.toml" -p friendlypass-browser --example test_server
 
 if [[ "${FP_SKIP_BROWSER_INSTALL:-0}" != "1" ]]; then
   echo "==> ensuring Playwright Chromium is installed"

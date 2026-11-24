@@ -455,6 +455,11 @@ class NativeTransportImpl implements NativeTransport {
       }
 
       this.startHeartbeat();
+      // Learn the app status immediately instead of waiting one heartbeat
+      // interval (20 s). Recovery and the "app down" badge both depend on it.
+      void this.ping().catch(() => {
+        // The heartbeat loop owns retries; an early miss is not fatal.
+      });
       return hello;
     } catch (cause) {
       const error = transportError(cause);
@@ -518,6 +523,9 @@ class NativeTransportImpl implements NativeTransport {
       action: "hello",
       ...(clientID ? { clientID } : {}),
       extensionVersion: this.options.extensionVersion ?? "0.1.0",
+      // Ask for immediate appRunning notifications so an app restart needs no
+      // manual reconnect and no 20 s heartbeat wait.
+      statusPush: true,
     };
     const response = await this.request(
       frame,
@@ -796,6 +804,13 @@ class NativeTransportImpl implements NativeTransport {
       console.warn("[friendlypass] transport onFrame handler failed:", asError(cause).message);
     }
 
+    // The host may push an unsolicited status frame (opt-in via
+    // `hello.statusPush`) when the app goes away or comes back. Treat it like
+    // any other host status answer so the transport's own view stays current.
+    if (isHostPingResponse(message)) {
+      this.noteHostStatus(message);
+    }
+
     if (isErrorFrame(message)) {
       const error = protocolErrorFromFrame(message);
       const action = typeof message.action === "string" ? message.action : "";
@@ -953,6 +968,22 @@ class NativeTransportImpl implements NativeTransport {
     }
     this.appVersionValue = status.appVersion;
     this.protocolVersionValue = status.protocolVersion;
+
+    // `hello` is a status snapshot, and `connect()` resolves from the cached
+    // copy. Refresh it, otherwise a caller that connects after the app came up
+    // (session revalidation after a status push) would read a stale
+    // `appRunning: false` and abort the handshake.
+    if (this.helloValue !== null) {
+      this.helloValue = {
+        ...this.helloValue,
+        appRunning: status.appRunning,
+        appVersion: status.appVersion,
+        locked: status.locked,
+        databaseHash: status.databaseHash,
+        hostVersion: status.hostVersion,
+        protocolVersion: status.protocolVersion,
+      };
+    }
 
     if (status.appRunning !== wasRunning) {
       const event: TransportStateEvent = status.appRunning

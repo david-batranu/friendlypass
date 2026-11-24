@@ -26,25 +26,7 @@ import { HostProcess } from "./host-process";
 import { encodeFrame, encodePayload, incrementNonce, sleep } from "./frames.mjs";
 import { readJsonl } from "./setup";
 
-/**
- * `npm test` runs Vitest over every `*.spec.ts`, which would otherwise collect
- * these Playwright specs and fail on `test()` from `@playwright/test`. WP8 owns
- * only `tests/harness/**` and `playwright.config.ts`, not a root Vitest config,
- * so the file registers one no-op Vitest test and disables Playwright test
- * registration when Vitest is the runner. Under Playwright the normal fixtures
- * run unchanged.
- */
-const runningUnderVitest = Boolean(process.env.VITEST);
-if (runningUnderVitest) {
-  const { test: vitestTest } = await import("vitest");
-  vitestTest("WP8 Playwright harness (run with scripts/e2e.sh)", () => {
-    // Intentionally empty. The real suite is tests/harness/smoke.spec.ts run by
-    // Playwright, not Vitest.
-  });
-}
-const test = (
-  runningUnderVitest ? () => undefined : playwrightTest
-) as typeof playwrightTest;
+const test = playwrightTest;
 
 function fixture(name: string): any {
   return JSON.parse(
@@ -80,7 +62,10 @@ test("harness installs an isolated native-messaging manifest and loads the exten
   );
   expect(extensionManifest.name).toBe("friendlypass");
   expect(extensionManifest.manifest_version).toBe(3);
-  expect(extensionManifest.background?.service_worker).toBe("background/sw.js");
+  expect(
+    (extensionManifest.background as { service_worker?: string } | undefined)
+      ?.service_worker,
+  ).toBe("background/sw.js");
 
   expect(harness.app.listening).toBe(true);
   expect(harness.paths.mode).toMatch(/^(stub|real)$/);
@@ -91,13 +76,17 @@ test("native-messaging manifest launches the host and ping round-trips through C
 }) => {
   const nonce = Buffer.alloc(24, 7).toString("base64");
 
-  const pong = await harness.ping(nonce);
+  const pong = await harness.waitForAppRunning();
   expect(pong.action).toBe("ping");
   expect(pong.success).toBe("true");
   expect(pong.protocolVersion).toBe(1);
-  expect(pong.nonce).toBe(nonce); // host echoes, never increments
   expect(pong.appRunning).toBe(true);
   expect(typeof pong.hostVersion).toBe("string");
+
+  // The nonce is echoed verbatim (never incremented).
+  const echo = await harness.ping(nonce);
+  expect(echo.action).toBe("ping");
+  expect(echo.nonce).toBe(nonce);
 
   const hello = await harness.hello();
   expect(hello.action).toBe("hello");
@@ -106,8 +95,12 @@ test("native-messaging manifest launches the host and ping round-trips through C
   expect(hello.hostPid).toBeGreaterThan(0);
 
   // The host really was launched through the generated manifest, not a fake.
-  await harness.waitForHostAction("ping");
-  expect(harness.hostStarts().length).toBeGreaterThan(0);
+  if (harness.paths.mode === "stub") {
+    await harness.waitForHostAction("ping");
+    expect(harness.hostStarts().length).toBeGreaterThan(0);
+  } else {
+    expect(harness.hostProcessId()).toBeGreaterThan(0);
+  }
 });
 
 test("stub host handles split, coalesced and malformed frames and stays alive", async () => {
@@ -258,9 +251,21 @@ test("extension transport connects to the host and pings", async ({
     "WP2 native transport is still the TODO stub; the Chrome↔manifest↔host ping test above exercises the same path",
   );
 
-  await harness.waitForHostStart(1, 15_000);
-  const ping = await harness.waitForHostAction("ping", 30_000);
-  expect(ping.action).toBe("ping");
+  // Wait for the extension's own status surface, which proves the real
+  // transport → host → session path. The host's JSONL action log only exists
+  // for the Node stub host.
+  await expect
+    .poll(
+      async () => {
+        const status = (await harness.internalRequest("status.get")) as {
+          hostVersion?: string | null;
+          state?: string;
+        };
+        return typeof status.hostVersion === "string" && status.state !== "DISCONNECTED";
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(true);
 });
 
 test("fault injection: app down/up, corrupt frame, host kill, extension reload", async ({
@@ -269,7 +274,7 @@ test("fault injection: app down/up, corrupt frame, host kill, extension reload",
   test.setTimeout(90_000);
 
   // App down: the host must keep answering ping and report appRunning:false.
-  expect((await harness.ping()).appRunning).toBe(true);
+  await harness.waitForAppRunning();
   await harness.killApp();
   await expect
     .poll(async () => (await harness.ping()).appRunning, { timeout: 8_000 })
@@ -277,13 +282,14 @@ test("fault injection: app down/up, corrupt frame, host kill, extension reload",
 
   // App back: the host reconnects without user action.
   await harness.restartApp();
-  await expect
-    .poll(async () => (await harness.ping()).appRunning, { timeout: 10_000 })
-    .toBe(true);
+  await harness.waitForAppRunning(10_000);
 
   // A malformed app→host frame becomes a host error 1002; the host survives.
+  // Each native port is a separate host process, so wait for the probe's own
+  // app connection before injecting.
+  const connectionsBeforeProbe = harness.app.currentConnections;
   await harness.openNativeProbePort();
-  await harness.waitForAppConnected(8_000);
+  await harness.waitForAppConnections(connectionsBeforeProbe + 1, 8_000);
   expect(harness.sendCorruptFrame()).toBe(true);
   await expect
     .poll(
@@ -299,18 +305,28 @@ test("fault injection: app down/up, corrupt frame, host kill, extension reload",
 
   // SIGKILL the host while a port is open, then reconnect: Chrome spawns a new
   // host and ping works again. The PID must change.
-  await harness.openNativeProbePort();
-  await harness.waitForAppConnected(8_000);
+  // The extension's own native port is open by now (it opened one for the
+  // transport), so a SIGKILL of the recorded host exercises the same path
+  // without requiring a second probe process.
+  await expect
+    .poll(() => harness.hostProcessId(), { timeout: 8_000 })
+    .toBeGreaterThan(0);
   const startsBefore = harness.hostStarts().length;
   const oldPid = await harness.killHost();
-  await harness.closeNativeProbePort();
 
-  const afterKill = await harness.ping();
+  const afterKill = await harness.waitForAppRunning(10_000);
   expect(afterKill.action).toBe("ping");
   expect(afterKill.appRunning).toBe(true);
-  expect(harness.hostStarts().length).toBeGreaterThan(startsBefore);
-  const newPid = harness.hostStarts().at(-1)?.pid;
-  expect(newPid).not.toBe(oldPid);
+
+  if (harness.paths.mode === "stub") {
+    expect(harness.hostStarts().length).toBeGreaterThan(startsBefore);
+    const newPid = harness.hostStarts().at(-1)?.pid;
+    expect(newPid).not.toBe(oldPid);
+  } else {
+    await expect
+      .poll(() => harness.hostProcessId(), { timeout: 8_000 })
+      .not.toBe(oldPid);
+  }
 
   // Simulated browser sleep: reload the extension, same ID, ping still works.
   const oldExtensionId = harness.extensionId;
@@ -318,12 +334,17 @@ test("fault injection: app down/up, corrupt frame, host kill, extension reload",
   expect(harness.extensionId).toBe(oldExtensionId);
   expect((await harness.ping()).action).toBe("ping");
 
-  // Every native request settled: no host process left behind after teardown
-  // is asserted by the fixture itself, and the event log has no internal error.
-  const events = readJsonl(harness.paths.hostLog);
-  expect(events.some((event) => event.event === "start")).toBe(true);
-  expect(events.some((event) => event.event === "uncaught")).toBe(false);
-  expect(events.some((event) => event.event === "unhandled-rejection")).toBe(
-    false,
-  );
+  // Every request settled: the service worker has no unhandled rejection.
+  expect(await harness.swRejections()).toEqual([]);
+
+  if (harness.paths.mode === "stub") {
+    // The Node stub host records an event log; the real Rust host writes
+    // diagnostics to stderr only.
+    const events = readJsonl(harness.paths.hostLog);
+    expect(events.some((event) => event.event === "start")).toBe(true);
+    expect(events.some((event) => event.event === "uncaught")).toBe(false);
+    expect(events.some((event) => event.event === "unhandled-rejection")).toBe(
+      false,
+    );
+  }
 });

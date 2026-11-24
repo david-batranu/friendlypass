@@ -23,6 +23,7 @@ export interface DecodedFrame {
 export type Decoded = DecodedFrame | FrameError;
 
 export declare function encodeFrame(value: unknown): Buffer;
+export declare function encodeObject(value: unknown): Buffer;
 export declare function encodePayload(payload: Buffer | Uint8Array): Buffer;
 export declare function incrementNonce(nonceB64: string): string;
 export declare function sleep(ms: number): Promise<void>;
@@ -31,6 +32,13 @@ export declare class FrameDecoder {
   buffer: Buffer;
   maxBytes: number;
   skipRemaining: number;
+  constructor(options?: { maxBytes?: number });
+  push(chunk: Buffer | Uint8Array): Decoded[];
+}
+
+export declare class ObjectStreamDecoder {
+  buffer: Buffer;
+  maxBytes: number;
   constructor(options?: { maxBytes?: number });
   push(chunk: Buffer | Uint8Array): Decoded[];
 }

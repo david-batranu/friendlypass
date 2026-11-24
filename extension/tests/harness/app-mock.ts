@@ -16,9 +16,11 @@
  * call `killApp()`, `restartApp()` and `stallApp(ms)` against the same socket
  * path. `killApp` closes the listener *and* every live host connection.
  *
- * The app socket framing is the harness's own internal framing (4-byte LE +
- * JSON, same as native messaging). It matches the Node stub host. WP1's real
- * host may use a different internal framing; that is listed as a known gap.
+ * The app socket speaks the real app's framing (see the app-socket section of
+ * `protocol/ACTIONS.md`): raw concatenated compact JSON objects, no length
+ * prefix, no newline. That is exactly what
+ * `crates/friendlypass-browser/src/server.rs` reads, so the real host and the
+ * real Rust test server can be used interchangeably with this mock.
  *
  * Never log decrypted payloads or credentials. The log contains action names,
  * error codes and counters only.
@@ -30,8 +32,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import nacl from "tweetnacl";
 import {
-  FrameDecoder,
-  encodeFrame,
+  ObjectStreamDecoder,
+  encodeObject,
   incrementNonce,
   sleep,
 } from "./frames.mjs";
@@ -45,15 +47,14 @@ export const STUB_HOST_PATH = path.join(here, "stub-host.mjs");
 export const PROTOCOL_FIXTURES = path.join(REPO_ROOT, "protocol/fixtures");
 
 const ASSOCIATION_ID = "chrome-work-laptop";
-const HOST_VERSION = "0.1.0";
 
 /** @param {string} value */
-function fromB64(value) {
+function fromB64(value: string) {
   return new Uint8Array(Buffer.from(value, "base64"));
 }
 
 /** @param {Uint8Array} value */
-function toB64(value) {
+function toB64(value: Uint8Array) {
   return Buffer.from(value).toString("base64");
 }
 
@@ -216,22 +217,21 @@ export class AppMock {
    * to the host. The host must answer 1002 and stay alive.
    */
   sendCorruptFrame(): boolean {
-    const socket = [...this.sockets][0];
-    if (!socket) return false;
-    const payload = Buffer.from('{"action":', "utf8");
-    const frame = Buffer.allocUnsafe(4 + payload.length);
-    frame.writeUInt32LE(payload.length, 0);
-    payload.copy(frame, 4);
-    socket.write(frame);
+    if (this.sockets.size === 0) return false;
+    // Brace-balanced but syntactically invalid JSON: the raw-object framer
+    // yields it, the host must answer 1002 and stay alive. Sent to every host
+    // connection because each native port is a separate host process.
+    const payload = Buffer.from('{"action":}', "utf8");
+    for (const socket of this.sockets) socket.write(payload);
     this.counters.corruptFramesSent += 1;
-    this.appendLog({ event: "corrupt-frame-sent" });
+    this.appendLog({ event: "corrupt-frame-sent", sockets: this.sockets.size });
     return true;
   }
 
   /** Broadcast an unsolicited app → extension push. */
   push(action: string, fields: Record<string, unknown> = {}): number {
     const frame = { action, ...fields };
-    for (const socket of this.sockets) socket.write(encodeFrame(frame));
+    for (const socket of this.sockets) socket.write(encodeObject(frame));
     this.appendLog({ event: "push", action });
     return this.sockets.size;
   }
@@ -253,8 +253,8 @@ export class AppMock {
     });
     this.appendLog({ event: "host-connected" });
 
-    const decoder = new FrameDecoder({ maxBytes: MAX_FRAME_BYTES });
-    socket.on("data", (chunk) => {
+    const decoder = new ObjectStreamDecoder({ maxBytes: MAX_FRAME_BYTES });
+    socket.on("data", (chunk: Buffer) => {
       for (const decoded of decoder.push(chunk)) {
         if (decoded.type === "error") {
           this.appendLog({
@@ -530,7 +530,7 @@ export class AppMock {
 
   private write(socket: net.Socket, frame: Record<string, unknown>): void {
     if (!this.sockets.has(socket)) return;
-    socket.write(encodeFrame(frame));
+    socket.write(encodeObject(frame));
   }
 
   private appendLog(event: Record<string, unknown>): void {
@@ -550,7 +550,7 @@ export class AppMock {
  * Useful before fault injection that needs a connection to corrupt.
  */
 export async function waitForAppConnection(
-  app: AppMock,
+  app: { currentConnections: number },
   timeoutMs = 5000,
   minimum = 1,
 ): Promise<void> {

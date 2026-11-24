@@ -27,6 +27,7 @@ import { HostErrorCode, MAX_FRAME_BYTES } from "../../src/common/types";
 import type {
   HostHelloResponse,
   HostToExtensionFrame,
+  NativeRequestFrame,
 } from "../../src/common/types";
 import hostActionsFixture from "../../../protocol/fixtures/host-actions.json";
 import changePublicKeysFixture from "../../../protocol/fixtures/change-public-keys.json";
@@ -224,18 +225,16 @@ function nonce(index: number): string {
   return `nonce-${index}`;
 }
 
-function requestFrame(index: number, action = "get-logins"): {
-  action: string;
-  message: string;
-  nonce: string;
-  clientID: string;
-} {
+function requestFrame(
+  index: number,
+  action: NativeRequestFrame["action"] = "get-logins",
+): NativeRequestFrame {
   return {
     action,
     message: `ciphertext-${index}`,
     nonce: nonce(index),
     clientID: "client-id",
-  };
+  } as NativeRequestFrame;
 }
 
 beforeEach(() => {
@@ -284,9 +283,13 @@ describe("native transport connect", () => {
 
     const first = transport.request(requestFrame(1, "get-logins"));
     const second = transport.request(requestFrame(2, "get-totp"));
-    const sent = port.sent.filter(
-      (frame) => (frame as Record<string, unknown>).action !== "hello",
-    ) as Array<Record<string, unknown>>;
+    // Ignore the framework's `hello` and the immediate post-connect status
+    // ping; only the two encrypted requests matter here.
+    const sent = port.sent.filter((frame) => {
+      const action = (frame as Record<string, unknown>).action;
+      return action === "get-logins" || action === "get-totp";
+    }) as Array<Record<string, unknown>>;
+    expect(sent).toHaveLength(2);
 
     // Respond newest-first: the transport must not rely on arrival order.
     port.reply({

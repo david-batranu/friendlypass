@@ -53,8 +53,8 @@ jobs:
       - name: Cargo protocol conformance (frozen fixture test)
         run: cargo test -p friendlypass-browser --test fixtures_crypto
 
-      - name: Cargo native-host tests
-        run: cargo test -p friendlypass-browser-host
+      - name: Cargo protocol + native-host tests
+        run: cargo test -p friendlypass-browser -p friendlypass-browser-host
 
       - name: npm ci
         working-directory: extension

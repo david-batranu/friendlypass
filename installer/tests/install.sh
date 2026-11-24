@@ -146,8 +146,14 @@ ok "--option=value spelling works"
 # Validation errors
 # ---------------------------------------------------------------------------
 
-expect_fail --platform linux --home "$LINUX_HOME" --host-path "$FAKE_HOST"
-ok "missing --extension-id is rejected"
+# No --extension-id: the pinned manifest key's id becomes the default.
+DEFAULT_HOME="$TMP_ROOT/default-home"
+mkdir -p "$DEFAULT_HOME"
+install_ok --platform linux --home "$DEFAULT_HOME" --host-path "$FAKE_HOST" --browsers chrome
+DEFAULT_MANIFEST="$DEFAULT_HOME/.config/google-chrome/NativeMessagingHosts/org.friendlypass.browser.json"
+grep -q 'chrome-extension://pfdmagadklmhbghfipamhfbphcljdkbi/' "$DEFAULT_MANIFEST" ||
+    fail "default extension id was not used"
+ok "default extension id is used when --extension-id is omitted"
 
 expect_fail --platform linux --home "$LINUX_HOME" --extension-id "not-an-id" \
     --host-path "$FAKE_HOST"
