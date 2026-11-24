@@ -11,6 +11,7 @@
  */
 
 import { WATCHDOG_ALARM_PERIOD_MINUTES } from "../common/types";
+import { alarmPeriodMinutes } from "../common/platform";
 
 export const WATCHDOG_ALARM_NAME = "friendlypass-native-watchdog";
 
@@ -112,11 +113,14 @@ export function ensureWatchdogAlarm(): void {
         return;
       }
       try {
+        // Firefox requires at least one minute; Chrome MV3 allows 30 s. The
+        // adapter clamps without changing the requested period in Chrome.
+        const period = alarmPeriodMinutes(WATCHDOG_ALARM_PERIOD_MINUTES);
         chrome.alarms.create(WATCHDOG_ALARM_NAME, {
-          periodInMinutes: WATCHDOG_ALARM_PERIOD_MINUTES,
+          periodInMinutes: period,
           // Fire reasonably promptly after a wake-up rather than waiting a
           // full period from the create() call.
-          delayInMinutes: WATCHDOG_ALARM_PERIOD_MINUTES,
+          delayInMinutes: period,
         });
       } catch (cause) {
         log(`cannot create watchdog alarm: ${cause instanceof Error ? cause.message : String(cause)}`);

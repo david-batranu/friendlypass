@@ -15,6 +15,7 @@
  */
 
 import { sendBackgroundMessage } from "../common/messages";
+import { storageGet } from "../common/platform";
 import type { ExtensionSettings } from "../common/types";
 
 /** One per-origin exception from the unified settings. */
@@ -180,7 +181,7 @@ export async function readLegacyContentSettings(): Promise<LegacyContentSettings
     if (typeof chrome === "undefined" || !chrome.storage?.local) {
       return {};
     }
-    const stored = await chrome.storage.local.get(CONTENT_SETTINGS_KEY);
+    const stored = await storageGet(chrome.storage.local, CONTENT_SETTINGS_KEY);
     const raw = stored[CONTENT_SETTINGS_KEY];
     if (!isRecord(raw)) {
       return {};

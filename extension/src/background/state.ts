@@ -22,6 +22,7 @@
  */
 
 import { sendBackgroundEvent } from "../common/messages";
+import { storageGet, storageSet } from "../common/platform";
 import {
   SUPPORTED_PROTOCOL_VERSION,
   type AssociationRecord,
@@ -297,8 +298,10 @@ function chromeLocalStorage(): StorageAreaLike | null {
   }
   const area = chrome.storage.local;
   return {
-    get: (key) => area.get(key),
-    set: (items) => area.set(items),
+    // Firefox's `chrome.storage` namespace is callback-only; the adapter keeps
+    // the promise surface for the rest of the state store.
+    get: (key) => storageGet(area, key),
+    set: (items) => storageSet(area, items),
   };
 }
 

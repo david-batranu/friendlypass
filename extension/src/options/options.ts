@@ -8,6 +8,12 @@
  */
 
 import { onBackgroundEvent, sendBackgroundMessage } from "../common/messages";
+import {
+  getAllCommands,
+  shortcutUi,
+  tabsCreate,
+  type CommandLike,
+} from "../common/platform";
 import type {
   DiagnosticsSnapshot,
   ExtensionSettings,
@@ -294,19 +300,24 @@ const SHORTCUT_LABELS: Readonly<Record<string, string>> = Object.freeze({
 const shortcutList = byId("shortcut-list");
 const shortcutsHint = byId("shortcuts-hint");
 
-function shortcutLabel(command: chrome.commands.Command): string {
+function shortcutLabel(command: CommandLike): string {
   const known = command.name ? SHORTCUT_LABELS[command.name] : undefined;
   return known ?? command.description ?? command.name ?? "Shortcut";
 }
 
 async function refreshShortcuts(): Promise<void> {
   shortcutList.replaceChildren();
-  let commands: chrome.commands.Command[] = [];
+  const ui = shortcutUi();
+  shortcutsHint.textContent = ui.hint;
+  const copy = document.getElementById("shortcuts-copy");
+  if (copy && ui.url !== "chrome://extensions/shortcuts") {
+    copy.textContent = ui.copy;
+  }
+  let commands: CommandLike[] = [];
   try {
-    commands = await chrome.commands.getAll();
+    commands = await getAllCommands();
   } catch {
-    shortcutsHint.textContent =
-      "Open chrome://extensions/shortcuts to review the keys.";
+    shortcutsHint.textContent = ui.hint;
     return;
   }
   for (const command of commands) {
@@ -326,7 +337,7 @@ async function refreshShortcuts(): Promise<void> {
         label,
         el("span", {
           className: "shortcut-unset",
-          text: "Not set — choose one in chrome://extensions/shortcuts",
+          text: `Not set — choose one in ${ui.hint}`,
         }),
       );
     }
@@ -335,12 +346,10 @@ async function refreshShortcuts(): Promise<void> {
 }
 
 byId("open-shortcuts").addEventListener("click", () => {
-  void chrome.tabs
-    .create({ url: "chrome://extensions/shortcuts" })
-    .catch(() => {
-      shortcutsHint.textContent =
-        "Open chrome://extensions/shortcuts in a new tab to change shortcuts.";
-    });
+  const ui = shortcutUi();
+  void tabsCreate({ url: ui.url }).catch(() => {
+    shortcutsHint.textContent = `Open ${ui.hint} in a new tab to change shortcuts.`;
+  });
 });
 
 // ---------------------------------------------------------------------------

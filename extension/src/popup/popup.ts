@@ -14,6 +14,7 @@
  */
 
 import { onBackgroundEvent, sendBackgroundMessage } from "../common/messages";
+import { getTab, queryTabs, type TabLike } from "../common/platform";
 import type {
   CredentialEntry,
   DiagnosticsSnapshot,
@@ -251,19 +252,15 @@ function isPopupUrl(url: string | undefined): boolean {
 
 async function resolveTargetTab(): Promise<void> {
   const param = new URLSearchParams(location.search).get("tab");
-  let tab: chrome.tabs.Tab | undefined;
+  let tab: TabLike | null = null;
 
   if (param !== null && /^\d+$/.test(param)) {
-    try {
-      tab = await chrome.tabs.get(Number(param));
-    } catch {
-      tab = undefined;
-    }
+    tab = await getTab(Number(param));
   }
 
-  if (tab === undefined) {
+  if (tab === null) {
     try {
-      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [active] = await queryTabs({ active: true, currentWindow: true });
       if (active && !isPopupUrl(active.url)) {
         tab = active;
       }

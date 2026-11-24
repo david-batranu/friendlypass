@@ -16,15 +16,19 @@
  *    `{cancel: false}` on any doubt, so Chrome shows its normal prompt and the
  *    page never hangs.
  *
- * Firefox is intentionally not implemented yet: `HttpAuthAdapter` isolates the
- * Chrome `asyncBlocking` registration so a `blocking`/Promise adapter can be
- * added without touching the controller.
+ * Firefox uses the same controller through a thin adapter: its MV3
+ * `webRequest.onAuthRequired` takes `["blocking"]` and returns a
+ * `Promise<BlockingResponse>` instead of Chrome's `asyncBlocking` callback.
+ * Everything else — exactly-once settlement, the hard deadline, the
+ * wrong-password loop guard keyed by `requestId`, and the "never answer proxy
+ * auth" rule — is shared.
  *
  * Never log credentials, entries or decrypted payloads.
  */
 
 import type { CredentialEntry, ConnectionSnapshot } from "../common/types";
 import type { ActionContext, GetLoginsArgs } from "./actions";
+import { detectBrowserKind } from "../common/platform";
 
 // ---------------------------------------------------------------------------
 // Public constants / types
@@ -88,8 +92,9 @@ export interface HttpAuthResponse {
 export type HttpAuthCallback = (response: HttpAuthResponse) => void;
 
 /**
- * Small platform adapter. Chrome registers `asyncBlocking`; a future Firefox
- * adapter returns a Promise from a `blocking` listener instead.
+ * Small platform adapter. Chrome registers `asyncBlocking` and responds through
+ * a callback; Firefox registers `blocking` and responds with a Promise. Both
+ * feed the same controller, which settles exactly once.
  */
 export interface HttpAuthAdapter {
   readonly kind: "chrome" | "firefox";
@@ -549,7 +554,166 @@ export function createChromeHttpAuthAdapter(): HttpAuthAdapter | null {
 }
 
 // ---------------------------------------------------------------------------
-// Chrome extension-window picker
+// Firefox webRequest adapter
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural subset of Firefox's `browser.webRequest.onAuthRequired` details.
+ * Firefox exposes `browser.*` promise APIs, so this adapter registers there
+ * rather than through the callback-style `chrome.*` namespace.
+ */
+export interface FirefoxAuthDetails {
+  requestId: string;
+  url: string;
+  realm?: string;
+  scheme?: string;
+  isProxy?: boolean;
+  tabId?: number;
+  challenger?: { host?: string; port?: number };
+}
+
+interface FirefoxWebRequestEvent<Listener> {
+  addListener(
+    listener: Listener,
+    filter: { urls: string[] },
+    extraInfoSpec?: string[],
+  ): void;
+}
+
+export interface FirefoxWebRequestApi {
+  onAuthRequired: FirefoxWebRequestEvent<
+    (details: FirefoxAuthDetails) => Promise<HttpAuthResponse>
+  >;
+  onCompleted: FirefoxWebRequestEvent<
+    (details: { requestId: string }) => void
+  >;
+  onErrorOccurred: FirefoxWebRequestEvent<
+    (details: { requestId: string }) => void
+  >;
+}
+
+/**
+ * Firefox's promise-style `webRequest`.
+ *
+ * Note that modern Chromium also exposes a `browser` alias, so the presence of
+ * `browser.webRequest` alone does NOT mean Firefox. `runtime.getBrowserInfo()`
+ * is still Firefox-only and is the discriminator.
+ */
+export function firefoxWebRequestApi(
+  scope: unknown = globalThis,
+): FirefoxWebRequestApi | null {
+  const candidate = scope as {
+    browser?: { runtime?: { getBrowserInfo?: unknown }; webRequest?: FirefoxWebRequestApi };
+  };
+  if (
+    typeof candidate.browser?.runtime?.getBrowserInfo !== "function" ||
+    detectBrowserKind(scope) !== "firefox"
+  ) {
+    return null;
+  }
+  const api = candidate.browser?.webRequest;
+  if (
+    !api?.onAuthRequired?.addListener ||
+    !api.onCompleted?.addListener ||
+    !api.onErrorOccurred?.addListener
+  ) {
+    return null;
+  }
+  return api;
+}
+
+function fromFirefoxChallenge(
+  details: FirefoxAuthDetails,
+): HttpAuthChallengeDetails {
+  const challenger = details.challenger;
+  return {
+    requestId: details.requestId,
+    url: details.url,
+    realm: details.realm,
+    scheme: details.scheme,
+    isProxy: details.isProxy === true,
+    tabId: details.tabId,
+    challenger: challenger
+      ? { host: challenger.host, port: challenger.port }
+      : undefined,
+  };
+}
+
+/**
+ * Firefox MV3 adapter: `["blocking"]` + a returned Promise.
+ *
+ * Firefox fires the listener again with the SAME `requestId` when the supplied
+ * credentials are rejected (MDN documents this), so the controller's existing
+ * loop guard works unchanged. The adapter additionally guarantees a settlement
+ * even if a listener implementation throws: a blocked request must never hang,
+ * so the Promise resolves `{cancel: false}` and Firefox shows its own prompt.
+ */
+export function createFirefoxHttpAuthAdapter(
+  scope: unknown = globalThis,
+): HttpAuthAdapter | null {
+  const api = firefoxWebRequestApi(scope);
+  if (api === null) {
+    return null;
+  }
+  const filter = { urls: ["<all_urls>"] };
+  return {
+    kind: "firefox",
+    install(listener) {
+      api.onAuthRequired.addListener(
+        (details) =>
+          new Promise<HttpAuthResponse>((resolve) => {
+            let settled = false;
+            const timer = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              resolve({ cancel: false });
+            }, HTTP_AUTH_DEADLINE_MS + 2_000);
+            const finish = (response: HttpAuthResponse): void => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve(response);
+            };
+            try {
+              listener(fromFirefoxChallenge(details), finish);
+            } catch {
+              finish({ cancel: false });
+            }
+          }),
+        filter,
+        ["blocking"],
+      );
+    },
+    onCompleted(listener) {
+      api.onCompleted.addListener(
+        (details) => listener({ requestId: details.requestId }),
+        filter,
+      );
+    },
+    onErrorOccurred(listener) {
+      api.onErrorOccurred.addListener(
+        (details) => listener({ requestId: details.requestId }),
+        filter,
+      );
+    },
+  };
+}
+
+/**
+ * Pick the adapter for the current browser. Firefox is detected through
+ * `runtime.getBrowserInfo()` (Chromium now has a `browser` alias too); Chrome's
+ * `asyncBlocking` registration stays the default.
+ */
+export function createDefaultHttpAuthAdapter(
+  scope: unknown = globalThis,
+): HttpAuthAdapter | null {
+  return (
+    createFirefoxHttpAuthAdapter(scope) ?? createChromeHttpAuthAdapter()
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Extension-window picker (Chrome and Firefox share `windows`/`runtime`)
 // ---------------------------------------------------------------------------
 
 interface PickerPending {
@@ -577,8 +741,11 @@ function safePickerEntries(
 
 /**
  * Opens `auth/picker.html` in a small popup window and waits for a choice.
+ *
  * The picker is strictly best-effort: if a window cannot be created (headless,
- * policy), it resolves `null`, which makes the caller fall back to Chrome.
+ * policy), it resolves `null`, which makes the caller fall back to the browser's
+ * own prompt. Firefox implements the same `windows`/`runtime` surface, so the
+ * same implementation serves both browsers.
  */
 export function createChromeHttpAuthPicker(): HttpAuthPicker | null {
   if (
@@ -1294,7 +1461,7 @@ export function installHttpAuthListener(
   }
   const adapter =
     options.adapter === undefined
-      ? createChromeHttpAuthAdapter()
+      ? createDefaultHttpAuthAdapter()
       : options.adapter;
   const picker =
     options.picker === undefined ? createChromeHttpAuthPicker() : options.picker;
