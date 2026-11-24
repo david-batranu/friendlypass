@@ -78,8 +78,11 @@ native host just like browser sleep plus a restart.
 `{ hostMode: "real", appMode: "rust" }`. The app is
 `cargo build -p friendlypass-browser --example test_server`, which opens a copy
 of `fixtures/sample4.kdbx`, auto-approves the association and serves on
-`FP_APP_SOCKET`. Every app "kill" is a real process death, every "restart" a
-real re-open and re-listen. `scripts/e2e.sh` builds the example automatically.
+`FP_APP_SOCKET`. `set-login` is applied with the same entry-writing code the GUI
+bridge uses and saved back to the KDBX file, so specs can reopen it with the
+`friendlypass` CLI to verify persistence. Every app "kill" is a real process
+death, every "restart" a real re-open and re-listen. `scripts/e2e.sh` builds the
+example automatically.
 
 ## Native messaging from a spec
 

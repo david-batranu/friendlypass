@@ -19,7 +19,12 @@ import {
   onContentCommand,
   sendBackgroundMessage,
 } from "../common/messages";
-import type { CredentialEntry, ExtensionSettings, StatusSummary } from "../common/types";
+import type {
+  CredentialEntry,
+  ExtensionSettings,
+  PendingCredential,
+  StatusSummary,
+} from "../common/types";
 import { dismissSaveBanner, showSaveBanner } from "./banner";
 import { CredentialAutocomplete } from "./credential-autocomplete";
 import { fillCombination, fillTotp } from "./fill";
@@ -35,6 +40,7 @@ import {
   isAlreadySaved,
   readSubmittedCredentials,
 } from "./form";
+import type { SubmittedCredentials } from "./form";
 import { cleanupIcons, ensureIcon, hasIcon, setIconState } from "./icon";
 import { startDomObserver, startNavigationObserver } from "./observer";
 import type { DomObserver } from "./observer";
@@ -216,6 +222,58 @@ async function ensureCredentials(triggerUnlock = false): Promise<void> {
   await fetchCredentials(triggerUnlock, true);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/**
+ * Ask the service worker for a pair submitted just before the previous page
+ * unloaded. The store itself enforces tab/frame/site/expiry isolation; this
+ * loop only tolerates the store message still being in flight when the new
+ * document starts.
+ */
+async function pendingSubmissionForPage(): Promise<PendingCredential | null> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await sendBackgroundMessage("submit.pending", {
+      url: document.location.href,
+    });
+    if (result.ok && result.value) {
+      return result.value;
+    }
+    if (attempt < 2) {
+      await sleep(120);
+    }
+  }
+  return null;
+}
+
+/**
+ * Show the save/update banner for a login submitted on the previous page.
+ * The entry lookup uses the *submitted* URL (the login page), not the current
+ * one (often a dashboard), so "already saved"/"update existing" still work.
+ */
+async function checkPendingSubmission(): Promise<void> {
+  const pending = await pendingSubmissionForPage();
+  if (!pending) {
+    return;
+  }
+  const result = await sendBackgroundMessage("logins.get", {
+    url: pending.url,
+    ...(pending.submitUrl ? { submitUrl: pending.submitUrl } : {}),
+  });
+  const entries = result.ok ? result.value : [];
+  showBannerForSubmission(
+    {
+      username: pending.username,
+      password: pending.password,
+      passwordChange: false,
+      ...(pending.submitUrl ? { submitUrl: pending.submitUrl } : {}),
+    },
+    entries,
+    pending.url,
+  );
+}
+
 function largestCombination(): FieldCombination | undefined {
   for (let index = combinations.length - 1; index >= 0; index -= 1) {
     const combination = combinations[index];
@@ -366,6 +424,66 @@ function handlerForForm(form: HTMLFormElement): FieldCombination | undefined {
   return combinations.find((combination) => combination.form === form);
 }
 
+/**
+ * Tell the service worker about a submission before the page can unload.
+ * Fire-and-forget: the banner does not wait for the round-trip, and the SW
+ * call is dispatched from the capture-phase listener ahead of navigation.
+ */
+function storeSubmission(submitted: SubmittedCredentials): void {
+  void sendBackgroundMessage("submit.store", {
+    url: document.location.href,
+    username: submitted.username,
+    password: submitted.password,
+    ...(submitted.submitUrl ? { submitUrl: submitted.submitUrl } : {}),
+  });
+}
+
+/** Show the create/update card, unless the exact pair is already stored. */
+function showBannerForSubmission(
+  submitted: SubmittedCredentials,
+  entries: CredentialEntry[],
+  url: string,
+): void {
+  if (isAlreadySaved(entries, submitted.username, submitted.password)) {
+    return;
+  }
+  const existing = findExistingEntry(entries, submitted.username);
+  showSaveBanner(
+    {
+      kind: existing ? "update" : "create",
+      username: submitted.username,
+      password: submitted.password,
+      url,
+      ...(submitted.submitUrl ? { submitUrl: submitted.submitUrl } : {}),
+      ...(existing ? { uuid: existing.uuid } : {}),
+    },
+    {
+      onSaved: () => {
+        void fetchCredentials(false, true);
+      },
+    },
+  );
+}
+
+/**
+ * Same-document save path (a form that calls `preventDefault`, or a JS submit
+ * that stays on the page). Credentials are loaded first so an existing entry
+ * produces "update" and an exact match produces no banner at all.
+ */
+function offerSave(submitted: SubmittedCredentials): void {
+  // Capture the page URL before any await: if the document navigates, the
+  // banner must still be attributed to the page that submitted the form.
+  const url = document.location.href;
+  void (async () => {
+    let entries = credentials;
+    if (entries.length === 0) {
+      await fetchCredentials(false, true);
+      entries = credentials;
+    }
+    showBannerForSubmission(submitted, entries, url);
+  })();
+}
+
 function onSubmit(event: Event): void {
   if (!event.isTrusted) {
     return;
@@ -379,26 +497,62 @@ function onSubmit(event: Event): void {
   if (!submitted) {
     return;
   }
-  if (isAlreadySaved(credentials, submitted.username, submitted.password)) {
+  storeSubmission(submitted);
+  offerSave(submitted);
+}
+
+/**
+ * Submit-control click. Many sites submit through `type=button` + JS (often
+ * after an XHR), so there may be no `submit` event at all; this capture-phase
+ * listener still reports the pair before the page navigates.
+ */
+function onSubmitControlClick(event: Event): void {
+  if (!event.isTrusted || !(event.target instanceof Element)) {
     return;
   }
-
-  const existing = findExistingEntry(credentials, submitted.username);
-  showSaveBanner(
-    {
-      kind: existing ? "update" : "create",
-      username: submitted.username,
-      password: submitted.password,
-      url: document.location.href,
-      ...(submitted.submitUrl ? { submitUrl: submitted.submitUrl } : {}),
-      ...(existing ? { uuid: existing.uuid } : {}),
-    },
-    {
-      onSaved: () => {
-        void fetchCredentials(false, true);
-      },
-    },
+  const control = event.target.closest(
+    "button, input[type=submit], input[type=button], input[type=image]",
   );
+  if (!(control instanceof HTMLElement)) {
+    return;
+  }
+  const form =
+    (control as HTMLButtonElement | HTMLInputElement).form ??
+    (control.closest("form") as HTMLFormElement | null);
+  if (!form) {
+    return;
+  }
+  refreshCombinations();
+  const submitted = readSubmittedCredentials(form, handlerForForm(form));
+  if (!submitted) {
+    return;
+  }
+  storeSubmission(submitted);
+  offerSave(submitted);
+}
+
+/** Enter in a password field, for sites without a real submit button. */
+function onPasswordKeydown(event: Event): void {
+  if (
+    !(event instanceof KeyboardEvent) ||
+    !event.isTrusted ||
+    event.key !== "Enter" ||
+    !(event.target instanceof HTMLInputElement) ||
+    event.target.type !== "password"
+  ) {
+    return;
+  }
+  const field = event.target;
+  const form = field.form;
+  refreshCombinations();
+  const combination =
+    findCombination(combinations, field) ?? (form ? handlerForForm(form) : undefined);
+  const submitted = readSubmittedCredentials(form, combination);
+  if (!submitted) {
+    return;
+  }
+  storeSubmission(submitted);
+  offerSave(submitted);
 }
 
 function bindForms(): void {
@@ -470,6 +624,7 @@ async function init(): Promise<void> {
     }
 
     detectAndRender();
+    void checkPendingSubmission();
     domObserver = startDomObserver(() => scheduleDetect());
     navigationObserver = startNavigationObserver(() => scheduleDetect());
   } catch (cause) {
@@ -556,6 +711,11 @@ function registerHandlers(): void {
     credentialMenu.close();
     totpMenu.close();
   });
+
+  // Capture phase so the submission is reported before the page's own click
+  // handler starts an XHR/navigation. Never prevented or stopped.
+  document.addEventListener("click", onSubmitControlClick, true);
+  document.addEventListener("keydown", onPasswordKeydown, true);
 }
 
 function main(): void {

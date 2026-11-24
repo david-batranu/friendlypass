@@ -50,6 +50,8 @@ import {
 } from "./actions";
 import type { ActionContext } from "./actions";
 import { installHttpAuthListener } from "./http-auth";
+import { createPendingStore, readPendingTtlMs } from "./pending";
+import type { PendingStore } from "./pending";
 
 const EXTENSION_VERSION = "0.1.0";
 
@@ -59,6 +61,7 @@ let protocolSession: ProtocolSession | null = null;
 let cachedClientId: string | null = null;
 let bootstrapped = false;
 let started = false;
+let pendingStore: PendingStore | null = null;
 
 /**
  * Unhandled rejections observed in this service worker. The e2e suite reads
@@ -130,6 +133,21 @@ function getSession(): ProtocolSession {
     });
   }
   return protocolSession;
+}
+
+/**
+ * Pending submitted-credential store (WP4b). Lazily created so this module can
+ * be imported without `chrome` (unit tests build the store themselves).
+ */
+function getPendingStore(): PendingStore {
+  if (pendingStore === null) {
+    pendingStore = createPendingStore({
+      storage: chrome.storage.session,
+      neverStorage: chrome.storage.local,
+      ttlMs: () => readPendingTtlMs(chrome.storage.local),
+    });
+  }
+  return pendingStore;
 }
 
 function messageOf(cause: unknown): string {
@@ -343,6 +361,55 @@ function buildBackgroundHandlers(): BackgroundHandlers {
     "settings.get": async () => getStateStore().getSettings(),
     "settings.set": async (args) => getStateStore().setSettings(args),
     "diagnostics.get": async () => getStateStore().diagnostics(),
+
+    // WP4b: the content script's submitted-credential hand-off. The tab id
+    // comes from the browser-provided sender, never from the page.
+    "submit.store": async (args, sender) => {
+      const tabId = sender.tab?.id;
+      if (typeof tabId !== "number") {
+        return { stored: false };
+      }
+      const stored = await getPendingStore().store({
+        tabId,
+        ...(typeof sender.frameId === "number" ? { frameId: sender.frameId } : {}),
+        url: typeof args.url === "string" ? args.url : "",
+        username: typeof args.username === "string" ? args.username : "",
+        password: typeof args.password === "string" ? args.password : "",
+        ...(typeof args.submitUrl === "string" && args.submitUrl
+          ? { submitUrl: args.submitUrl }
+          : {}),
+      });
+      return { stored };
+    },
+
+    "submit.pending": async (args, sender) => {
+      const tabId = sender.tab?.id;
+      if (typeof tabId !== "number") {
+        return null;
+      }
+      return getPendingStore().take({
+        tabId,
+        ...(typeof sender.frameId === "number" ? { frameId: sender.frameId } : {}),
+        url: typeof args.url === "string" ? args.url : "",
+      });
+    },
+
+    "submit.clear": async (_args, sender) => {
+      const tabId = sender.tab?.id;
+      if (typeof tabId === "number") {
+        await getPendingStore().clear(tabId);
+      }
+    },
+
+    "submit.never": async (args, sender) => {
+      if (typeof args.origin === "string" && args.origin) {
+        await getPendingStore().never(args.origin);
+      }
+      const tabId = sender.tab?.id;
+      if (typeof tabId === "number") {
+        await getPendingStore().clear(tabId);
+      }
+    },
   };
 }
 

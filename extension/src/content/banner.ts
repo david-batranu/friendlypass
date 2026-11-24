@@ -36,7 +36,7 @@ export function dismissSaveBanner(): void {
 
 function button(
   label: string,
-  action: "save" | "dismiss",
+  action: "save" | "dismiss" | "never",
   primary: boolean,
 ): HTMLButtonElement {
   const element = createElement(
@@ -116,8 +116,11 @@ export function showSaveBanner(
   actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end";
 
   const dismiss = button("Not now", "dismiss", false);
+  const never = button("Never for this site", "never", false);
+  never.style.background = "transparent";
+  never.style.color = "#52606d";
   const save = button(request.kind === "update" ? "Update" : "Save", "save", true);
-  actions.append(dismiss, save);
+  actions.append(never, dismiss, save);
   host.append(title, detail, actions);
 
   const finish = (): void => {
@@ -129,6 +132,21 @@ export function showSaveBanner(
   dismiss.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    // The pending pair belongs to this tab; a dismissal ends the offer even if
+    // the next page has not asked for it yet.
+    void sendBackgroundMessage("submit.clear");
+    finish();
+  });
+
+  never.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      const origin = new URL(request.url).origin;
+      void sendBackgroundMessage("submit.never", { origin });
+    } catch {
+      // An unparsable URL cannot be remembered; the banner still closes.
+    }
     finish();
   });
 
@@ -147,6 +165,7 @@ export function showSaveBanner(
           uuid: request.uuid,
         });
         if (result.ok && result.value.success) {
+          void sendBackgroundMessage("submit.clear");
           showNotification(
             "success",
             request.kind === "update" ? "Password updated." : "Login saved.",
