@@ -19,7 +19,7 @@
  */
 
 import { expect, test as base } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import http from "node:http";
@@ -615,6 +615,16 @@ const PAGES: Record<string, string> = {
   "/rust-save-home": plainPage("Signed in"),
   "/rust-update": rustLoginPage("/rust-update", "Change password"),
   "/rust-update-home": plainPage("Password changed"),
+  "/rust-signup": `<!doctype html><html><head><meta charset="utf-8"><title>Create account</title></head>
+<body>
+<h1>Create account</h1>
+<form id="signup-form" action="/rust-signup" method="post">
+  <input id="email" name="email" type="email" autocomplete="username">
+  <input id="password" name="password" type="password" autocomplete="new-password">
+  <button id="submit" type="submit">Create account</button>
+</form>
+</body></html>`,
+  "/rust-signup-home": plainPage("Account created"),
   "/rust-match": rustLoginPage("/rust-match", "Already saved"),
   "/rust-match-home": plainPage("Welcome back"),
   "/rust-expiry": rustLoginPage("/rust-expiry", "Slow redirect"),
@@ -669,6 +679,7 @@ async function startPages(): Promise<PagesServer> {
       const destinations: Record<string, string> = {
         "/rust-save": "/rust-save-home",
         "/rust-update": "/rust-update-home",
+        "/rust-signup": "/rust-signup-home",
         "/rust-match": "/rust-match-home",
         "/rust-expiry": "/rust-expiry-home",
         "/rust-different": crossSiteBaseUrl
@@ -821,6 +832,44 @@ interface AssociationLike {
 
 /** Matches `test_server`'s default (`FP_TEST_DB_PASSWORD` unset). */
 const TEST_DB_PASSWORD = "testpassword";
+
+const WP6C_SHOTS = "/Users/david/Work/Projects/friendlypass/briefs/shots/wp6c-polish";
+
+async function captureViewport(page: Page, name: string): Promise<void> {
+  await page.emulateMedia({ colorScheme: "light" });
+  await sleep(80);
+  await page.screenshot({
+    path: path.join(WP6C_SHOTS, `${name}-light.png`),
+    animations: "disabled",
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await sleep(80);
+  await page.screenshot({
+    path: path.join(WP6C_SHOTS, `${name}-dark.png`),
+    animations: "disabled",
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+}
+
+async function captureLocator(
+  page: Page,
+  locator: Locator,
+  name: string,
+): Promise<void> {
+  await page.emulateMedia({ colorScheme: "light" });
+  await sleep(80);
+  await locator.screenshot({
+    path: path.join(WP6C_SHOTS, `${name}-light.png`),
+    animations: "disabled",
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await sleep(80);
+  await locator.screenshot({
+    path: path.join(WP6C_SHOTS, `${name}-dark.png`),
+    animations: "disabled",
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+}
 
 let rustPages: PagesServer;
 let otherPages: PagesServer;
@@ -995,6 +1044,7 @@ const test = base.extend<{ stack: Stack; rust: RustStack }>({
 
 test.beforeAll(async () => {
   test.setTimeout(300_000);
+  fs.mkdirSync(WP6C_SHOTS, { recursive: true });
   ensureBinary(binaryPath("friendlypass"), ["build", "-q", "-p", "friendlypass"]);
   ensureBinary(binaryPath("friendlypass-browser-host"), [
     "build",
@@ -1293,6 +1343,159 @@ test("update banner changes the existing entry's password in the KDBX", async ({
   } finally {
     await page.close().catch(() => undefined);
   }
+});
+
+test("generated signup password saves the username typed in the banner", async ({
+  rust,
+}) => {
+  const page = await rust.harness.context.newPage();
+  try {
+    await page.goto(`${rust.baseUrl}/rust-signup`, { waitUntil: "load" });
+    await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+
+    // Generate through the real inline menu; the username field is left empty.
+    await loginIcon(page).click();
+    const generate = page.locator(
+      '[data-friendlypass="menu-action"][data-action="generate-password"]',
+    );
+    await expect(generate).toHaveCount(1, { timeout: 10_000 });
+    await generate.click();
+
+    await expect(page.locator("#password")).not.toHaveValue("", {
+      timeout: 10_000,
+    });
+    const password = await page.locator("#password").inputValue();
+    expect(password.length).toBeGreaterThan(8);
+
+    const banner = page.locator('[data-friendlypass="banner"]');
+    await expect(banner).toHaveCount(1, { timeout: 10_000 });
+    await expect(banner).toHaveAttribute("data-friendlypass-kind", "create");
+
+    const title = banner.locator('[data-friendlypass="banner-title"]');
+    const username = banner.locator('[data-friendlypass="banner-username"]');
+    await expect(title).toHaveValue(new URL(rust.baseUrl).host);
+    await expect(username).toHaveValue("");
+    await expect(username).toHaveAttribute("placeholder", "Username (optional)");
+
+    await title.fill("My generated signup");
+    await username.fill("typed-in-banner@example.com");
+    await captureViewport(page, "banner-editable");
+    await banner.locator('[data-action="save"]').click();
+    await expect(banner).toHaveCount(0);
+
+    const entryTitle = "My generated signup";
+    await expect
+      .poll(() => readEntryViaCli(rust.rust.databasePath, entryTitle), {
+        timeout: 10_000,
+      })
+      .not.toBeNull();
+    const entry = readEntryViaCli(rust.rust.databasePath, entryTitle);
+    expect(entry?.Title).toBe(entryTitle);
+    expect(entry?.UserName).toBe("typed-in-banner@example.com");
+    expect(entry?.Password).toBe(password);
+    expect(entry?.URL).toBe(`${rust.baseUrl}/rust-signup`);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+});
+
+test("Never for this site persists, hides the banner and is removable in options", async ({
+  stack,
+}) => {
+  const { harness } = stack;
+  const origin = new URL(stack.pages.baseUrl).origin;
+  const submit = async (page: Page, username: string): Promise<void> => {
+    await page.fill("#username", username);
+    await page.fill("#password", "never-password");
+    await page.click("#submit");
+  };
+
+  const page = await openPage(stack, "/save");
+  await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+
+  await submit(page, "never-one@example.com");
+  const banner = page.locator('[data-friendlypass="banner"]');
+  await expect(banner).toHaveCount(1, { timeout: 10_000 });
+  await banner.locator('[data-action="never"]').click();
+  await expect(banner).toHaveCount(0);
+
+  // Persisted through settings.set, merged as a disableSave exception.
+  await expect
+    .poll(
+      async () =>
+        (
+          (await harness.internalRequest("settings.get")) as {
+            siteExceptions: Array<{
+              origin: string;
+              disableSave?: boolean;
+            }>;
+          }
+        ).siteExceptions,
+      { timeout: 10_000 },
+    )
+    .toEqual([{ origin, disableSave: true }]);
+
+  // Same page: the live settings broadcast stops the next offer.
+  await submit(page, "never-two@example.com");
+  await sleep(700);
+  await expect(banner).toHaveCount(0);
+
+  // After navigation the content script reads the persisted exception.
+  await page.reload({ waitUntil: "load" });
+  await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+  await submit(page, "never-three@example.com");
+  await sleep(700);
+  await expect(page.locator('[data-friendlypass="banner"]')).toHaveCount(0);
+
+  // And after a full extension restart, because it lives in chrome.storage.
+  await harness.reloadExtension();
+  const afterRestart = await openPage(stack, "/save");
+  await expect(loginIcon(afterRestart)).toHaveCount(1, { timeout: 20_000 });
+  await submit(afterRestart, "never-four@example.com");
+  await sleep(700);
+  await expect(afterRestart.locator('[data-friendlypass="banner"]')).toHaveCount(0);
+
+  // The entry is visible in options, can be screenshotted and removed there.
+  const options = await harness.context.newPage();
+  await options.setViewportSize({ width: 900, height: 1_240 });
+  await options.goto(
+    `chrome-extension://${harness.extensionId}/options/options.html`,
+    { waitUntil: "load" },
+  );
+  const row = options.locator(`tr[data-origin="${origin}"]`);
+  await expect(row).toHaveCount(1, { timeout: 15_000 });
+  await expect(row.locator('[data-exception-toggle="disableSave"]')).toBeChecked();
+  await captureLocator(
+    options,
+    options.locator("#exceptions-section"),
+    "options-site-exceptions-never",
+  );
+
+  await row.locator('[data-action="remove-exception"]').click();
+  await expect
+    .poll(
+      async () =>
+        (
+          (await harness.internalRequest("settings.get")) as {
+            siteExceptions: unknown[];
+          }
+        ).siteExceptions,
+      { timeout: 10_000 },
+    )
+    .toEqual([]);
+
+  // Removing it brings the save offer back.
+  const restored = await openPage(stack, "/save");
+  await expect(loginIcon(restored)).toHaveCount(1, { timeout: 20_000 });
+  await submit(restored, "never-five@example.com");
+  await expect(restored.locator('[data-friendlypass="banner"]')).toHaveCount(1, {
+    timeout: 10_000,
+  });
+
+  await options.close();
+  await restored.close();
+  await page.close();
+  await afterRestart.close();
 });
 
 test("no save banner after navigating to a different site", async ({ rust }) => {

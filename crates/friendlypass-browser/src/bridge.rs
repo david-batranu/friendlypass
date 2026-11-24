@@ -31,6 +31,11 @@ pub struct SetLoginRequest {
     /// When present, update this entry instead of creating one.
     pub uuid: Option<String>,
     pub download_favicon: bool,
+    /// [friendlypass] Optional entry title from the extension.
+    ///
+    /// New entries use it when non-empty; updates replace the existing title
+    /// only when it differs. KeePassXC ignores the unknown field.
+    pub title: Option<String>,
 }
 
 /// What the server needs from the application.

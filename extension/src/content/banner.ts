@@ -15,7 +15,6 @@
 
 import { sendBackgroundMessage } from "../common/messages";
 import type { DatabaseGroup } from "../common/types";
-import { rememberNeverForSite } from "./settings";
 import { appendShadowStyle, createShadowHost } from "./styles";
 import { FP_ATTR, showNotification } from "./ui";
 
@@ -29,6 +28,8 @@ export interface SaveBannerRequest {
   password: string;
   url: string;
   submitUrl?: string;
+  /** Optional entry title; the card defaults to the site host. */
+  title?: string;
   /** Existing entry for `kind: "update"`. */
   uuid?: string;
 }
@@ -58,9 +59,16 @@ const BANNER_CSS = `
 .head .text{min-width:0;flex:1}
 .title{font-size:14px;font-weight:650;line-height:1.3}
 .site{color:var(--fp-muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.detail{display:flex;flex-direction:column;gap:2px;padding:8px 10px;background:var(--fp-surface);border:1px solid var(--fp-border);border-radius:var(--fp-radius-control);margin-bottom:10px}
-.detail .label{font-size:11px;font-weight:600;color:var(--fp-muted);text-transform:uppercase;letter-spacing:.04em}
-.detail .value{font-weight:600;overflow-wrap:anywhere}
+.fields{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.field{display:flex;flex-direction:column;gap:3px}
+.field .label{font-size:11px;font-weight:600;color:var(--fp-muted);text-transform:uppercase;letter-spacing:.04em}
+.field input{
+  width:100%;min-height:32px;padding:5px 9px;
+  border-radius:var(--fp-radius-control);border:1px solid var(--fp-border);
+  background:var(--fp-bg);color:var(--fp-text);font:inherit;
+}
+.field input::placeholder{color:var(--fp-muted)}
+.field input:focus-visible{outline:2px solid var(--fp-accent);outline-offset:2px}
 .group{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
 .group .label{font-size:11px;font-weight:600;color:var(--fp-muted);text-transform:uppercase;letter-spacing:.04em}
 .group select{
@@ -123,6 +131,36 @@ export function flattenGroups(
   return out;
 }
 
+interface BannerTextField {
+  wrap: HTMLLabelElement;
+  input: HTMLInputElement;
+}
+
+/** One labelled text input in the card (title/username). */
+function textField(
+  labelText: string,
+  id: string,
+  attr: string,
+  value: string,
+  placeholder: string,
+): BannerTextField {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.id = id;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.placeholder = placeholder;
+  input.value = value;
+  input.setAttribute(FP_ATTR, attr);
+  wrap.append(label, input);
+  return { wrap, input };
+}
+
 /**
  * Show (or replace) the save card for a submitted form.
  * Returns immediately; saving happens when the user activates the primary
@@ -170,15 +208,23 @@ export function showSaveBanner(
   headText.append(title, site);
   head.append(logo, headText);
 
-  const detail = document.createElement("div");
-  detail.className = "detail";
-  const detailLabel = document.createElement("span");
-  detailLabel.className = "label";
-  detailLabel.textContent = "Username";
-  const detailValue = document.createElement("span");
-  detailValue.className = "value";
-  detailValue.textContent = request.username || "No username";
-  detail.append(detailLabel, detailValue);
+  const fields = document.createElement("div");
+  fields.className = "fields";
+  const titleField = textField(
+    "Title",
+    "fp-banner-entry-title",
+    "banner-title",
+    request.title?.trim() || originLabel(request.url),
+    originLabel(request.url),
+  );
+  const usernameField = textField(
+    "Username",
+    "fp-banner-username",
+    "banner-username",
+    request.username,
+    "Username (optional)",
+  );
+  fields.append(titleField.wrap, usernameField.wrap);
 
   const groupWrap = document.createElement("label");
   groupWrap.className = "group";
@@ -200,7 +246,7 @@ export function showSaveBanner(
   spacer.className = "spacer";
   actions.append(never, spacer, dismiss, save);
 
-  card.append(head, detail, groupWrap, actions);
+  card.append(head, fields, groupWrap, actions);
   shadow.append(card);
   host.setAttribute("aria-labelledby", title.id);
   host.setAttribute("aria-label", title.textContent ?? "friendlypass save login");
@@ -233,8 +279,10 @@ export function showSaveBanner(
     event.stopPropagation();
     try {
       const origin = new URL(request.url).origin;
+      // The background persists the opt-out in settings.siteExceptions as
+      // well as the pending store (WP6c), so it survives reloads and is
+      // listed on the options page.
       void sendBackgroundMessage("submit.never", { origin });
-      void rememberNeverForSite(origin);
     } catch {
       // An unparsable URL cannot be remembered; the card still closes.
     }
@@ -248,15 +296,22 @@ export function showSaveBanner(
     save.disabled = true;
     dismiss.disabled = true;
     never.disabled = true;
+    titleField.input.disabled = true;
+    usernameField.input.disabled = true;
+    // Read the fields at the moment of saving: the user may have corrected a
+    // detected username (common on signup forms) or the title.
+    const login = usernameField.input.value.trim();
+    const title = titleField.input.value.trim();
     void (async () => {
       try {
         const group = select.value || undefined;
         const result = await sendBackgroundMessage("logins.save", {
           url: request.url,
           submitUrl: request.submitUrl,
-          login: request.username,
+          login,
           password: request.password,
           uuid: request.uuid,
+          ...(title ? { title } : {}),
           ...(group ? { group } : {}),
         });
         if (result.ok && result.value.success) {
@@ -289,10 +344,19 @@ export function showSaveBanner(
   });
 
   shadow.addEventListener("keydown", (event) => {
-    if ((event as KeyboardEvent).key === "Escape") {
+    const key = (event as KeyboardEvent).key;
+    if (key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
       finish(true);
+      return;
+    }
+    // Enter in the editable title/username fields saves, exactly like the
+    // focused primary button. (Enter on the button itself already clicks it.)
+    if (key === "Enter" && event.target instanceof HTMLInputElement) {
+      event.preventDefault();
+      event.stopPropagation();
+      saveNow();
     }
   });
 

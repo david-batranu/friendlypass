@@ -147,6 +147,51 @@ function sanitiseSiteExceptions(value: unknown): SiteException[] {
   return out;
 }
 
+/**
+ * Add or merge a per-origin exception (WP6c).
+ *
+ * "Never for this site" must not create a second entry when the origin is
+ * already listed for another reason (for example fill disabled): the existing
+ * flags are preserved and only the requested ones are set. An unparsable
+ * origin leaves the list untouched.
+ */
+export function upsertSiteException(
+  entries: readonly SiteException[],
+  origin: string,
+  patch: Partial<Omit<SiteException, "origin">>,
+): SiteException[] {
+  const normalised = normaliseOrigin(origin);
+  if (normalised === null) {
+    return entries.map((entry) => ({ ...entry }));
+  }
+  const next = entries.map((entry) => ({ ...entry }));
+  const existing = next.find((entry) => entry.origin === normalised);
+  if (existing) {
+    if (typeof patch.disableFill === "boolean") {
+      existing.disableFill = patch.disableFill;
+    }
+    if (typeof patch.disableSave === "boolean") {
+      existing.disableSave = patch.disableSave;
+    }
+    if (typeof patch.disableIcons === "boolean") {
+      existing.disableIcons = patch.disableIcons;
+    }
+    return next;
+  }
+  const created: SiteException = { origin: normalised };
+  if (typeof patch.disableFill === "boolean") {
+    created.disableFill = patch.disableFill;
+  }
+  if (typeof patch.disableSave === "boolean") {
+    created.disableSave = patch.disableSave;
+  }
+  if (typeof patch.disableIcons === "boolean") {
+    created.disableIcons = patch.disableIcons;
+  }
+  next.push(created);
+  return next;
+}
+
 /** `chrome.storage.local` key holding the persisted {@link PersistedState}. */
 export const STORAGE_KEY = "friendlypass.state.v1";
 

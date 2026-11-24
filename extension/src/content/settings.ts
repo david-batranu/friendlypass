@@ -231,11 +231,12 @@ export async function readContentSettings(): Promise<ContentSettings> {
 }
 
 /**
- * Remember "Never for this site" in the unified exception list as well as the
- * pending-credential store (which the banner still calls separately).
+ * Remember "Never for this site" in the unified exception list.
  *
- * The write is best-effort: an older background that drops unknown settings
- * fields simply keeps the `submit.never` behaviour.
+ * Kept as a helper for callers that already hold the settings payload (the
+ * save card now routes this through the background's `submit.never` so the
+ * write cannot be lost if the page unloads). Existing flags for the origin are
+ * preserved; only `disableSave` is added.
  */
 export async function rememberNeverForSite(origin: string): Promise<void> {
   if (!origin) {
@@ -244,14 +245,21 @@ export async function rememberNeverForSite(origin: string): Promise<void> {
   try {
     const current = await sendBackgroundMessage("settings.get");
     const settings = normaliseSettings(current.ok ? current.value : null);
-    if (settings.siteExceptions.some((exception) => exception.origin === origin)) {
+    const existing = settings.siteExceptions.find(
+      (exception) => exception.origin === origin,
+    );
+    if (existing?.disableSave === true) {
       return;
     }
+    const siteExceptions = existing
+      ? settings.siteExceptions.map((exception) =>
+          exception.origin === origin
+            ? { ...exception, disableSave: true }
+            : exception,
+        )
+      : [...settings.siteExceptions, { origin, disableSave: true }];
     await sendBackgroundMessage("settings.set", {
-      siteExceptions: [
-        ...settings.siteExceptions,
-        { origin, disableSave: true },
-      ],
+      siteExceptions,
     } as unknown as Partial<ExtensionSettings>);
   } catch {
     // Never let bookkeeping break the banner's dismiss action.

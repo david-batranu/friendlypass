@@ -650,6 +650,7 @@ mod tests {
                     group_uuid: None,
                     uuid: None,
                     download_favicon: false,
+                    title: None,
                 })
             })
         };

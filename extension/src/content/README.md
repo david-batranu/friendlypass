@@ -47,7 +47,10 @@ stylesheet cannot hide or move the icon, menu, card or toast.
   dismisses after 60 s.
 - **Shortcuts** (`manifest.commands`, four suggested keys — Chrome's maximum):
   fill login `Ctrl/Cmd+Shift+L`, inline menu `Ctrl/Cmd+Shift+K`, generate
-  password `Ctrl/Cmd+Shift+G`, open popup `Ctrl/Cmd+Shift+O`.
+  password `Ctrl/Cmd+Shift+G`, open popup `Alt+Shift+F` (`Option+Shift+F` on
+  macOS). Chrome reserves `Ctrl/Cmd+Shift+O` for the bookmark manager, so it
+  cannot be used as an extension shortcut. The options page lists the effective
+  keys from `chrome.commands.getAll()`.
 
 ## Settings
 
@@ -61,10 +64,15 @@ autoFillAndSubmit: false, launchAppOnConnect: false, defaultGroup: "",
 defaultGroupAlwaysAsk: false, debugLogging: false, siteExceptions: []
 ```
 
-`settings.changed` is broadcast to every tab on each change; the content script
-applies the payload live (icons appear/disappear, fill/save are disabled).
-Per-origin `siteExceptions` (`disableFill`, `disableSave`, `disableIcons`) match
-the exact origin. The legacy WP4 key
+`settings.changed` is broadcast exactly once per `settings.set`: the state
+store's single `broadcastSettings` fans out to extension pages
+(`chrome.runtime.sendMessage`) and to every content-script frame in every tab
+(`chrome.tabs.sendMessage`). The content script applies the payload live
+(icons appear/disappear, fill/save are disabled). Per-origin `siteExceptions`
+(`disableFill`, `disableSave`, `disableIcons`) match the exact origin.
+"Never for this site" merges `disableSave: true` into the existing entry (or
+adds one) through `settings.set`, so it survives page and extension reloads and
+is listed on the options page. The legacy WP4 key
 `chrome.storage.local["friendlypass.content.settings.v1"]`
 (`{ autoFillSingleEntry, showIcons }`) is still read as a fallback so existing
 installs keep their behaviour.
@@ -76,6 +84,7 @@ installs keep their behaviour.
 - `submit.store` — remember a just-submitted pair before the page can unload
 - `submit.pending` — consume the pair on the next page in the same tab/site
 - `submit.clear`, `submit.never` — dismiss/opt out of the save offer
+- `popup.open` — open the action popup (or its fallback window) from the menu
 - `totp.get` — current code, with the `get-logins` value as fallback
 - `password.generate` — generator for signup/password-change forms
 - `groups.list` — save-card group picker
@@ -90,15 +99,21 @@ installs keep their behaviour.
 The pending store lives in `chrome.storage.session` (never on disk), keyed by
 tab, and is only returned to the frame that submitted the form, on the same
 registrable site, within 60 s. Two loopback ports are different sites, and
-"Never for this site" marks the origin in the pending store and (when the
-background accepts it) in `siteExceptions`.
+"Never for this site" marks the origin in the pending store and merges
+`disableSave: true` into `siteExceptions` (visible and removable in options).
 
 ## Known gaps
 
 - No passkeys, custom login fields, StringField filling, segmented TOTP boxes,
   auto-submit or context-menu fill.
-- "Open friendlypass" points at the toolbar; a content script cannot open the
-  action popup itself.
+- The action popup is opened through a `popup.open` background request:
+  `chrome.action.openPopup()` when Chrome accepts it, otherwise a small popup
+  window. Chrome may decline the API without a user gesture; the fallback is
+  then used.
+- The save card's editable title is sent as the optional `[friendlypass]`
+  `title` field of `set-login`; new entries use it and updates rewrite the title
+  only when the user changed it. Without it, the entry title remains derived
+  from the URL host.
 - The 60 s auto-dismiss is covered by a unit assertion on the constant, not by
   a 60 s browser test.
 - A pending submission is offered only once (it is consumed when the card is

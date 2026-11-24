@@ -395,9 +395,15 @@ function closeForUser(): void {
   suppressAutoOpenUntil = Date.now() + AUTO_OPEN_SUPPRESS_MS;
 }
 
-function openFriendlypassApp(): void {
-  // The action popup can only be opened from an extension page; content
-  // scripts have no API for it, so point the user at the toolbar instead.
+async function openFriendlypassApp(): Promise<void> {
+  try {
+    const result = await sendBackgroundMessage("popup.open");
+    if (result.ok && result.value.opened) {
+      return;
+    }
+  } catch {
+    // Fall through to the toolbar hint.
+  }
   showNotification("info", "Open friendlypass from the toolbar to manage logins.");
 }
 
@@ -443,7 +449,7 @@ function openLockedMenu(field: HTMLInputElement): void {
       if (action.id === UNLOCK_ITEM_ID) {
         settle(unlockFriendlypass(), "unlock");
       } else {
-        openFriendlypassApp();
+        settle(openFriendlypassApp(), "open-friendlypass");
       }
     },
     onClose: (reason) => {
@@ -470,7 +476,7 @@ function openAppMenu(field: HTMLInputElement, emptyMessage: string): void {
     actions,
     onAction: (action) => {
       if (action.id === OPEN_APP_ITEM_ID) {
-        openFriendlypassApp();
+        settle(openFriendlypassApp(), "open-friendlypass");
       }
     },
     onClose: (reason) => {
@@ -563,7 +569,7 @@ function openTotpMenu(field: HTMLInputElement, focusSearch: boolean): void {
     },
     onAction: (action, activeEntry) => {
       if (action.id === OPEN_APP_ITEM_ID) {
-        openFriendlypassApp();
+        settle(openFriendlypassApp(), "open-friendlypass");
         return;
       }
       if (action.id !== FILL_TOTP_ITEM_ID) {
@@ -933,6 +939,7 @@ function showBannerForSubmission(
       password: submitted.password,
       url,
       ...(submitted.submitUrl ? { submitUrl: submitted.submitUrl } : {}),
+      ...(existing?.name ? { title: existing.name } : {}),
       ...(existing ? { uuid: existing.uuid } : {}),
     },
     {
@@ -1261,6 +1268,7 @@ function registerHandlers(): void {
           username: entry.login,
           password: entry.password,
           url: document.location.href,
+          ...(entry.name ? { title: entry.name } : {}),
           ...(kind === "update" ? { uuid: entry.uuid } : {}),
         }, {
           groupAlwaysAsk: settings.defaultGroupAlwaysAsk,

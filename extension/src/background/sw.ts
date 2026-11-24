@@ -24,7 +24,6 @@ import type {
   BackgroundRequestArgs,
   BackgroundRequestResult,
   ConnectionSnapshot,
-  ExtensionSettings,
   HostPingResponse,
   ProtocolError,
   StatusSummary,
@@ -40,7 +39,8 @@ import type { NativeTransport, TransportStateEvent } from "./transport";
 import { ensureWatchdogAlarm, registerLifecycleListeners } from "./lifecycle";
 import { createSession } from "./session";
 import type { ProtocolSession } from "./session";
-import { createStateStore } from "./state";
+import { broadcastEvent } from "./broadcast";
+import { createStateStore, normaliseOrigin, upsertSiteException } from "./state";
 import type { StateStore } from "./state";
 import {
   createNewGroup,
@@ -83,7 +83,12 @@ const rejectionLog: string[] = [];
 
 function getStateStore(): StateStore {
   if (stateStore === null) {
-    stateStore = createStateStore();
+    stateStore = createStateStore({
+      // WP6c: the one `settings.changed` path. It reaches extension pages and
+      // every content-script frame; the old storage.onChanged fan-out is gone.
+      broadcastSettings: (settings) =>
+        broadcastEvent("settings.changed", settings),
+    });
   }
   return stateStore;
 }
@@ -409,8 +414,23 @@ function buildBackgroundHandlers(): BackgroundHandlers {
     },
 
     "submit.never": async (args, sender) => {
-      if (typeof args.origin === "string" && args.origin) {
-        await getPendingStore().never(args.origin);
+      const requested =
+        typeof args.origin === "string" && args.origin
+          ? args.origin
+          : (sender.url ?? "");
+      const origin = normaliseOrigin(requested);
+      if (origin !== null) {
+        await getPendingStore().never(origin);
+        // WP6c: persist the opt-out in the unified settings too, merging with
+        // any existing flags for this origin. The options page lists and can
+        // remove it; the content scripts apply it on the next page load.
+        const store = getStateStore();
+        const current = await store.getSettings();
+        await store.setSettings({
+          siteExceptions: upsertSiteException(current.siteExceptions, origin, {
+            disableSave: true,
+          }),
+        });
       }
       const tabId = sender.tab?.id;
       if (typeof tabId === "number") {
@@ -424,6 +444,8 @@ function buildBackgroundHandlers(): BackgroundHandlers {
       }
       return fillTabFromPopup(args);
     },
+
+    "popup.open": async (_args, sender) => openPopupForTab(sender.tab?.id),
   };
 }
 
@@ -442,6 +464,7 @@ interface DebugBridge {
     args?: BackgroundRequestArgs<A>,
   ): Promise<BackgroundRequestResult<A>>;
   rejections(): string[];
+  popupStats(): PopupOpenStats;
 }
 
 function installDebugBridge(handlers: BackgroundHandlers): void {
@@ -458,6 +481,9 @@ function installDebugBridge(handlers: BackgroundHandlers): void {
     },
     rejections() {
       return [...rejectionLog];
+    },
+    popupStats() {
+      return { ...popupOpenStats };
     },
   };
   (globalThis as unknown as { __friendlypassDebug?: DebugBridge }).__friendlypassDebug =
@@ -501,15 +527,12 @@ function fillActiveTabFromCommand(): void {
 }
 
 // ---------------------------------------------------------------------------
-// WP6b — in-page UI commands and settings broadcast (owned by WP6b)
+// WP6b — in-page UI commands (settings fan-out lives in broadcast.ts)
 // ---------------------------------------------------------------------------
 //
 // These are deliberately self-contained: WP6a owns the settings types and the
 // popup/options, so this block speaks the shared raw internal envelope instead
 // of extending `ContentCommandMap`/`BackgroundEventMap`.
-
-const WP6B_STATE_STORAGE_KEY = "friendlypass.state.v1";
-let lastBroadcastSettings = "";
 
 /** Fire-and-forget raw internal command to every frame of a tab. */
 function sendWp6bContentCommand(tabId: number, action: string): void {
@@ -569,90 +592,15 @@ function generatePasswordFromCommand(): void {
 }
 
 /**
- * Send a raw internal event to every frame of every tab. Chrome's
- * `runtime.sendMessage` reaches extension pages; content scripts are only
- * reliably reachable per tab, so both paths are used.
+ * Content scripts must see lock/unlock/app-down transitions without a reload.
+ * Extension pages are covered by the state store's own `sendBackgroundEvent`;
+ * this adds the per-tab delivery. `settings.changed` does not use this path:
+ * it is emitted once by the state store's `broadcastSettings` (WP6c).
  */
-function broadcastToTabs(action: string, args: unknown): void {
-  const envelope = {
-    channel: INTERNAL_CHANNEL,
-    action,
-    args,
-    requestId: newRequestId(),
-  };
-  void chrome.tabs
-    .query({})
-    .then((tabs) => {
-      for (const tab of tabs) {
-        if (typeof tab.id !== "number") {
-          continue;
-        }
-        try {
-          chrome.tabs.sendMessage(tab.id, envelope, () => {
-            void chrome.runtime.lastError;
-          });
-        } catch {
-          // Tab closed or not scriptable.
-        }
-      }
-    })
-    .catch(() => undefined);
-}
-
-/**
- * `settings.changed` broadcast (WP6 shared contract). Fires whenever the
- * persisted settings record changes; content scripts apply the payload live.
- */
-function broadcastSettingsChanged(next: ExtensionSettings): void {
-  const fingerprint = JSON.stringify(next);
-  if (fingerprint === lastBroadcastSettings) {
-    return;
-  }
-  lastBroadcastSettings = fingerprint;
-  const envelope = {
-    channel: INTERNAL_CHANNEL,
-    action: "settings.changed",
-    args: next,
-    requestId: newRequestId(),
-  };
-  try {
-    const pending = chrome.runtime.sendMessage(envelope) as unknown;
-    if (
-      typeof pending === "object" &&
-      pending !== null &&
-      typeof (pending as Promise<unknown>).catch === "function"
-    ) {
-      (pending as Promise<unknown>).catch(() => undefined);
-    }
-  } catch {
-    // No listener alive: events are best-effort by design.
-  }
-  // `runtime.sendMessage` covers extension pages; content scripts are also
-  // reachable per tab, which is what "broadcast to all tabs" means here.
-  broadcastToTabs("settings.changed", next);
-}
-
-function installSettingsBroadcast(): void {
-  try {
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== "local" || !changes[WP6B_STATE_STORAGE_KEY]) {
-        return;
-      }
-      void getStateStore()
-        .getSettings()
-        .then((next) => broadcastSettingsChanged(next))
-        .catch(() => undefined);
-    });
-  } catch (cause) {
-    debug("settings", `broadcast listener not installed: ${messageOf(cause)}`);
-  }
-
-  // Content scripts must see lock/unlock/app-down transitions without a
-  // reload. `sendBackgroundEvent` already covers extension pages; the tab
-  // fan-out covers every content-script frame (WP6b owns this path).
+function installStatusTabBroadcast(): void {
   try {
     getStateStore().subscribe((next) => {
-      broadcastToTabs("status.changed", next);
+      broadcastEvent("status.changed", next);
     });
   } catch (cause) {
     debug("status", `tab broadcast not installed: ${messageOf(cause)}`);
@@ -680,13 +628,93 @@ function installContentCommandListener(): void {
     debug("command", `listener not installed: ${messageOf(cause)}`);
   }
 
-  // --- WP6b: settings.changed fan-out --------------------------------------
-  installSettingsBroadcast();
+  // --- WP6b: status tab fan-out (settings use the state store path) --------
+  installStatusTabBroadcast();
 }
 
 // ---------------------------------------------------------------------------
 // WP6a — popup/options support (owner: WP6a; keep edits inside this block)
 // ---------------------------------------------------------------------------
+
+interface PopupOpenStats {
+  attempts: number;
+  action: number;
+  fallback: number;
+  failed: number;
+  lastError: string | null;
+}
+
+const popupOpenStats: PopupOpenStats = {
+  attempts: 0,
+  action: 0,
+  fallback: 0,
+  failed: 0,
+  lastError: null,
+};
+
+/** How long `action.openPopup()` may hang before the fallback window is used. */
+const POPUP_OPEN_TIMEOUT_MS = 750;
+
+/**
+ * Open the action popup for the tab that asked (WP6c). Recent Chrome exposes
+ * `chrome.action.openPopup()`; where it is unavailable, rejects because the
+ * user-gesture token did not survive the content-script message, or never
+ * settles in headless mode, open the same page in a small popup window
+ * instead, scoped to that tab.
+ */
+async function openPopupForTab(
+  tabId?: number,
+): Promise<{ opened: boolean; via: "action" | "fallback" }> {
+  popupOpenStats.attempts += 1;
+  const actionApi = chrome.action as unknown as {
+    openPopup?: () => Promise<void>;
+  };
+  if (typeof actionApi.openPopup === "function") {
+    const pending = actionApi.openPopup();
+    let timer: number | null = null;
+    const timedOut = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), POPUP_OPEN_TIMEOUT_MS);
+    });
+    try {
+      const outcome = await Promise.race([
+        pending.then(() => "opened" as const),
+        timedOut,
+      ]);
+      if (outcome === "opened") {
+        popupOpenStats.action += 1;
+        return { opened: true, via: "action" };
+      }
+      popupOpenStats.lastError = "action.openPopup did not settle";
+      pending.catch(() => undefined);
+    } catch (cause) {
+      popupOpenStats.lastError = messageOf(cause);
+      debug("popup", `action.openPopup unavailable: ${popupOpenStats.lastError}`);
+    } finally {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+    }
+  }
+  try {
+    const base = chrome.runtime.getURL("popup/popup.html");
+    const url =
+      typeof tabId === "number" ? `${base}?tab=${encodeURIComponent(tabId)}` : base;
+    await chrome.windows.create({
+      url,
+      type: "popup",
+      width: 380,
+      height: 620,
+      focused: true,
+    });
+    popupOpenStats.fallback += 1;
+    return { opened: true, via: "fallback" };
+  } catch (cause) {
+    popupOpenStats.failed += 1;
+    popupOpenStats.lastError = messageOf(cause);
+    debug("popup", `fallback window failed: ${popupOpenStats.lastError}`);
+    return { opened: false, via: "fallback" };
+  }
+}
 
 /** True when a message came from our own popup page (not a content script). */
 function isPopupSender(sender: chrome.runtime.MessageSender): boolean {

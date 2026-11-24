@@ -1128,7 +1128,9 @@ stackTest("menu opens on empty field focus without stealing focus, and follows s
   });
 });
 
-stackTest("no menu matches offers Open friendlypass", async ({ stack }) => {
+stackTest("no menu matches offers Open friendlypass and opens the popup", async ({
+  stack,
+}) => {
   const page = await openPage(stack, "/no-match");
   await expect(loginIcon(page)).toHaveAttribute(
     "data-friendlypass-state",
@@ -1144,6 +1146,56 @@ stackTest("no menu matches offers Open friendlypass", async ({ stack }) => {
   await shot(page, "menu-empty");
   await menuAction(page, "open-friendlypass").click();
   await expect(page.locator('[data-friendlypass="menu"]')).toHaveCount(0);
+
+  // The content script asks the service worker; either the action popup opens
+  // or the fallback window is created. Both are observable.
+  await expect
+    .poll(
+      async () => {
+        const current = await stack.harness.swEvaluate(async () => {
+          const debug = (
+            globalThis as unknown as {
+              __friendlypassDebug?: {
+                popupStats(): {
+                  attempts: number;
+                  action: number;
+                  fallback: number;
+                };
+              };
+            }
+          ).__friendlypassDebug;
+          return debug?.popupStats() ?? null;
+        });
+        return (current?.action ?? 0) + (current?.fallback ?? 0);
+      },
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThan(0);
+
+  const stats = await stack.harness.swEvaluate(async () => {
+    const debug = (
+      globalThis as unknown as {
+        __friendlypassDebug?: {
+          popupStats(): { attempts: number; action: number; fallback: number };
+        };
+      }
+    ).__friendlypassDebug;
+    return debug?.popupStats() ?? null;
+  });
+  expect(stats).not.toBeNull();
+  expect(stats?.attempts ?? 0).toBeGreaterThan(0);
+
+  if ((stats?.fallback ?? 0) > 0) {
+    await expect
+      .poll(
+        () =>
+          stack.harness.context
+            .pages()
+            .some((candidate) => candidate.url().includes("popup/popup.html")),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+  }
 });
 
 stackTest("locked icon opens the unlock menu", async ({ stack }) => {
@@ -1467,4 +1519,11 @@ stackTest("all four WP6b shortcuts are registered", async ({ stack }) => {
     expect(manifestCommands[name]?.suggested_key?.default, name).toBeTruthy();
     expect(manifestCommands[name]?.suggested_key?.mac, name).toBeTruthy();
   }
+
+  // WP6c: Ctrl/Cmd+Shift+O belongs to Chrome's bookmark manager, so the popup
+  // uses Alt/Option+Shift+F instead.
+  expect(manifestCommands["_execute_action"]?.suggested_key).toEqual({
+    default: "Alt+Shift+F",
+    mac: "Alt+Shift+F",
+  });
 });

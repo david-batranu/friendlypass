@@ -276,6 +276,74 @@ exceptionForm.addEventListener("submit", (event) => {
 });
 
 // ---------------------------------------------------------------------------
+// Shortcuts (WP6c)
+// ---------------------------------------------------------------------------
+
+/**
+ * Effective shortcuts reported by Chrome. Headless Chromium may return an
+ * empty string for a suggested key that was not resolved, so the row says
+ * "Not set" instead of pretending the manifest suggestion is active.
+ */
+const SHORTCUT_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  "fill-login": "Fill login",
+  "open-inline-menu": "Open the inline menu",
+  "generate-password": "Generate password",
+  "_execute_action": "Open friendlypass",
+});
+
+const shortcutList = byId("shortcut-list");
+const shortcutsHint = byId("shortcuts-hint");
+
+function shortcutLabel(command: chrome.commands.Command): string {
+  const known = command.name ? SHORTCUT_LABELS[command.name] : undefined;
+  return known ?? command.description ?? command.name ?? "Shortcut";
+}
+
+async function refreshShortcuts(): Promise<void> {
+  shortcutList.replaceChildren();
+  let commands: chrome.commands.Command[] = [];
+  try {
+    commands = await chrome.commands.getAll();
+  } catch {
+    shortcutsHint.textContent =
+      "Open chrome://extensions/shortcuts to review the keys.";
+    return;
+  }
+  for (const command of commands) {
+    if (!command.name) {
+      continue;
+    }
+    const row = el("li", { className: "shortcut-row" });
+    const label = el("span", {
+      className: "shortcut-label",
+      text: shortcutLabel(command),
+    });
+    if (command.shortcut && command.shortcut.trim().length > 0) {
+      const keys = el("kbd", { text: command.shortcut });
+      row.append(label, keys);
+    } else {
+      row.append(
+        label,
+        el("span", {
+          className: "shortcut-unset",
+          text: "Not set — choose one in chrome://extensions/shortcuts",
+        }),
+      );
+    }
+    shortcutList.append(row);
+  }
+}
+
+byId("open-shortcuts").addEventListener("click", () => {
+  void chrome.tabs
+    .create({ url: "chrome://extensions/shortcuts" })
+    .catch(() => {
+      shortcutsHint.textContent =
+        "Open chrome://extensions/shortcuts in a new tab to change shortcuts.";
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Connection
 // ---------------------------------------------------------------------------
 
@@ -407,7 +475,7 @@ async function boot(): Promise<void> {
   });
 
   await refreshSettings();
-  await Promise.all([refreshStatus(), refreshDiagnostics()]);
+  await Promise.all([refreshStatus(), refreshDiagnostics(), refreshShortcuts()]);
 }
 
 void boot().catch(() => {

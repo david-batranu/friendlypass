@@ -720,7 +720,8 @@ Inner request (create):
   "submitUrl": "https://accounts.example.com/login",
   "group": "KeePassXC-Browser Passwords",
   "groupUuid": "bb710c2f876761bb90748cc271ff8fae",
-  "downloadFavicon": "true"
+  "downloadFavicon": "true",
+  "title": "Example account"
 }
 ```
 
@@ -736,6 +737,7 @@ ignored on update).
 | `uuid` | no | update an existing entry; must be a valid UUID (error 18) |
 | `group`, `groupUuid` | no | target group on create |
 | `downloadFavicon` | no | `"true"` on create only |
+| `title` | no | **[friendlypass]** entry title. On create a non-empty value replaces the URL-derived title. On update it replaces the existing title only when it differs; absent or empty keeps the current title. KeePassXC ignores this unknown field, so the official extension and KeePassXC remain compatible. |
 
 Inner response:
 

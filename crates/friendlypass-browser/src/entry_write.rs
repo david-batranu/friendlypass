@@ -39,6 +39,14 @@ pub fn apply_set_login(db: &mut Database, request: &SetLoginRequest) -> bool {
         entry.set_unprotected(fields::USERNAME, &request.login);
         entry.set_protected(fields::PASSWORD, &request.password);
         entry.set_unprotected(fields::URL, &request.url);
+        // [friendlypass] Change the title only when the extension supplied a
+        // non-empty value that differs. The save card prefills the existing
+        // title on updates, so an untouched field is a no-op.
+        if let Some(title) = request.title.as_deref().filter(|value| !value.is_empty()) {
+            if entry.get(fields::TITLE) != Some(title) {
+                entry.set_unprotected(fields::TITLE, title);
+            }
+        }
         if let Some(submit) = &request.submit_url {
             if submit != &request.url {
                 entry.set_unprotected("KP2A_URL", submit);
@@ -52,7 +60,13 @@ pub fn apply_set_login(db: &mut Database, request: &SetLoginRequest) -> bool {
             return false;
         };
         let mut entry = group.add_entry();
-        entry.set_unprotected(fields::TITLE, title_for_url(&request.url));
+        let title = request
+            .title
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| title_for_url(&request.url));
+        entry.set_unprotected(fields::TITLE, &title);
         entry.set_unprotected(fields::USERNAME, &request.login);
         entry.set_protected(fields::PASSWORD, &request.password);
         entry.set_unprotected(fields::URL, &request.url);
@@ -118,6 +132,7 @@ mod tests {
             group_uuid: None,
             uuid: None,
             download_favicon: false,
+            title: None,
         }
     }
 
@@ -132,6 +147,61 @@ mod tests {
         assert_eq!(entry.get(fields::USERNAME), Some("alice@example.com"));
         assert_eq!(entry.get(fields::PASSWORD), Some("s3cret"));
         assert_eq!(entry.get(fields::URL), Some("https://www.example.com/login"));
+    }
+
+    #[test]
+    fn create_uses_a_supplied_title_instead_of_the_url_host() {
+        let mut db = Database::new();
+        let mut create = request("https://www.example.com/login");
+        create.title = Some("My custom title".into());
+        assert!(apply_set_login(&mut db, &create));
+        let entry = db.iter_all_entries().next().expect("one entry");
+        assert_eq!(entry.get(fields::TITLE), Some("My custom title"));
+    }
+
+    #[test]
+    fn update_only_changes_the_title_when_the_requested_value_differs() {
+        let mut db = Database::new();
+        let mut create = request("https://example.com/login");
+        create.title = Some("Original title".into());
+        assert!(apply_set_login(&mut db, &create));
+        let uuid = db
+            .iter_all_entries()
+            .next()
+            .unwrap()
+            .id()
+            .uuid()
+            .simple()
+            .to_string();
+
+        // Same title from the prefilled save card: no change.
+        let mut same = request("https://example.com/login");
+        same.uuid = Some(uuid.clone());
+        same.title = Some("Original title".into());
+        assert!(apply_set_login(&mut db, &same));
+        assert_eq!(
+            db.iter_all_entries().next().unwrap().get(fields::TITLE),
+            Some("Original title")
+        );
+
+        // Absent title: keep the existing one.
+        let mut absent = request("https://example.com/login");
+        absent.uuid = Some(uuid.clone());
+        assert!(apply_set_login(&mut db, &absent));
+        assert_eq!(
+            db.iter_all_entries().next().unwrap().get(fields::TITLE),
+            Some("Original title")
+        );
+
+        // A changed title is applied.
+        let mut changed = request("https://example.com/login");
+        changed.uuid = Some(uuid);
+        changed.title = Some("Renamed by user".into());
+        assert!(apply_set_login(&mut db, &changed));
+        assert_eq!(
+            db.iter_all_entries().next().unwrap().get(fields::TITLE),
+            Some("Renamed by user")
+        );
     }
 
     #[test]

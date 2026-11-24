@@ -119,10 +119,28 @@
         </div>
       </section>
 
-      <section class="fp-card group" aria-labelledby="group-exceptions">
+      <section class="fp-card group" id="shortcuts-section" aria-labelledby="group-shortcuts">
+        <h2 id="group-shortcuts">Shortcuts</h2>
+        <p class="fp-muted">
+          These are the keys Chrome currently reports for friendlypass. Change them in
+          <code>chrome://extensions/shortcuts</code>.
+        </p>
+        <ul class="shortcut-list" id="shortcut-list" aria-live="polite"></ul>
+        <div class="shortcut-actions">
+          <button class="fp-button fp-button--small" id="open-shortcuts" type="button">
+            Open shortcut settings
+          </button>
+          <span class="fp-muted" id="shortcuts-hint">
+            chrome://extensions/shortcuts
+          </span>
+        </div>
+      </section>
+
+      <section class="fp-card group" id="exceptions-section" aria-labelledby="group-exceptions">
         <h2 id="group-exceptions">Site exceptions</h2>
         <p class="fp-muted">
           Turn filling, saving or icons off for specific sites. Origins are matched exactly.
+          “Never for this site” on the save card adds the origin here with saving off.
         </p>
 
         <form class="exception-form" id="exception-form" novalidate>
