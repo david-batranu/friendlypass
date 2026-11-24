@@ -14,6 +14,7 @@ pub mod app;
 pub mod autotype;
 pub mod brand;
 pub mod browser;
+pub mod browser_bridge;
 pub mod clipboard;
 pub mod config;
 pub mod dialogs;
