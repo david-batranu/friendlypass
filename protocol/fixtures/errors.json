@@ -1,0 +1,359 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "Unencrypted error replies. `errorCode` is a STRING and there is no nonce: correlate by `action`. Codes 0-37 are KeePassXC-compatible; 1000+ are friendlypass host errors.",
+  "vectors": [
+    {
+      "name": "error/database-not-opened",
+      "action": "get-logins",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "The app has no unlocked database. `triggerUnlock: \"true\"` on the outer frame may raise the unlock UI.",
+      "request": {
+        "nonce": "8fj/Bg0UGyIpMDc+RUxTWmFob3Z9hIuS",
+        "plaintextJson": "{\"action\":\"get-logins\",\"url\":\"https://example.com\"}",
+        "plaintext": {
+          "action": "get-logins",
+          "url": "https://example.com"
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "bSfjvrT0plY3eK5nfHuNmTE85dlx9z+nsiVWVjI1N1zIlkZaaqhbNcBMF1EykAsXRLrlEInUnU0g67SmNkB0BXcLmA==",
+          "nonce": "8fj/Bg0UGyIpMDc+RUxTWmFob3Z9hIuS",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "get-logins",
+          "error": "Database not opened",
+          "errorCode": "1"
+        }
+      }
+    },
+    {
+      "name": "error/database-hash-not-received",
+      "action": "get-databasehash",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "No database hash could be produced (database closed or no root group). Clients MUST treat this as closed, not as a successful empty hash.",
+      "request": {
+        "nonce": "EBceJSwzOkFIT1ZdZGtyeYCHjpWco6qx",
+        "plaintextJson": "{\"action\":\"get-databasehash\"}",
+        "plaintext": {
+          "action": "get-databasehash"
+        },
+        "frame": {
+          "action": "get-databasehash",
+          "message": "TRAyzRWa+kyl1sy5UD342O7xeNlcWupS+rCgwUU0dlOeeQlopRliEH4jSR6g",
+          "nonce": "EBceJSwzOkFIT1ZdZGtyeYCHjpWco6qx",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "get-databasehash",
+          "error": "Database hash not available",
+          "errorCode": "2"
+        }
+      }
+    },
+    {
+      "name": "error/client-public-key-not-received",
+      "action": "test-associate",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "An encrypted action arrived before `change-public-keys` established the session key.",
+      "request": {
+        "nonce": "LzY9REtSWWBnbnV8g4qRmJ+mrbS7wsnQ",
+        "plaintextJson": "{\"action\":\"test-associate\",\"id\":\"chrome-work-laptop\",\"key\":\"gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=\"}",
+        "plaintext": {
+          "action": "test-associate",
+          "id": "chrome-work-laptop",
+          "key": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8="
+        },
+        "frame": {
+          "action": "test-associate",
+          "message": "KQoA2XZugi7dFEUAeWbqoYGQI85j0imxME6/Xc7fHEfWT5BMqUgIe507JD4YdLKdbjNFSu18tpKC8D6R990y+GJZ6IuDoajlxrgCqW44YW22cyytAXufn6E47Hgb0HSEzQVZwUuPNCfYMtEiuUZ7dOSnc3cl1Lo3rL4=",
+          "nonce": "LzY9REtSWWBnbnV8g4qRmJ+mrbS7wsnQ",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "test-associate",
+          "error": "Client public key not received",
+          "errorCode": "3"
+        }
+      }
+    },
+    {
+      "name": "error/cannot-decrypt-message",
+      "action": "get-logins",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "Wrong key/nonce, corrupt Base64, truncated ciphertext or invalid inner JSON.",
+      "request": {
+        "nonce": "TlVcY2pxeH+GjZSboqmwt77FzNPa4ejv",
+        "plaintextJson": "{\"action\":\"get-logins\",\"url\":\"https://example.com\"}",
+        "plaintext": {
+          "action": "get-logins",
+          "url": "https://example.com"
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "6dt5JGZwOZHbdwVib7kGX5gbDfk8g9JBdijF2aW1Cbd1jBDxvK+pIvWOyYt2DhjO81Il39J47iqYQre+OXyLAmk0Tg==",
+          "nonce": "TlVcY2pxeH+GjZSboqmwt77FzNPa4ejv",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "get-logins",
+          "error": "Cannot decrypt message",
+          "errorCode": "4"
+        }
+      }
+    },
+    {
+      "name": "error/association-failed",
+      "action": "test-associate",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "Unknown association id or a key that does not match the stored identification key. Also returned for a mismatched `associate` key.",
+      "request": {
+        "nonce": "bXR7gomQl56lrLO6wcjP1t3k6/L5AAcO",
+        "plaintextJson": "{\"action\":\"test-associate\",\"id\":\"stale-id\",\"key\":\"gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=\"}",
+        "plaintext": {
+          "action": "test-associate",
+          "id": "stale-id",
+          "key": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8="
+        },
+        "frame": {
+          "action": "test-associate",
+          "message": "xcGygG1zcW2jOPdnA0hA8m80QF93l1hS6iUMhnn2AGUBNtt4Fb5eVl4oSL2aWGYF3+/2rhRC0XsIZ/xKHCBNLP39IPBfg7BUz4gEnfL8ocEfCYHfVZcaNN0tlzfwU29AuCoQbazIC7bicGjtBOPTHQ==",
+          "nonce": "bXR7gomQl56lrLO6wcjP1t3k6/L5AAcO",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "test-associate",
+          "error": "KeePassXC association failed, try again",
+          "errorCode": "8"
+        }
+      }
+    },
+    {
+      "name": "error/no-url-provided",
+      "action": "get-logins",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "`url` was empty or missing.",
+      "request": {
+        "nonce": "jJOaoaivtr3Ey9LZ4Ofu9fwDChEYHyYt",
+        "plaintextJson": "{\"action\":\"get-logins\",\"id\":\"chrome-work-laptop\"}",
+        "plaintext": {
+          "action": "get-logins",
+          "id": "chrome-work-laptop"
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "X46FnPMeYLqVyvU1/f1AAepWWJXu4oN1TsBax5tbG/21yEZBy5L5ivJQ1P4wtGgR5sFKAIIdtgQPwM09QWVkeP8=",
+          "nonce": "jJOaoaivtr3Ey9LZ4Ofu9fwDChEYHyYt",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "get-logins",
+          "error": "No URL provided",
+          "errorCode": "14"
+        }
+      }
+    },
+    {
+      "name": "error/no-logins-found",
+      "action": "get-logins",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "No entry matched the site (or all matches were denied). Not an error the user needs to see.",
+      "request": {
+        "nonce": "q7K5wMfO1dzj6vH4/wYNFBsiKTA3PkVM",
+        "plaintextJson": "{\"action\":\"get-logins\",\"id\":\"chrome-work-laptop\",\"url\":\"https://unknown.example/\"}",
+        "plaintext": {
+          "action": "get-logins",
+          "id": "chrome-work-laptop",
+          "url": "https://unknown.example/"
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "gw54jDAUVYPwZmH45qThd7rEDmJmME5JvxuIRJ8er9x4htMbOJlw9V+zdykXu3ELLgicrBZRoyWc9lC6jpY7lzquoplAGPbvj/ZFlyM77y+fAW5+bXrpk3lL0ri5gvPxeSc=",
+          "nonce": "q7K5wMfO1dzj6vH4/wYNFBsiKTA3PkVM",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "get-logins",
+          "error": "No logins found",
+          "errorCode": "15"
+        }
+      }
+    },
+    {
+      "name": "error/no-valid-uuid",
+      "action": "get-totp",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "UUIDs are dashless 32-hex RFC 4122 strings.",
+      "request": {
+        "nonce": "ytHY3+bt9PsCCRAXHiUsMzpBSE9WXWRr",
+        "plaintextJson": "{\"action\":\"get-totp\",\"uuid\":\"not-a-uuid\"}",
+        "plaintext": {
+          "action": "get-totp",
+          "uuid": "not-a-uuid"
+        },
+        "frame": {
+          "action": "get-totp",
+          "message": "MuB+vdh/+Nw7Tex9j5CLpheHy7MIaN10dDP2qdGXw1CmtYr2i3txDcFD6+niD7RZdKBURpsLg/bZ",
+          "nonce": "ytHY3+bt9PsCCRAXHiUsMzpBSE9WXWRr",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "get-totp",
+          "error": "No valid UUID provided",
+          "errorCode": "18"
+        }
+      }
+    },
+    {
+      "name": "error/cannot-use-references",
+      "action": "set-login",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "KeePassXC placeholders such as {REF:...} are rejected on save.",
+      "request": {
+        "nonce": "6fD3/gUMExohKC82PURLUllgZ251fIOK",
+        "plaintextJson": "{\"action\":\"set-login\",\"id\":\"chrome-work-laptop\",\"login\":\"{REF:u@I:1234}\",\"password\":\"x\",\"url\":\"https://example.com\"}",
+        "plaintext": {
+          "action": "set-login",
+          "id": "chrome-work-laptop",
+          "login": "{REF:u@I:1234}",
+          "password": "x",
+          "url": "https://example.com"
+        },
+        "frame": {
+          "action": "set-login",
+          "message": "6CbVfb41rVxJWHSwxtUj7BXJRnqFMf4cirWSfhkrq1tiwvxB5z6xH4YddK1oshIvvHDHBqk5bWgcX/C7s0iJKfyIrYJr8u8YCQ486Z+6jyA1KNwI1fkgy7Nxw9difk6/ELNZ52RRogGeB2JAZrGbEJ4qEp6dtaIJVDjbqcxQDrUzJVss",
+          "nonce": "6fD3/gUMExohKC82PURLUllgZ251fIOK",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "set-login",
+          "error": "Username or password cannot contain references",
+          "errorCode": "34"
+        }
+      }
+    },
+    {
+      "name": "error/host-frame-too-large",
+      "action": "",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "friendlypass extension: the native host discards a frame whose 4-byte length exceeds 1 MiB and answers with this typed error, keeping the process alive. `action` is empty because the body was not decoded.",
+      "request": null,
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "",
+          "error": "Message exceeds the 1 MiB frame limit",
+          "errorCode": "1001",
+          "hostError": true
+        }
+      }
+    },
+    {
+      "name": "error/host-app-unavailable",
+      "action": "get-logins",
+      "kind": "error",
+      "nonceRelation": "none",
+      "notes": "friendlypass extension: the app socket stayed down past the forwarding grace period. The host synthesises a KeePassXC-compatible code 5 so clients can retry.",
+      "request": null,
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "get-logins",
+          "error": "friendlypass is not running",
+          "errorCode": "5",
+          "hostError": true
+        }
+      }
+    }
+  ]
+}

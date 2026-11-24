@@ -1,0 +1,213 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "Credential lookup. Credentials are PLAINTEXT inside the encrypted message — never Base64. `httpAuth` is the HTTP Basic/Digest lookup path (friendlypass get-http-auth reuses it).",
+  "vectors": [
+    {
+      "name": "get-logins/plain-single-match",
+      "action": "get-logins",
+      "nonceRelation": "increment",
+      "notes": "Full entry shape: login, password, name, uuid, group, optional totp/expired/skipAutoSubmit/stringFields. The official extension types `login`/`password` verbatim.",
+      "request": {
+        "nonce": "2uHo7/b9BAsSGSAnLjU8Q0pRWF9mbXR7",
+        "plaintextJson": "{\"action\":\"get-logins\",\"id\":\"chrome-work-laptop\",\"url\":\"https://accounts.example.com/login\",\"keys\":[{\"id\":\"chrome-work-laptop\",\"key\":\"gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=\"}]}",
+        "plaintext": {
+          "action": "get-logins",
+          "id": "chrome-work-laptop",
+          "url": "https://accounts.example.com/login",
+          "keys": [
+            {
+              "id": "chrome-work-laptop",
+              "key": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8="
+            }
+          ]
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "8rY5/xnYEh5y3dTIEsA17MzshbiVoC912qZcss0wY6YSuxTVpchNsweITsPA75oc1sQseh74chROjs0YBR7VTo3RpiN/RjrblvcQMCEB4xg1pepR2PoHkDXhcBVhUycH9uezILR1vG5DMauwlZ1bkrJwnaPd8DLbaJiy2A5+bVzeaTa1rwvinzUwNRLAfhUuQ0gJxsmz6v8Gd7XTTGvcL7rB5COpxlYPQgEkTV2yIRkDB7VOpvRlaEtzyosTfU62eiBokJ2M",
+          "nonce": "2uHo7/b9BAsSGSAnLjU8Q0pRWF9mbXR7",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "2+Ho7/b9BAsSGSAnLjU8Q0pRWF9mbXR7",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"2+Ho7/b9BAsSGSAnLjU8Q0pRWF9mbXR7\",\"count\":1,\"entries\":[{\"login\":\"alice@example.com\",\"password\":\"correct horse battery staple\",\"name\":\"Example account\",\"uuid\":\"d5ec68c35705b72fde380bd469aa149f\",\"group\":\"KeePassXC-Browser Passwords\",\"totp\":\"123456\",\"skipAutoSubmit\":\"false\",\"stringFields\":[{\"KPH: pin\":\"4921\"}]}],\"hash\":\"4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb\",\"id\":\"chrome-work-laptop\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "2+Ho7/b9BAsSGSAnLjU8Q0pRWF9mbXR7",
+          "count": 1,
+          "entries": [
+            {
+              "login": "alice@example.com",
+              "password": "correct horse battery staple",
+              "name": "Example account",
+              "uuid": "d5ec68c35705b72fde380bd469aa149f",
+              "group": "KeePassXC-Browser Passwords",
+              "totp": "123456",
+              "skipAutoSubmit": "false",
+              "stringFields": [
+                {
+                  "KPH: pin": "4921"
+                }
+              ]
+            }
+          ],
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+          "id": "chrome-work-laptop"
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "UgVFE2/w7QJoB69XK65aZ2ZFPZ+DfLl5K5YEP3RqphLCx/MGsBC6NNG5I94li6C6p7k3TaTyyPBtLCNf20eY8wZ0bl8Hah1OsBDinUBxNeijbc2SsKUPzBqB0H4EX9zpM8D73UfaScCxVQEe5DtGxcnWKzfsjfwCzUSfDRCBHwkHaWAVIiSV+Z9i00YrY1LBmvJWaweZgWaG2kHvW8VvX7nw1XGwWtgFrAaqnYDJ39H1NKkbRU3bUL3/ODw01t9mUOsYDJ5k9fe8wvBPV2Tgc/EPwjNbon5SB4vswJUzhvijEsA16tw75oo7d+jQXa33DWq8uCquhEK89qKFTpLgUgJXkPu0m0xey1t462VTng674b8ckOHmm91xurPlnam3hlWVSra2ghQ4jNg2/tKsOVgF+4hDTKpbz3Eu1Z6gQ/PcoTPNWaoWCH+3FlGpX5VF5O8WP2JE+usob7UzQC2xxgmiFSp9kOKvf3qq5MSooyidtslhXvGAWAjqYVYY9sH5z3hc+i/faMrTD1hs1JETiAtxEePk2t37mLeoxxWJa82J60N5lQAh+riJaaPmfKbRea+Mw86E//4KzrMZlp//Zlby7Uc7g/go5QLofj/JKiLXU8uxi+q4Rg==",
+          "nonce": "2+Ho7/b9BAsSGSAnLjU8Q0pRWF9mbXR7"
+        }
+      }
+    },
+    {
+      "name": "get-logins/multiple-with-expired",
+      "action": "get-logins",
+      "nonceRelation": "increment",
+      "notes": "Multiple matches in priority order (best URL match first). Expired entries carry `expired: \"true\"`; the app filters them unless the user allowed expired credentials. `count` is a JSON number.",
+      "request": {
+        "nonce": "+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa",
+        "plaintextJson": "{\"action\":\"get-logins\",\"id\":\"chrome-work-laptop\",\"url\":\"https://accounts.example.com/login\",\"submitUrl\":\"https://login.example.com/session\",\"keys\":[{\"id\":\"chrome-work-laptop\",\"key\":\"gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=\"}]}",
+        "plaintext": {
+          "action": "get-logins",
+          "id": "chrome-work-laptop",
+          "url": "https://accounts.example.com/login",
+          "submitUrl": "https://login.example.com/session",
+          "keys": [
+            {
+              "id": "chrome-work-laptop",
+              "key": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8="
+            }
+          ]
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "/Z7RQLhXPysghXI5teI0wZgmJcyhIC9sZehGHuWLG9A9B/Vgst+cVVeSZ02dhnih97EvWJo5dmgkGx0kKXeVe0uNj+dLg5UDpMzL4NJzkMn+J7/q6NmITh63NK7NMIX7IkBSna2caEQzzeWxgPHVTqF50YBkSTv/tm7MJ87fdtd50q4egNqJSqAjOpXTUjj+fCu6XYd2Yylns2Wu1q4KnBuquOTDPdqV6HKhI/SmSlKfmh4ocYNVI6vllvBaotTsycUtBFf737P9aGvwJsYusSNc/q+dpyf6rvnLkY8RO/IVStw+f4QJz1W1xZH9eIuQd3soyTdF",
+          "nonce": "+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "+gAHDhUcIyoxOD9GTVRbYmlwd36FjJOa",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"+gAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\",\"count\":2,\"entries\":[{\"login\":\"alice@example.com\",\"password\":\"correct horse battery staple\",\"name\":\"Example account\",\"uuid\":\"d5ec68c35705b72fde380bd469aa149f\",\"group\":\"KeePassXC-Browser Passwords\"},{\"login\":\"old-alice@example.com\",\"password\":\"expired-password\",\"name\":\"Example account (old)\",\"uuid\":\"26ed3e97cd06c3e37a11d9bf06da21c9\",\"group\":\"KeePassXC-Browser Passwords\",\"expired\":\"true\"}],\"hash\":\"4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb\",\"id\":\"chrome-work-laptop\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "+gAHDhUcIyoxOD9GTVRbYmlwd36FjJOa",
+          "count": 2,
+          "entries": [
+            {
+              "login": "alice@example.com",
+              "password": "correct horse battery staple",
+              "name": "Example account",
+              "uuid": "d5ec68c35705b72fde380bd469aa149f",
+              "group": "KeePassXC-Browser Passwords"
+            },
+            {
+              "login": "old-alice@example.com",
+              "password": "expired-password",
+              "name": "Example account (old)",
+              "uuid": "26ed3e97cd06c3e37a11d9bf06da21c9",
+              "group": "KeePassXC-Browser Passwords",
+              "expired": "true"
+            }
+          ],
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+          "id": "chrome-work-laptop"
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "p+s2yB3H4wvVHI5HAqEl9QnqT4hysV2OArMqI3YT17oGNanx+M3w7FK7cNnnzzRxuaTeNekArar9aFMih75yfm7XqCerOuwY3NowPa8jtAIXGV8ey/5anZRZ9JZSZx34MHCrgdFWhcEYmMDhcxe741ylY8RUchW0qDLML0x19TfCtPR34K9Uu6U0v06aSk9EjeVZ+w9Xxea721VoDKBDdQosfNKXLKZ+rihoChNUQtix7WlFFOy1tC5PsFQkkGwpc9tOdDdJy1Q72qTa0t8/TyMZVdp1AwWM8RmX+9G5XfXjfrBgyM86iW+I7+FB+yw5pCes8RYEKFCmu83KBpvtNEiOk4JT0XNE8SWN1oFiLROMA0lLNjM8dz4cLo7npuSzur6eKZUG8pNP3khlwpFaCC2sFCQEQ6ipQhDupkncckQ+uiEl8Pg0LYAFaiL4JEFeqcWF59uYKMvHTpPwxoiMPnV+BH1cqM2eX09bCoBdDmsNZNnAjUioVSNWpfVmabSjTI1Iqa3tVrKKWDTKZ2o407qgswlu3UxLt0lKJJqNKjv7s+uVSnqnWbECtNoQ7qU2zovaeSMTkGg6i87cvwlhbqblXD/YJVLUEPb2ekevFyBBzwHD9KAJmD1EZceHDS7+fQ5u06CDCDiZ3mutEJ5jUxlfNoqZdn/9oC5WerfRTDBltCe404Q4Hp8kHJKiQJ+Kf0hN+S3O4SY2trOYToyagoNZLdOoTxsbELO5IE94vnHH8+nctT3eCUAAVbRQPoT4DILGZ51rZaeX9g==",
+          "nonce": "+gAHDhUcIyoxOD9GTVRbYmlwd36FjJOa"
+        }
+      }
+    },
+    {
+      "name": "get-logins/httpAuth",
+      "action": "get-logins",
+      "nonceRelation": "increment",
+      "notes": "`httpAuth: \"true\"` asks for HTTP Basic/Digest credentials. The app excludes entries marked BrowserNotHttpAuth, may require confirmation, and ranks exact host/realm matches. There is no `realm` field on the wire in 2.8.0.",
+      "request": {
+        "nonce": "GB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5",
+        "plaintextJson": "{\"action\":\"get-logins\",\"id\":\"chrome-work-laptop\",\"url\":\"https://intranet.example.com/\",\"httpAuth\":\"true\",\"keys\":[{\"id\":\"chrome-work-laptop\",\"key\":\"gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=\"}]}",
+        "plaintext": {
+          "action": "get-logins",
+          "id": "chrome-work-laptop",
+          "url": "https://intranet.example.com/",
+          "httpAuth": "true",
+          "keys": [
+            {
+              "id": "chrome-work-laptop",
+              "key": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8="
+            }
+          ]
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "ftrgtx/1tODKN2b630rOYYL7uM9ps6/Y9CefLYM3IfkEzjlaI6B+mMxE6k9dtIv84u7SwkYUEXaqf/yUxhB0NJKEdfnvndDzkooWIOgCGVI+M4qXe3I33IcDiLkjHcyrF8bndeJ/Ya4v1EXlyWHPkFXbZrIOv8dj5CrEywqoRNn6h6hkinT7I6rS3afLgMDogu8ul5quDt1SL7D/aR2tdLe0iitz62fgl72sow7hMQzq0YPtDFehb5CPv25rx+k+KTCmvTcHNtuUwBEYB5dkLNXtoQ==",
+          "nonce": "GB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "GR8mLTQ7QklQV15lbHN6gYiPlp2kq7K5",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"GR8mLTQ7QklQV15lbHN6gYiPlp2kq7K5\",\"count\":1,\"entries\":[{\"login\":\"bob\",\"password\":\"s3cr3t\",\"name\":\"Intranet\",\"uuid\":\"26ed3e97cd06c3e37a11d9bf06da21c9\",\"group\":\"Work\"}],\"hash\":\"4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb\",\"id\":\"chrome-work-laptop\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "GR8mLTQ7QklQV15lbHN6gYiPlp2kq7K5",
+          "count": 1,
+          "entries": [
+            {
+              "login": "bob",
+              "password": "s3cr3t",
+              "name": "Intranet",
+              "uuid": "26ed3e97cd06c3e37a11d9bf06da21c9",
+              "group": "Work"
+            }
+          ],
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+          "id": "chrome-work-laptop"
+        },
+        "frame": {
+          "action": "get-logins",
+          "message": "dicAHmo6lLnhYJbji2eWVA+EeT4V8qs5TOXFFm6jRQ+FKbbWaLEI0g/z0zBFJ1syVF9OlVkBt20tf6C5u1NtFEC5PVmhe4vC/VB/Vg9IFUymk6NY+DZh89GmndCu1gFi/FkqWhT6pNs9jQCOPGS4Hm5Of0hiiKfxWpJRk4GyvwkX6535dIcKj9R+pooWeKRmmjHR7Zk7FEdv+NHDvuNrUB8E2iLFLBVrgY2+DEGyFHsXnQTOn0790pbyxwnWkglbz9/22AyT1u7WYsIKaCVO0322410OtJR9Aa7ydD+76Txr4ViqzmXQWkWRlzafIm9ze25GL4zVhg2zqFs6bYIwhvAq7K/Txb/rWEK808XjiWuJ1XP1xRk031KC37p6e5gbjzDsYtpD7o6KeFvMyJL2Zhne8DDtcyj8rdDNVPOTcGotcFK4WBNxMQ==",
+          "nonce": "GR8mLTQ7QklQV15lbHN6gYiPlp2kq7K5"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "Group tree for the save dialog. KeePassXC 2.8.0 passes a `{groups:[...]}` object as the `groups` parameter, so the wire value is NESTED: response.groups.groups is the array of root groups. The official extension relies on this; do not flatten it. The recycle bin is excluded. `defaultGroup`/`defaultGroupAlwaysAsk` are extension-side settings, not wire fields.",
+  "vectors": [
+    {
+      "name": "get-database-groups/tree",
+      "action": "get-database-groups",
+      "nonceRelation": "increment",
+      "request": {
+        "nonce": "lJuiqbC3vsXM09rh6O/2/QQLEhkgJy41",
+        "plaintextJson": "{\"action\":\"get-database-groups\"}",
+        "plaintext": {
+          "action": "get-database-groups"
+        },
+        "frame": {
+          "action": "get-database-groups",
+          "message": "6YiuyFjkp0jxaBcFtrtHWiqU/ESRp8zDs6ddbPexlxag2aXsOrUZR753DDfAwn2H",
+          "nonce": "lJuiqbC3vsXM09rh6O/2/QQLEhkgJy41",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "lZuiqbC3vsXM09rh6O/2/QQLEhkgJy41",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"lZuiqbC3vsXM09rh6O/2/QQLEhkgJy41\",\"groups\":{\"groups\":[{\"name\":\"Root\",\"uuid\":\"bb710c2f876761bb90748cc271ff8fae\",\"children\":[{\"name\":\"KeePassXC-Browser Passwords\",\"uuid\":\"17a19761914f9005f195c781475d37be\",\"children\":[]},{\"name\":\"Work\",\"uuid\":\"ae4f73c491cabb04bb3e570b56cfdbff\",\"children\":[]}]}]}}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "lZuiqbC3vsXM09rh6O/2/QQLEhkgJy41",
+          "groups": {
+            "groups": [
+              {
+                "name": "Root",
+                "uuid": "bb710c2f876761bb90748cc271ff8fae",
+                "children": [
+                  {
+                    "name": "KeePassXC-Browser Passwords",
+                    "uuid": "17a19761914f9005f195c781475d37be",
+                    "children": []
+                  },
+                  {
+                    "name": "Work",
+                    "uuid": "ae4f73c491cabb04bb3e570b56cfdbff",
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "frame": {
+          "action": "get-database-groups",
+          "message": "JUVH1B4Iac8iKkE2PeQqzJGfp6T0HT9GjG8/pDq5zoEfHv5FlmJFtbCvR++2q4WlujzBAmjiLoRYYcpE84kGJ7Tu5dQNhvPj/XIv+c0/f/phR3s5wDAJBSjBDLNNK23KhoBRwkmX2e68LvQQgTEBXiaxFAhEGKgymjEAaL8IrsJLzVvC/KKUbM7QgtfBhymv5I/em2dzYkD6OOSKPvrR0UoYgDb2yyfmMdrBwd+/UM+sUb2pX0UudOJb6+DQQerLZilEPBnNY8aeTu/pSAvRYTitOKoH491H77xJcmk2DugYRwpgRujNAn5SU2ElHXPzPvSDxiLEnH1ZkzlMhCkuauMmK1eYlnzevBhz2QqAa9JiUZ2Moxc31klQkIWyZ/o3Zx9JaYkotL9q0ZbtLSbxyBPGgiWLNgBpsbV8P7DThTx8Ndgp95ZoRIY4kmsQAeAuhfp+3zqWUmtCTOW1f/StjjgNFw==",
+          "nonce": "lZuiqbC3vsXM09rh6O/2/QQLEhkgJy41"
+        }
+      }
+    }
+  ]
+}

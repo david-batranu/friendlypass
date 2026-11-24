@@ -1,0 +1,184 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "friendlypass host-level extensions. These are answered by friendlypass-browser-host itself, without cryptography, even when the app is down. They are NOT part of the KeePassXC protocol and the official extension never sends them.",
+  "vectors": [
+    {
+      "name": "host/ping-app-down",
+      "action": "ping",
+      "kind": "host",
+      "nonceRelation": "echo",
+      "notes": "Heartbeat while the app socket is down. The host stays alive; `appRunning: false` and null status fields are the signal to keep the extension in READY(app-down). The nonce is echoed verbatim (no increment).",
+      "request": {
+        "nonce": "CA8WHSQrMjlAR05VXGNqcXh/ho2Um6Kp",
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "ping",
+          "nonce": "CA8WHSQrMjlAR05VXGNqcXh/ho2Um6Kp"
+        }
+      },
+      "response": {
+        "nonce": "CA8WHSQrMjlAR05VXGNqcXh/ho2Um6Kp",
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "ping",
+          "success": "true",
+          "protocolVersion": 1,
+          "hostVersion": "0.1.0",
+          "appRunning": false,
+          "appVersion": null,
+          "locked": null,
+          "databaseHash": null,
+          "nonce": "CA8WHSQrMjlAR05VXGNqcXh/ho2Um6Kp"
+        }
+      }
+    },
+    {
+      "name": "host/ping-app-up",
+      "action": "ping",
+      "kind": "host",
+      "nonceRelation": "echo",
+      "notes": "Heartbeat with a live app socket. `locked`/`databaseHash` may lag by one heartbeat; do not use them as the sole source of truth.",
+      "request": {
+        "nonce": "Jy41PENKUVhfZm10e4KJkJeepayzusHI",
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "ping",
+          "nonce": "Jy41PENKUVhfZm10e4KJkJeepayzusHI"
+        }
+      },
+      "response": {
+        "nonce": "Jy41PENKUVhfZm10e4KJkJeepayzusHI",
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "ping",
+          "success": "true",
+          "protocolVersion": 1,
+          "hostVersion": "0.1.0",
+          "appRunning": true,
+          "appVersion": "0.1.0",
+          "locked": false,
+          "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+          "nonce": "Jy41PENKUVhfZm10e4KJkJeepayzusHI"
+        }
+      }
+    },
+    {
+      "name": "host/hello-startup",
+      "action": "hello",
+      "kind": "host",
+      "nonceRelation": "none",
+      "notes": "Connection negotiation at service-worker start. `sessionId` identifies this stdio connection in diagnostics. No nonce is used.",
+      "request": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "hello",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+          "extensionVersion": "0.1.0"
+        }
+      },
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "hello",
+          "success": "true",
+          "protocolVersion": 1,
+          "hostVersion": "0.1.0",
+          "appRunning": true,
+          "appVersion": "0.1.0",
+          "locked": true,
+          "databaseHash": null,
+          "sessionId": "7b1d0c5e-4a2f-4f6e-9c3b-2d1a0e8f6b4c",
+          "hostPid": 4242
+        }
+      }
+    },
+    {
+      "name": "push/database-locked",
+      "action": "database-locked",
+      "kind": "push",
+      "nonceRelation": "none",
+      "notes": "App -> extension broadcast, unencrypted, no nonce, no correlation. The official extension reacts by re-running test-associate (which then fails while locked).",
+      "request": null,
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "database-locked"
+        }
+      }
+    },
+    {
+      "name": "push/database-unlocked",
+      "action": "database-unlocked",
+      "kind": "push",
+      "nonceRelation": "none",
+      "notes": "App -> extension broadcast after unlock. Clients should re-run get-databasehash and test-associate because the hash may have changed.",
+      "request": null,
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "database-unlocked"
+        }
+      }
+    },
+    {
+      "name": "push/database-changed",
+      "action": "database-changed",
+      "kind": "push",
+      "nonceRelation": "none",
+      "notes": "friendlypass extension: the database contents/hash changed (edit, save, DB switch). Unencrypted, optional new hash. Not emitted by KeePassXC.",
+      "request": null,
+      "response": {
+        "nonce": null,
+        "plaintextJson": null,
+        "plaintext": null,
+        "frame": {
+          "action": "database-changed",
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb"
+        }
+      }
+    }
+  ]
+}

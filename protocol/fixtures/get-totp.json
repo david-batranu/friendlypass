@@ -1,0 +1,71 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "Current TOTP code. Feature-gated on the inner `version` (>= 2.6.1). An invalid/missing UUID is error 18; an entry without a TOTP secret returns an empty `totp` string.",
+  "vectors": [
+    {
+      "name": "get-totp/valid-entry",
+      "action": "get-totp",
+      "nonceRelation": "increment",
+      "request": {
+        "nonce": "dXyDipGYn6attLvCydDX3uXs8/oBCA8W",
+        "plaintextJson": "{\"action\":\"get-totp\",\"uuid\":\"d5ec68c35705b72fde380bd469aa149f\"}",
+        "plaintext": {
+          "action": "get-totp",
+          "uuid": "d5ec68c35705b72fde380bd469aa149f"
+        },
+        "frame": {
+          "action": "get-totp",
+          "message": "od3szosA35tGKYYzmURP7Q5UWrKsTOLYjvhw4Wb8JeFAAB8kGAjUEiVnE81XGSHZXVfelflEju7CQSQFSnD/Skr2gg24GlkodRlVC1ZAmQ==",
+          "nonce": "dXyDipGYn6attLvCydDX3uXs8/oBCA8W",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "dnyDipGYn6attLvCydDX3uXs8/oBCA8W",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"dnyDipGYn6attLvCydDX3uXs8/oBCA8W\",\"totp\":\"492183\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "dnyDipGYn6attLvCydDX3uXs8/oBCA8W",
+          "totp": "492183"
+        },
+        "frame": {
+          "action": "get-totp",
+          "message": "ISo5xelZsBSixiRDbiajnfm5GFJrgxZ7LlBvnDSA4pWhHL6pKRIBcrMv8LZ1IF3P2wo00uG0RgCB/3h/tIqFm0KK+8i+MWDFa2ChZTKospsUC0R9Q2qjshZcRYakdXq4t25693qyCt0lHyraSeo1",
+          "nonce": "dnyDipGYn6attLvCydDX3uXs8/oBCA8W"
+        }
+      }
+    }
+  ]
+}

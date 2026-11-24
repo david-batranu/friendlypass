@@ -2191,6 +2191,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "friendlypass-browser-host"
+version = "0.1.0"
+
+[[package]]
 name = "friendlypass-gui"
 version = "0.1.0"
 dependencies = [

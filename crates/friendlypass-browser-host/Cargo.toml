@@ -1,0 +1,8 @@
+[package]
+name = "friendlypass-browser-host"
+description = "friendlypass native-messaging host: stdio <-> app socket bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -1,0 +1,74 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "Cheap re-validation of a stored association. Called before every credential action; a failure means the keyring entry is stale and the user must re-associate.",
+  "vectors": [
+    {
+      "name": "test-associate/known-key",
+      "action": "test-associate",
+      "nonceRelation": "increment",
+      "notes": "The app looks the key up by `id` in database metadata. Missing id/key is error 1; a key mismatch is error 8.",
+      "request": {
+        "nonce": "u8LJ0Nfe5ezz+gEIDxYdJCsyOUBHTlVc",
+        "plaintextJson": "{\"action\":\"test-associate\",\"id\":\"chrome-work-laptop\",\"key\":\"gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=\"}",
+        "plaintext": {
+          "action": "test-associate",
+          "id": "chrome-work-laptop",
+          "key": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8="
+        },
+        "frame": {
+          "action": "test-associate",
+          "message": "pfrN8f+x1scv5iDOTgfyRGR8s/Qn24XL4r3ScCTZbR1la0EWlk2PNS7D9Akkfj5jvVy7sSy0OPyW7d4Q/cRF3MEa6C8gFlG9loIXxf9mvOe0ezCKLmlRH0L8BbjnGTXVBpPL3HsljLTBXpF/DdIspa4G9Sw1Xx/QiaE=",
+          "nonce": "u8LJ0Nfe5ezz+gEIDxYdJCsyOUBHTlVc",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "vMLJ0Nfe5ezz+gEIDxYdJCsyOUBHTlVc",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"vMLJ0Nfe5ezz+gEIDxYdJCsyOUBHTlVc\",\"hash\":\"4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb\",\"id\":\"chrome-work-laptop\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "vMLJ0Nfe5ezz+gEIDxYdJCsyOUBHTlVc",
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+          "id": "chrome-work-laptop"
+        },
+        "frame": {
+          "action": "test-associate",
+          "message": "JRjmRBSrekRlAt6Hj1Ukj9rzXQN5FtzK017T1NSwdDLTFHPOk+5lspyElMT/n8kMojx3B8/W/+wc6pisRywiJPOQivNyK7R7W9+YekiRE2b77FKaQeMm7jLQn3wRrjnjjkAsbeURtnm77LQ0AN/jPPMtzm6xiyva3LziuN7Y2myzNoerq9TKuqyPnQAzpfifYD5LapTGjI3lECmkiT18FjkDF9C2KJgf3QsuOVCzY+Hqz2ZazW6jve/HIaOEsFJZDO20",
+          "nonce": "vMLJ0Nfe5ezz+gEIDxYdJCsyOUBHTlVc"
+        }
+      }
+    }
+  ]
+}

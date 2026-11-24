@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "friendlypass",
+  "version": "0.1.0",
+  "description": "friendlypass password manager browser integration",
+  "minimum_chrome_version": "124",
+  "background": {
+    "service_worker": "background/sw.js",
+    "type": "module"
+  },
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "alarms",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "webRequest",
+    "webRequestAuthProvider"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "friendlypass"
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "Actually locks the database. Success returns only the common prefix (version/success/nonce); the app then broadcasts `database-locked` to every connection. If the database is closed the app replies error 1 or 2 instead (see errors.json).",
+  "vectors": [
+    {
+      "name": "lock-database/open-database",
+      "action": "lock-database",
+      "nonceRelation": "increment",
+      "request": {
+        "nonce": "s7rByM/W3eTr8vkABw4VHCMqMTg/Rk1U",
+        "plaintextJson": "{\"action\":\"lock-database\"}",
+        "plaintext": {
+          "action": "lock-database"
+        },
+        "frame": {
+          "action": "lock-database",
+          "message": "SNQSofS3GwZr4nobWYRKJ/YV7+V/0UdjyA1W2jA5yWfrnp3drc5i68uX",
+          "nonce": "s7rByM/W3eTr8vkABw4VHCMqMTg/Rk1U",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "tLrByM/W3eTr8vkABw4VHCMqMTg/Rk1U",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"tLrByM/W3eTr8vkABw4VHCMqMTg/Rk1U\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "tLrByM/W3eTr8vkABw4VHCMqMTg/Rk1U"
+        },
+        "frame": {
+          "action": "lock-database",
+          "message": "EyerqRSaPupmGPepvY7MsaEjSJKmRMXba6vTiYz3w/gZITSfT0wjanL87XvwJukKlh2SDF0Mr3D8wUvSpTwu/JLQYFFTVuXxLrUZ3PIFxeImRSRYudtbMlaU4STRq+o=",
+          "nonce": "tLrByM/W3eTr8vkABw4VHCMqMTg/Rk1U"
+        }
+      }
+    }
+  ]
+}
