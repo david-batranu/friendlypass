@@ -17,6 +17,9 @@ import {
   PushAction,
 } from "./types";
 import type {
+  B64,
+  BackgroundEventAction,
+  BackgroundEventArgs,
   BackgroundRequestAction,
   BackgroundRequestArgs,
   BackgroundRequestResult,
@@ -188,6 +191,49 @@ export function isSuccessFrame(value: unknown): value is NativeSuccessFrame {
   );
 }
 
+/**
+ * Unencrypted `change-public-keys` reply. Unlike encrypted successes it carries
+ * `success`/`publicKey` in the outer frame and no `message` field.
+ */
+export interface ChangePublicKeysResponseFrame {
+  action: typeof KpxcAction.CHANGE_PUBLIC_KEYS;
+  version?: string;
+  success: "true";
+  nonce: B64;
+  publicKey: B64;
+}
+
+export function isChangePublicKeysResponse(
+  value: unknown,
+): value is ChangePublicKeysResponseFrame {
+  return (
+    isRecord(value) &&
+    value["action"] === KpxcAction.CHANGE_PUBLIC_KEYS &&
+    value["success"] === "true" &&
+    typeof value["nonce"] === "string" &&
+    typeof value["publicKey"] === "string"
+  );
+}
+
+/** Host-originated error (marked with `hostError: true`). */
+export function isHostErrorFrame(value: unknown): value is HostErrorFrame {
+  return (
+    isErrorFrame(value) &&
+    (value as unknown as Record<string, unknown>)["hostError"] === true
+  );
+}
+
+/** Decrypted inner response that passed the `success: "true"` prefix check. */
+export function isInnerSuccessResponse(
+  value: unknown,
+): value is Record<string, unknown> & { success: "true"; nonce: string } {
+  return (
+    isRecord(value) &&
+    value["success"] === "true" &&
+    typeof value["nonce"] === "string"
+  );
+}
+
 export function isHostPingResponse(value: unknown): value is HostPingResponse {
   return (
     isRecord(value) &&
@@ -354,6 +400,11 @@ function nextRequestId(): string {
     return crypto.randomUUID();
   }
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Correlation id for diagnostics and `generate-password` `requestID`s. */
+export function newRequestId(): string {
+  return nextRequestId();
 }
 
 export function internalError(
@@ -577,4 +628,85 @@ export function onContentCommand(handlers: {
 
   chrome.runtime.onMessage.addListener(listener);
   return () => chrome.runtime.onMessage.removeListener(listener);
+}
+
+// ---------------------------------------------------------------------------
+// Background -> extension-context events (internal, fire-and-forget)
+// ---------------------------------------------------------------------------
+
+function isEventEnvelope(
+  value: unknown,
+): value is InternalEnvelope<string, unknown> {
+  return (
+    isRecord(value) &&
+    value["channel"] === INTERNAL_CHANNEL &&
+    typeof value["action"] === "string" &&
+    typeof value["requestId"] === "string"
+  );
+}
+
+/**
+ * Broadcast a `status.changed` / `state.snapshot` event. Never throws and never
+ * rejects: when no context is listening, Chrome reports "receiving end does not
+ * exist"; that is normal and must not surface as an unhandled rejection.
+ */
+export function sendBackgroundEvent<A extends BackgroundEventAction>(
+  action: A,
+  payload: BackgroundEventArgs<A>,
+): void {
+  if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+    return;
+  }
+  const envelope: InternalEnvelope<A, BackgroundEventArgs<A>> = {
+    channel: INTERNAL_CHANNEL,
+    action,
+    args: payload,
+    requestId: nextRequestId(),
+  };
+  try {
+    const result = chrome.runtime.sendMessage(envelope) as unknown;
+    if (
+      typeof result === "object" &&
+      result !== null &&
+      typeof (result as Promise<unknown>).catch === "function"
+    ) {
+      (result as Promise<unknown>).catch(() => undefined);
+    }
+  } catch {
+    // No listener (service worker starting, all pages closed) or a context that
+    // was destroyed mid-send. Events are best-effort by design.
+  }
+}
+
+/**
+ * Subscribe to background events. The listener must be cheap and must not
+ * throw; malformed events are ignored. Returns an unsubscribe function.
+ */
+export function onBackgroundEvent(
+  listener: (
+    action: BackgroundEventAction,
+    payload: unknown,
+    requestId: string,
+  ) => void,
+): () => void {
+  const handler = (message: unknown): false => {
+    if (!isEventEnvelope(message)) {
+      return false;
+    }
+    if (message.action === "status.changed" || message.action === "state.snapshot") {
+      try {
+        listener(
+          message.action as BackgroundEventAction,
+          message.args,
+          message.requestId,
+        );
+      } catch {
+        // A broken UI listener must not break the messaging channel.
+      }
+    }
+    return false;
+  };
+
+  chrome.runtime.onMessage.addListener(handler);
+  return () => chrome.runtime.onMessage.removeListener(handler);
 }

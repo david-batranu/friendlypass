@@ -729,6 +729,24 @@ export type BackgroundRequestResult<A extends BackgroundRequestAction> =
   BackgroundRequestMap[A]["result"];
 
 /**
+ * Fire-and-forget notifications sent by the service worker to every connected
+ * extension context (popup, options, content scripts). They are *not* requests:
+ * no response is expected and listeners must never throw on a malformed one.
+ *
+ * This is an internal API extension (WP3); the wire protocol is unchanged.
+ */
+export interface BackgroundEventMap {
+  /** Emitted on every connection/association/lock transition. */
+  "status.changed": StatusSummary;
+  /** Full connection snapshot, for diagnostics views. */
+  "state.snapshot": ConnectionSnapshot;
+}
+
+export type BackgroundEventAction = keyof BackgroundEventMap;
+export type BackgroundEventArgs<A extends BackgroundEventAction> =
+  BackgroundEventMap[A];
+
+/**
  * Commands sent by the service worker to a content script. Content scripts
  * must not answer with credentials; they only fill or clear.
  */
