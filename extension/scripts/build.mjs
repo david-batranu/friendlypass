@@ -26,8 +26,35 @@ await build({
   logLevel: "info",
 });
 
+// ---------------------------------------------------------------------------
+// WP4: content script (IIFE — MV3 content scripts are classic scripts)
+// ---------------------------------------------------------------------------
+await build({
+  absWorkingDir: root,
+  entryPoints: ["src/content/index.ts"],
+  outfile: "dist/content/content.js",
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  target: "chrome124",
+  sourcemap: true,
+  logLevel: "info",
+});
+
+// Field-detection API for Playwright tests. Pure DOM code, no chrome.* access.
+await build({
+  absWorkingDir: root,
+  entryPoints: ["src/content/testing.ts"],
+  outfile: "dist/content/testing.js",
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  target: "chrome124",
+  sourcemap: false,
+  logLevel: "info",
+});
+
 await mkdir(resolve(dist, "background"), { recursive: true });
 await cp(resolve(root, "src/manifest.json"), resolve(dist, "manifest.json"));
 
-// TODO(WP4): copy content scripts, CSS and icons into dist/.
 // TODO(WP6): copy popup/ and options/ HTML, CSS and assets into dist/.

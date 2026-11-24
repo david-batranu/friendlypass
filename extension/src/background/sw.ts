@@ -27,7 +27,11 @@ import type {
   ProtocolError,
   StatusSummary,
 } from "../common/types";
-import { makeProtocolError, onBackgroundMessage } from "../common/messages";
+import {
+  makeProtocolError,
+  onBackgroundMessage,
+  sendContentCommand,
+} from "../common/messages";
 import { createNativeTransport } from "./transport";
 import type { NativeTransport, TransportStateEvent } from "./transport";
 import { ensureWatchdogAlarm, registerLifecycleListeners } from "./lifecycle";
@@ -380,6 +384,55 @@ function installDebugBridge(handlers: BackgroundHandlers): void {
 }
 
 // ---------------------------------------------------------------------------
+// WP4 content-script integration (owned by WP4; keep this block self-contained)
+// ---------------------------------------------------------------------------
+
+/**
+ * `Ctrl/Cmd+Shift+L` (manifest `commands.fill-login`): resolve the active tab's
+ * URL through the normal `get-logins` path and ask every frame's content
+ * script to fill the best combination. Errors are logged as text only; the
+ * entry (which contains a password) is never logged.
+ */
+function fillActiveTabFromCommand(): void {
+  void (async () => {
+    try {
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        lastFocusedWindow: true,
+      });
+      const tabId = tab?.id;
+      const url = tab?.url;
+      if (typeof tabId !== "number" || typeof url !== "string" || !/^https?:/i.test(url)) {
+        return;
+      }
+
+      const snapshot = await usableSnapshot();
+      const entries = await getLogins(await actionContext(snapshot), { url });
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      await sendContentCommand(tabId, "content.fillLogin", { entry });
+    } catch (cause) {
+      debug("command.fill-login", messageOf(cause));
+    }
+  })();
+}
+
+/** Registered synchronously by `bootstrap()`; a command may wake the worker. */
+function installContentCommandListener(): void {
+  try {
+    chrome.commands.onCommand.addListener((command) => {
+      if (command === "fill-login") {
+        fillActiveTabFromCommand();
+      }
+    });
+  } catch (cause) {
+    debug("command", `listener not installed: ${messageOf(cause)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
@@ -421,6 +474,7 @@ export function bootstrap(): void {
   const handlers = buildBackgroundHandlers();
   onBackgroundMessage(handlers);
   installDebugBridge(handlers);
+  installContentCommandListener();
 
   try {
     installHttpAuthListener();
