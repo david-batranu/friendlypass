@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>friendlypass settings</title>
+    <link rel="stylesheet" href="../common/theme.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div>
+        <h1>friendlypass settings</h1>
+        <p class="fp-muted">Changes are saved as you make them.</p>
+      </div>
+      <p class="save-state" id="save-state" role="status" aria-live="polite"></p>
+    </header>
+
+    <main class="page-main">
+      <section class="fp-card group" aria-labelledby="group-filling">
+        <h2 id="group-filling">Filling</h2>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-autoFillSingleEntry">Fill a single matching login automatically</label>
+            <p class="fp-muted">When exactly one login matches the page, fill it on load.</p>
+          </div>
+          <input id="opt-autoFillSingleEntry" type="checkbox" />
+        </div>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-showFieldIcons">Show icons in login fields</label>
+            <p class="fp-muted">Draw a small friendlypass icon next to recognised fields.</p>
+          </div>
+          <input id="opt-showFieldIcons" type="checkbox" />
+        </div>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-autoFillAndSubmit">Submit the form after filling</label>
+            <p class="fp-muted">Press the page's submit button automatically. Off by default.</p>
+          </div>
+          <input id="opt-autoFillAndSubmit" type="checkbox" />
+        </div>
+      </section>
+
+      <section class="fp-card group" aria-labelledby="group-saving">
+        <h2 id="group-saving">Saving</h2>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-defaultGroup">Default group for saved logins</label>
+            <p class="fp-muted">Leave empty to use the group friendlypass suggests.</p>
+          </div>
+          <input
+            class="fp-input setting-input"
+            id="opt-defaultGroup"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="e.g. Web"
+          />
+        </div>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-defaultGroupAlwaysAsk">Always ask which group to save to</label>
+            <p class="fp-muted">Show the group picker every time a login is saved.</p>
+          </div>
+          <input id="opt-defaultGroupAlwaysAsk" type="checkbox" />
+        </div>
+      </section>
+
+      <section class="fp-card group" aria-labelledby="group-http-auth">
+        <h2 id="group-http-auth">HTTP authentication</h2>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-httpAuthAutoFill">Fill HTTP Basic/Digest prompts automatically</label>
+            <p class="fp-muted">
+              Answer the browser's authentication prompt with the best matching login.
+            </p>
+          </div>
+          <input id="opt-httpAuthAutoFill" type="checkbox" />
+        </div>
+      </section>
+
+      <section class="fp-card group" aria-labelledby="group-connection">
+        <h2 id="group-connection">Connection</h2>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-launchAppOnConnect">Start friendlypass when the browser connects</label>
+            <p class="fp-muted">Ask the app to launch itself instead of waiting for it.</p>
+          </div>
+          <input id="opt-launchAppOnConnect" type="checkbox" />
+        </div>
+
+        <div class="connection">
+          <div class="connection-state">
+            <span class="fp-dot" id="conn-dot" aria-hidden="true"></span>
+            <p id="conn-state">Checking…</p>
+          </div>
+          <dl class="connection-grid">
+            <dt>Host</dt>
+            <dd class="fp-mono" id="conn-host">—</dd>
+            <dt>App</dt>
+            <dd class="fp-mono" id="conn-app">—</dd>
+            <dt>Protocol</dt>
+            <dd class="fp-mono" id="conn-protocol">—</dd>
+            <dt>Database</dt>
+            <dd class="fp-mono" id="conn-database">—</dd>
+          </dl>
+          <div class="connection-actions">
+            <button class="fp-button" id="reconnect" type="button">Reconnect</button>
+            <p class="fp-muted" id="reconnect-status" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="fp-card group" aria-labelledby="group-exceptions">
+        <h2 id="group-exceptions">Site exceptions</h2>
+        <p class="fp-muted">
+          Turn filling, saving or icons off for specific sites. Origins are matched exactly.
+        </p>
+
+        <form class="exception-form" id="exception-form" novalidate>
+          <label class="fp-visually-hidden" for="exception-origin">Site origin</label>
+          <input
+            class="fp-input"
+            id="exception-origin"
+            type="text"
+            placeholder="https://example.com"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="fp-button" id="exception-add" type="submit">Add site</button>
+        </form>
+        <p class="exception-error" id="exception-error" role="alert" hidden></p>
+
+        <table class="exception-table" id="exception-table">
+          <caption class="fp-visually-hidden">Site exceptions</caption>
+          <thead>
+            <tr>
+              <th scope="col">Origin</th>
+              <th scope="col">No fill</th>
+              <th scope="col">No save</th>
+              <th scope="col">No icons</th>
+              <th scope="col"><span class="fp-visually-hidden">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody id="exception-list"></tbody>
+        </table>
+        <p class="fp-muted" id="exception-empty">No site exceptions yet.</p>
+      </section>
+
+      <section class="fp-card group" aria-labelledby="group-advanced">
+        <h2 id="group-advanced">Advanced</h2>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-debugLogging">Debug logging</label>
+            <p class="fp-muted">
+              Write connection diagnostics to the service-worker console. Never includes
+              credentials.
+            </p>
+          </div>
+          <input id="opt-debugLogging" type="checkbox" />
+        </div>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

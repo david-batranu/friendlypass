@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>friendlypass</title>
+    <link rel="stylesheet" href="../common/theme.css" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="popup-header" id="status" aria-live="polite">
+      <div class="status-row">
+        <span class="status-indicator" id="status-indicator" aria-hidden="true"></span>
+        <div class="status-copy">
+          <p class="status-title" id="status-title">Connecting</p>
+          <p class="status-detail fp-muted" id="status-detail" hidden></p>
+        </div>
+      </div>
+      <button
+        class="fp-button fp-button--small status-action"
+        id="status-action"
+        type="button"
+        hidden
+      >
+        Retry
+      </button>
+    </header>
+
+    <div class="popup-body">
+      <div class="search-wrap" id="search-wrap" hidden>
+        <label class="fp-visually-hidden" for="search">Search logins</label>
+        <input
+          class="fp-input"
+          id="search"
+          type="search"
+          placeholder="Search logins"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+
+      <main id="logins" aria-label="Logins for this page" aria-live="polite"></main>
+
+      <section class="generate fp-card" aria-labelledby="generate-title">
+        <div class="generate-head">
+          <h2 id="generate-title">Generate password</h2>
+          <button
+            class="fp-button fp-button--small fp-button--quiet"
+            id="generate-toggle"
+            type="button"
+          >
+            Generate
+          </button>
+        </div>
+        <div class="generate-row" id="generate-row" hidden>
+          <output class="fp-mono generate-value" id="generate-value"></output>
+          <div class="generate-actions">
+            <button
+              class="fp-button fp-button--small"
+              id="generate-copy"
+              type="button"
+            >
+              Copy
+            </button>
+            <button
+              class="fp-button fp-button--small fp-button--quiet"
+              id="generate-regenerate"
+              type="button"
+            >
+              Regenerate
+            </button>
+          </div>
+        </div>
+        <p class="generate-error" id="generate-error" role="status" hidden></p>
+      </section>
+    </div>
+
+    <footer class="popup-footer">
+      <div class="footer-row">
+        <button class="fp-button fp-button--small fp-button--quiet" id="open-settings" type="button">
+          Settings
+        </button>
+        <button class="fp-button fp-button--small fp-button--quiet" id="lock-database" type="button">
+          Lock database
+        </button>
+      </div>
+
+      <details class="diagnostics" id="diagnostics">
+        <summary>Diagnostics</summary>
+        <dl class="diagnostics-grid" id="diagnostics-body">
+          <dt>Host</dt>
+          <dd class="fp-mono" id="diag-host">—</dd>
+          <dt>App</dt>
+          <dd class="fp-mono" id="diag-app">—</dd>
+          <dt>Protocol</dt>
+          <dd class="fp-mono" id="diag-protocol">—</dd>
+          <dt>Reconnects</dt>
+          <dd class="fp-mono" id="diag-reconnects">0</dd>
+          <dt>Last error</dt>
+          <dd id="diag-error">None</dd>
+        </dl>
+        <p class="diagnostics-help fp-muted" id="diag-help" hidden></p>
+      </details>
+    </footer>
+
+    <p class="fp-visually-hidden" id="announcer" role="status" aria-live="polite"></p>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -57,7 +57,38 @@ await build({
 await mkdir(resolve(dist, "background"), { recursive: true });
 await cp(resolve(root, "src/manifest.json"), resolve(dist, "manifest.json"));
 
-// TODO(WP6): copy popup/ and options/ HTML, CSS and assets into dist/.
+// --- WP6a popup + options (owned by WP6a) ----------------------------------
+await build({
+  absWorkingDir: root,
+  entryPoints: ["src/popup/popup.ts"],
+  outfile: "dist/popup/popup.js",
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "chrome124",
+  sourcemap: true,
+  logLevel: "info",
+});
+await build({
+  absWorkingDir: root,
+  entryPoints: ["src/options/options.ts"],
+  outfile: "dist/options/options.js",
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "chrome124",
+  sourcemap: true,
+  logLevel: "info",
+});
+await mkdir(resolve(dist, "popup"), { recursive: true });
+await mkdir(resolve(dist, "options"), { recursive: true });
+await mkdir(resolve(dist, "common"), { recursive: true });
+await cp(resolve(root, "src/popup/popup.html"), resolve(dist, "popup/popup.html"));
+await cp(resolve(root, "src/popup/popup.css"), resolve(dist, "popup/popup.css"));
+await cp(resolve(root, "src/options/options.html"), resolve(dist, "options/options.html"));
+await cp(resolve(root, "src/options/options.css"), resolve(dist, "options/options.css"));
+await cp(resolve(root, "src/common/theme.css"), resolve(dist, "common/theme.css"));
+// --- end WP6a block --------------------------------------------------------
 
 // --- WP5 HTTP-auth picker (appended entry point; WP5 owns src/auth/**) -----
 await build({

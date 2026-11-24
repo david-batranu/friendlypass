@@ -39,7 +39,12 @@
     }
   },
   "action": {
-    "default_title": "friendlypass"
+    "default_title": "friendlypass",
+    "default_popup": "popup/popup.html"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
   },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuVF1PcaUbSKIWSPW49LkA0x5K+P8jzUPsEEPH8YacAqXNSqERYqZkjNBFI8vdoicth3gaxjZFBcw/geob0+6cDqFb3FsoI98RABW5jSq3D0PB+uiuzRSWtOS8j6IMDkEmHTKAExsTopEmaFK6/XmS7FYQRzdMS01NHUAa0t4xzhAOOCo21E9U7DQQ4PzzAUuzGxFRF3N2IQ3KeoSragWeRFQx38IL7nZEOFyquYhpWfbIDgN9KKz1QsY0xNm9zD8nGvCl3o2GaBe+j15LdhgZ0MHLYP4CyG1RuV9aXNmvgr1+Zpi+8ijPwvoz4LRLih2KVXU7K0PznH5CuQiQyjTJQIDAQAB",
   "browser_specific_settings": {

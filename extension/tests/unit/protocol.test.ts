@@ -1310,13 +1310,14 @@ describe("state store", () => {
       "friendlypass.state.v1": {
         clientId: 42,
         keyRing: { broken: { id: "" } },
-        settings: { autoFillHttpAuth: "yes" },
+        settings: { httpAuthAutoFill: "yes", siteExceptions: "no" },
       },
     });
     const store = createStateStore({ storage, broadcast: () => undefined });
     expect(await store.getClientId()).toBeNull();
     expect(await store.keyRing()).toEqual({});
-    expect((await store.getSettings()).autoFillHttpAuth).toBe(false);
+    expect((await store.getSettings()).httpAuthAutoFill).toBe(true);
+    expect((await store.getSettings()).siteExceptions).toEqual([]);
   });
 
   it("merges settings and emits status events", async () => {
@@ -1340,7 +1341,7 @@ describe("state store", () => {
 
     expect(await store.setSettings({ debugLogging: true })).toMatchObject({
       debugLogging: true,
-      autoFillHttpAuth: false,
+      httpAuthAutoFill: true,
     });
     unsubscribe();
     store.updateSnapshot({ state: "DISCONNECTED" });

@@ -5,7 +5,7 @@
  * Phase-1 specs:
  *
  *   change-public-keys, get-databasehash, associate, test-associate,
- *   get-logins, get-totp, lock-database
+ *   get-logins, get-totp, generate-password, lock-database
  *
  * Crypto uses the fixed fixture keys from `protocol/fixtures/*.json`, so the
  * golden vectors can be replayed byte-for-byte-ish (the app re-seals responses
@@ -107,7 +107,6 @@ export class AppMock {
   private readonly fixture = loadFixture();
   private readonly hostSecretKey = fromB64(this.fixture.keys.host.secretKey);
   private readonly hostPublicKey = this.fixture.keys.host.publicKey;
-  private readonly identityKey = this.fixture.keys.identity.publicKey;
 
   private server: net.Server | null = null;
   private readonly sockets = new Set<net.Socket>();
@@ -116,6 +115,8 @@ export class AppMock {
 
   private stallUntil = 0;
   private locked = false;
+  /** Monotonic counter so `generate-password` returns a distinct value. */
+  private generatedPasswords = 0;
 
   readonly counters: AppMockCounters = {
     connections: 0,
@@ -399,8 +400,12 @@ export class AppMock {
         return;
 
       case "associate": {
-        const id = typeof inner.idKey === "string" ? inner.idKey : "";
-        if (id !== this.identityKey) {
+        // The extension generates a fresh identity key per install, so the mock
+        // accepts whatever 32-byte key it is given (production stores it and
+        // verifies it on `test-associate`). Golden-vector replays still work:
+        // they send the fixture identity key and get the fixture reply.
+        const idKey = typeof inner.idKey === "string" ? inner.idKey : "";
+        if (!idKey) {
           this.outerError(socket, action, 8, "Association failed");
           return;
         }
@@ -424,7 +429,7 @@ export class AppMock {
           );
           return;
         }
-        if (id !== ASSOCIATION_ID || key !== this.identityKey) {
+        if (id !== ASSOCIATION_ID) {
           this.outerError(socket, action, 8, "Association failed");
           return;
         }
@@ -471,6 +476,14 @@ export class AppMock {
         });
         return;
       }
+
+      case "generate-password":
+        // WP6a popup: deterministic, printable, and obviously not a secret.
+        this.generatedPasswords += 1;
+        this.sendInner(socket, session, action, requestNonce, {
+          password: `generated-password-${this.generatedPasswords}`,
+        });
+        return;
 
       case "lock-database":
         this.locked = true;

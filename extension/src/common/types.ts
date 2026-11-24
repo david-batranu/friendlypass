@@ -588,9 +588,33 @@ export interface PersistedState {
   settings: ExtensionSettings;
 }
 
+/**
+ * Per-origin opt-out (WP6a). Absent flags mean "allowed"; only the flags the
+ * user actually disabled are stored.
+ */
+export interface SiteException {
+  /** Normalised origin, e.g. `https://example.com` (never a path). */
+  origin: string;
+  /** Do not fill logins on this origin. */
+  disableFill?: boolean;
+  /** Do not offer to save logins on this origin. */
+  disableSave?: boolean;
+  /** Do not draw field icons on this origin. */
+  disableIcons?: boolean;
+}
+
+/**
+ * Unified extension settings (WP6a). This is the only settings surface for the
+ * popup, the options page, the content scripts and HTTP authentication; it is
+ * persisted in `chrome.storage.local` under {@link PersistedState}.
+ */
 export interface ExtensionSettings {
-  /** Fill HTTP Basic/Digest credentials automatically. Default false. */
-  autoFillHttpAuth: boolean;
+  /** Fill automatically when exactly one login matches. Default false. */
+  autoFillSingleEntry: boolean;
+  /** Draw icons next to recognised fields. Default true. */
+  showFieldIcons: boolean;
+  /** Fill HTTP Basic/Digest credentials automatically. Default true. */
+  httpAuthAutoFill: boolean;
   /** Submit forms after filling. Default false. */
   autoFillAndSubmit: boolean;
   /** Ask the app to launch when the extension connects. Default false. */
@@ -601,6 +625,8 @@ export interface ExtensionSettings {
   defaultGroupAlwaysAsk: boolean;
   /** Show diagnostics logging in the service worker console. */
   debugLogging: boolean;
+  /** Per-origin opt-outs. Default empty. */
+  siteExceptions: SiteException[];
 }
 
 // ---------------------------------------------------------------------------
@@ -755,6 +781,11 @@ export interface BackgroundRequestMap {
   };
   "settings.get": { args: void; result: ExtensionSettings };
   "settings.set": { args: Partial<ExtensionSettings>; result: ExtensionSettings };
+  /** WP6a: fill one tab from the popup (extension pages only). */
+  "tab.fillLogin": {
+    args: { tabId: number; entry: CredentialEntry };
+    result: { delivered: boolean };
+  };
   "diagnostics.get": { args: void; result: DiagnosticsSnapshot };
   /** Store the pair a form just submitted, before the page can unload. */
   "submit.store": { args: StoreSubmittedArgs; result: StoreSubmittedResult };
@@ -784,6 +815,8 @@ export interface BackgroundEventMap {
   "status.changed": StatusSummary;
   /** Full connection snapshot, for diagnostics views. */
   "state.snapshot": ConnectionSnapshot;
+  /** Emitted after every successful `settings.set` (WP6a). */
+  "settings.changed": ExtensionSettings;
 }
 
 export type BackgroundEventAction = keyof BackgroundEventMap;
@@ -834,4 +867,9 @@ export interface DiagnosticsSnapshot {
   entries: DiagnosticEntry[];
   connection: ConnectionSnapshot;
   host: HostStatus | null;
+  /**
+   * Number of lost-connection events observed since this service worker
+   * started (WP6a popup diagnostics).
+   */
+  reconnects: number;
 }
