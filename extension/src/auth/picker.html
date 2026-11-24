@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>friendlypass — choose login</title>
+    <link rel="stylesheet" href="picker.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Choose a login</h1>
+      <p id="context" class="context"></p>
+    </header>
+    <main id="entries" aria-live="polite">
+      <p class="status">Loading…</p>
+    </main>
+    <footer>
+      <button id="cancel" type="button" class="secondary">Cancel</button>
+    </footer>
+    <script type="module" src="picker.js"></script>
+  </body>
+</html>

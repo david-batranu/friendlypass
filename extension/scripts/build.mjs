@@ -31,3 +31,20 @@ await cp(resolve(root, "src/manifest.json"), resolve(dist, "manifest.json"));
 
 // TODO(WP4): copy content scripts, CSS and icons into dist/.
 // TODO(WP6): copy popup/ and options/ HTML, CSS and assets into dist/.
+
+// --- WP5 HTTP-auth picker (appended entry point; WP5 owns src/auth/**) -----
+await build({
+  absWorkingDir: root,
+  entryPoints: ["src/auth/picker.ts"],
+  outfile: "dist/auth/picker.js",
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "chrome124",
+  sourcemap: true,
+  logLevel: "info",
+});
+await mkdir(resolve(dist, "auth"), { recursive: true });
+await cp(resolve(root, "src/auth/picker.html"), resolve(dist, "auth/picker.html"));
+await cp(resolve(root, "src/auth/picker.css"), resolve(dist, "auth/picker.css"));
+// --- end WP5 block ---------------------------------------------------------
