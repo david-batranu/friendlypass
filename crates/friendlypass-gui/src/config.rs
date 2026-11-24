@@ -108,6 +108,14 @@ pub struct Preferences {
     pub auto_lock: bool,
     /// Minutes of inactivity before the database locks.
     pub auto_lock_minutes: u32,
+    /// Register the native-messaging host with the browsers below.
+    pub browser_integration: bool,
+    /// Per-browser native-messaging manifests (Chrome-family + Firefox).
+    pub browser_chrome: bool,
+    pub browser_chromium: bool,
+    pub browser_brave: bool,
+    pub browser_edge: bool,
+    pub browser_firefox: bool,
 }
 
 /// Default seconds before a copied value is cleared from the clipboard.
@@ -130,6 +138,14 @@ impl Default for Preferences {
             clipboard_clear_secs: DEFAULT_CLIPBOARD_CLEAR_SECS,
             auto_lock: false,
             auto_lock_minutes: DEFAULT_AUTO_LOCK_MINUTES,
+            // Off by default, like KeePassXC: nothing is written into the
+            // browser configuration until the user opts in.
+            browser_integration: false,
+            browser_chrome: true,
+            browser_chromium: true,
+            browser_brave: true,
+            browser_edge: true,
+            browser_firefox: true,
         }
     }
 }
@@ -211,6 +227,43 @@ impl Preferences {
             c.visible = visible;
         }
         true
+    }
+
+    /// Whether the native-messaging manifest for `browser` is selected.
+    pub fn browser_enabled(&self, browser: friendlypass_browser::native_messaging::Browser) -> bool {
+        use friendlypass_browser::native_messaging::Browser;
+        match browser {
+            Browser::Chrome => self.browser_chrome,
+            Browser::Chromium => self.browser_chromium,
+            Browser::Brave => self.browser_brave,
+            Browser::Edge => self.browser_edge,
+            Browser::Firefox => self.browser_firefox,
+        }
+    }
+
+    /// Select or deselect the native-messaging manifest for `browser`.
+    pub fn set_browser_enabled(
+        &mut self,
+        browser: friendlypass_browser::native_messaging::Browser,
+        enabled: bool,
+    ) {
+        use friendlypass_browser::native_messaging::Browser;
+        match browser {
+            Browser::Chrome => self.browser_chrome = enabled,
+            Browser::Chromium => self.browser_chromium = enabled,
+            Browser::Brave => self.browser_brave = enabled,
+            Browser::Edge => self.browser_edge = enabled,
+            Browser::Firefox => self.browser_firefox = enabled,
+        }
+    }
+
+    /// The browsers selected for native-messaging registration.
+    pub fn selected_browsers(&self) -> Vec<friendlypass_browser::native_messaging::Browser> {
+        use friendlypass_browser::native_messaging::Browser;
+        Browser::ALL
+            .into_iter()
+            .filter(|&browser| self.browser_enabled(browser))
+            .collect()
     }
 }
 
@@ -364,6 +417,39 @@ mod tests {
         }
         assert!(!prefs.set_visible(ColumnId::Title, false));
         assert_eq!(prefs.visible_columns().count(), 1);
+    }
+
+    #[test]
+    fn browser_integration_defaults_off_with_every_browser_selected() {
+        use friendlypass_browser::native_messaging::Browser;
+        let prefs = Preferences::default();
+        assert!(!prefs.browser_integration, "nothing is written until the user opts in");
+        assert_eq!(prefs.selected_browsers(), Browser::ALL.to_vec());
+
+        let mut prefs = Preferences::default();
+        prefs.set_browser_enabled(Browser::Brave, false);
+        assert!(!prefs.browser_enabled(Browser::Brave));
+        assert_eq!(
+            prefs.selected_browsers(),
+            vec![Browser::Chrome, Browser::Chromium, Browser::Edge, Browser::Firefox]
+        );
+    }
+
+    #[test]
+    fn browser_integration_roundtrips_and_old_configs_get_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        let mut prefs = Preferences::default();
+        prefs.browser_integration = true;
+        prefs.browser_chrome = false;
+        prefs.browser_firefox = false;
+        prefs.save(&file).unwrap();
+        assert_eq!(Preferences::load(&file), prefs);
+
+        std::fs::write(&file, br#"{"recent":[]}"#).unwrap();
+        let old = Preferences::load(&file);
+        assert!(!old.browser_integration);
+        assert!(old.browser_chrome && old.browser_firefox);
     }
 
     #[test]

@@ -193,6 +193,14 @@ pub struct App {
     pub browser_state: Option<friendlypass_browser::SharedState>,
     /// The GUI bridge the browser server calls back into (approval, writes).
     pub browser_bridge: Option<Arc<crate::browser_bridge::GuiBrowserBridge>>,
+    /// `$HOME` used when writing native-messaging manifests (tests point this
+    /// at a temporary directory).
+    pub browser_install_home: PathBuf,
+    /// Platform override for manifest paths; `None` detects at write time.
+    pub browser_install_platform: Option<friendlypass_browser::native_messaging::Platform>,
+    /// Host binary registered with the browsers; `None` resolves the sibling
+    /// of the running executable (the app bundle in a packaged build).
+    pub browser_install_host: Option<PathBuf>,
 
     // -- persisted preferences ------------------------------------------
     /// Column layout and the recent-databases list.
@@ -268,6 +276,11 @@ impl Default for App {
             browser_handle: None,
             browser_state: None,
             browser_bridge: None,
+            browser_install_home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            browser_install_platform: None,
+            browser_install_host: None,
             prefs: Preferences::default(),
             config_path: None,
             reset_columns: false,
@@ -300,6 +313,9 @@ impl App {
         }
         // Always listen for the browser extension, even on the unlock screen:
         // a locked app answers error 1 (rather than looking "not running").
+        // Re-register the native host first: if the app moved or was updated,
+        // the manifests still point at the previous location.
+        crate::browser_bridge::refresh_native_messaging(&mut app);
         crate::browser_bridge::start_background(&mut app);
         app
     }

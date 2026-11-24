@@ -3,6 +3,28 @@
 The GUI is a normal Rust binary; these files make desktop launchers start it
 as a GUI instead of opening a terminal.
 
+The macOS bundle and the Linux tarball ship two executables:
+`friendlypass-gui` and `friendlypass-browser-host` (the native-messaging host).
+The app finds the host next to its own executable and registers it with
+browsers from Settings → Browser Integration, so the binaries must stay in the
+same directory.
+
+## End-user flow (browser integration)
+
+1. Install the app (macOS `.app` bundle or Linux tarball/`install.sh`).
+2. Start friendlypass and open **Settings and tools → Browser…**. Tick
+   **Enable browser integration** and the browsers you use. This writes
+   `org.friendlypass.browser.json` in each browser's own native-messaging
+   folder, pointing at the bundled host.
+3. Install the friendlypass extension in those browsers (Chrome Web Store /
+   Firefox add-ons, or a development build). The extension then talks to the
+   running app.
+
+Turning a browser off (or integration itself off) removes only that
+`org.friendlypass.browser.json`; other native hosts are never touched. On
+every start the app re-writes an outdated manifest, so moving or updating the
+app keeps the registration valid.
+
 ## macOS
 
 ```sh
@@ -10,15 +32,23 @@ as a GUI instead of opening a terminal.
 open -b org.friendlypass.friendlypass           # or open it from Finder/Launchpad
 ```
 
-`package.sh` builds only `target/release/friendlypass.app` (or
+`package.sh` builds `target/release/friendlypass.app` (or
 `./packaging/macos/package.sh debug`) if you prefer to copy it yourself.
 
-`package.sh` builds `friendlypass-gui`, copies it into
-`friendlypass.app/Contents/MacOS`, installs `Info.plist` (bundle id
-`org.friendlypass.friendlypass`) and `AppIcon.icns`, and ad-hoc signs the
-bundle. LaunchServices then starts the executable directly, so no Terminal
-window appears. Replace the ad-hoc signature with a Developer ID
-(`codesign --sign "Developer ID Application: …"`) before distributing.
+`package.sh` builds `friendlypass-gui` and `friendlypass-browser-host`,
+copies both into `friendlypass.app/Contents/MacOS`, installs `Info.plist`
+(bundle id `org.friendlypass.friendlypass`) and `AppIcon.icns`, and ad-hoc
+signs the bundle and both executables. LaunchServices then starts the
+executable directly, so no Terminal window appears. Replace the ad-hoc
+signature with a Developer ID (`codesign --sign "Developer ID Application: …"`)
+before distributing.
+
+Verify the bundle contains the host:
+
+```sh
+ls -l target/release/friendlypass.app/Contents/MacOS/
+codesign -dv target/release/friendlypass.app/Contents/MacOS/friendlypass-browser-host
+```
 
 ## Windows
 
@@ -26,13 +56,48 @@ Release builds carry `#![cfg_attr(not(debug_assertions), windows_subsystem =
 "windows")]`, so `friendlypass-gui.exe` is a GUI-subsystem binary and double-clicking
 it opens no console. Debug builds keep the console for diagnostics.
 
+Browser integration is currently macOS/Linux only (the manifest directory
+layout is Unix-specific); the app says so if the platform is unsupported.
+
 ## Linux
 
+Build a relocatable, user-installable tarball:
+
+```sh
+./packaging/linux/package.sh release
+# target/release/friendlypass-<version>-linux-<arch>.tar.gz
+```
+
+The tarball contains:
+
+```
+bin/friendlypass-gui
+bin/friendlypass-browser-host
+share/applications/friendlypass.desktop
+share/icons/hicolor/<size>/apps/friendlypass.png
+install.sh
+```
+
+Install it for the current user (`PREFIX` defaults to `~/.local`):
+
+```sh
+tar -xzf target/release/friendlypass-*-linux-*.tar.gz
+./friendlypass-*-linux-*/install.sh
+# or, from a source checkout (builds debug/release as needed):
+./packaging/linux/install.sh release
+PREFIX=/opt/friendlypass ./packaging/linux/install.sh release
+```
+
+`install.sh` puts both binaries in `$PREFIX/bin`, writes the desktop entry
+with an absolute `Exec=` (works without `$PREFIX/bin` on `PATH`) and copies
+the hicolor icons. It deliberately does **not** register browser manifests:
+that is the Browser Integration settings' job, so ticking/unticking browsers
+in the app stays the single source of truth.
+
 [`linux/friendlypass.desktop`](linux/friendlypass.desktop) and the hicolor
-icon set are what desktop environments read; installing both makes the
-launcher show the icon (the `Exec=` line assumes `friendlypass-gui` is on
-`PATH`). `Terminal=false` makes the desktop launch the GUI without a
-terminal emulator.
+icon set are what desktop environments read. `Terminal=false` makes the
+desktop launch the GUI without a terminal emulator. Installing the files
+manually also works:
 
 ```sh
 install -Dm644 packaging/linux/friendlypass.desktop \

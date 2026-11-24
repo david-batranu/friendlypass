@@ -2195,6 +2195,7 @@ dependencies = [
 name = "friendlypass-browser-host"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "friendlypass-browser",
  "serde_json",
 ]

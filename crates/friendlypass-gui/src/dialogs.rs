@@ -1769,9 +1769,56 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let mut close_clicked = false;
             let mut start_clicked = false;
             let mut stop_clicked = false;
+            let mut prefs_changed = false;
             let mut answer: Option<Option<String>> = None;
             let mut revoke: Option<String> = None;
             let open = modal_window(ctx, "browser-integration", "Browser Integration", 560.0, |ui| {
+                    ui.label(egui::RichText::new("Native messaging").strong());
+                    if ui
+                        .checkbox(
+                            &mut app.prefs.browser_integration,
+                            "Enable browser integration",
+                        )
+                        .on_hover_text(
+                            "Registers this app as the org.friendlypass.browser native \
+                             host, so the friendlypass extension can reach it. The \
+                             extension itself still has to be installed in each browser.",
+                        )
+                        .changed()
+                    {
+                        prefs_changed = true;
+                    }
+                    ui.weak(
+                        "Writes a small manifest in each selected browser's own \
+                         native-messaging folder. Other hosts' manifests are never touched.",
+                    );
+                    let browsers_enabled = app.prefs.browser_integration;
+                    ui.horizontal_wrapped(|ui| {
+                        for browser in friendlypass_browser::native_messaging::Browser::ALL {
+                            let mut on = app.prefs.browser_enabled(browser);
+                            if ui
+                                .add_enabled(
+                                    browsers_enabled,
+                                    egui::Checkbox::new(&mut on, browser.label()),
+                                )
+                                .changed()
+                            {
+                                app.prefs.set_browser_enabled(browser, on);
+                                prefs_changed = true;
+                            }
+                        }
+                    });
+                    if browsers_enabled {
+                        match crate::browser_bridge::native_host_path(app) {
+                            Some(path) => {
+                                ui.weak(format!("Native host: {}", path.display()));
+                            }
+                            None => {
+                                ui.weak("Native host binary not found; reinstall the app.");
+                            }
+                        }
+                    }
+                    ui.separator();
                     ui.label(
                         "Serve the KeePassXC-Browser protocol on the same socket the shipped \
                          keepassxc-proxy connects to, so the official extension and the \
@@ -1855,6 +1902,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                 });
 
+            if prefs_changed {
+                app.save_preferences();
+                crate::browser_bridge::sync_native_messaging(app);
+            }
             if let Some(revoke) = revoke {
                 crate::browser_bridge::revoke_association(app, &revoke);
             }
