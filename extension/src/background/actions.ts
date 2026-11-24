@@ -1,91 +1,276 @@
 /**
  * Typed protocol actions (WP3).
  *
- * One function per wire action, each building the inner JSON, encrypting it
- * through the session, sending it and validating the decrypted response.
- * Callers never touch nonces or ciphertext.
+ * One function per wire action (`protocol/ACTIONS.md` §4), each building the
+ * inner JSON in the frozen field order, encrypting it through `session.ts`,
+ * sending it and validating the decrypted response. Callers never touch nonces
+ * or ciphertext and never see a `message`/`nonce` pair.
  *
- * TODO(WP3): implement on top of `session.ts`.
+ * Errors are the typed `ProtocolError` values produced by the session (mapped
+ * from the wire `errorCode`). Credential lookups therefore reject with code 15
+ * when nothing matches rather than returning an empty array; callers that treat
+ * "no logins" as normal should catch code 15 explicitly.
+ *
+ * Never log decrypted entries: `get-logins` returns plaintext passwords.
  */
 
-import type {
-  CreatedGroup,
-  CredentialEntry,
-  DatabaseGroup,
-  DbHash,
-  HexUuid,
-  SaveLoginArgs,
-  SaveLoginResult,
+import { newRequestId } from "../common/messages";
+import type { ProtocolSession } from "./session";
+import {
+  buildGetDatabaseGroupsInner,
+  buildGetLoginsInner,
+  buildGetTotpInner,
+  buildLockDatabaseInner,
+  buildGeneratePasswordInner,
+  buildSetLoginInner,
+  isHexUuid,
+} from "./session";
+import { makeProtocolError } from "../common/messages";
+import {
+  KpxcAction,
+  KpxcErrorCode,
+  LONG_REQUEST_TIMEOUT_MS,
+  type CreatedGroup,
+  type CredentialEntry,
+  type DatabaseGroup,
+  type DbHash,
+  type GetDatabaseGroupsResponse,
+  type GetLoginsResponse,
+  type GetTotpResponse,
+  type HexUuid,
+  type SaveLoginArgs,
+  type SaveLoginResult,
+  type SetLoginResponse,
 } from "../common/types";
 
 export interface ActionContext {
-  clientID: string;
-  dbHash: DbHash;
-  association: { id: string; key: string } | null;
+  /** Live protocol session (authoritative for clientID/association/hash). */
+  session: ProtocolSession;
+  /** Optional per-call timeout override in milliseconds. */
   timeoutMs?: number;
+  /** Diagnostics only; the session is authoritative. */
+  clientID?: string;
+  /** Diagnostics only; the session is authoritative. */
+  dbHash?: DbHash;
+  /** Diagnostics only; the session is authoritative. */
+  association?: { id: string; key: string } | null;
 }
 
-export async function fetchDatabaseHash(
-  _ctx: ActionContext,
-): Promise<DbHash> {
-  throw new Error("TODO(WP3): implement get-databasehash");
+export interface GetLoginsArgs {
+  url: string;
+  submitUrl?: string;
+  /** HTTP Basic/Digest lookup path (`httpAuth: "true"`). */
+  httpAuth?: boolean;
+  /**
+   * Full keyring. Defaults to every persisted association when omitted so
+   * callers cannot accidentally send an empty list.
+   */
+  keys?: Array<{ id: string; key: string }>;
+  /** Ask the app to raise its unlock UI (can take up to 30 s). */
+  triggerUnlock?: boolean;
+}
+
+function timeoutFor(
+  ctx: ActionContext,
+  options: { long?: boolean } = {},
+): number | undefined {
+  return ctx.timeoutMs ?? (options.long ? LONG_REQUEST_TIMEOUT_MS : undefined);
+}
+
+function associationId(ctx: ActionContext): string | undefined {
+  return ctx.association?.id ?? ctx.session.currentAssociation()?.id;
+}
+
+export async function fetchDatabaseHash(ctx: ActionContext): Promise<DbHash> {
+  return ctx.session.getDatabaseHash();
 }
 
 export async function associate(
-  _ctx: ActionContext,
+  ctx: ActionContext,
 ): Promise<{ id: string; hash: DbHash }> {
-  throw new Error("TODO(WP3): implement associate");
+  return ctx.session.associate();
 }
 
 export async function testAssociate(
-  _ctx: ActionContext,
+  ctx: ActionContext,
 ): Promise<{ id: string; hash: DbHash }> {
-  throw new Error("TODO(WP3): implement test-associate");
+  return ctx.session.testAssociate();
 }
 
 export async function getLogins(
-  _ctx: ActionContext,
-  _args: {
-    url: string;
-    submitUrl?: string;
-    httpAuth?: boolean;
-    keys: Array<{ id: string; key: string }>;
-  },
+  ctx: ActionContext,
+  args: GetLoginsArgs,
 ): Promise<CredentialEntry[]> {
-  throw new Error("TODO(WP3): implement get-logins");
+  if (!args.url) {
+    throw makeProtocolError(KpxcErrorCode.NO_URL_PROVIDED);
+  }
+  const keys = args.keys?.length
+    ? args.keys
+    : await ctx.session.connectionKeys();
+  const long = args.httpAuth === true || args.triggerUnlock === true;
+
+  const response = await ctx.session.request<GetLoginsResponse>({
+    action: KpxcAction.GET_LOGINS,
+    requiresAssociation: true,
+    triggerUnlock: args.triggerUnlock,
+    timeoutMs: timeoutFor(ctx, { long }),
+    buildInner: () =>
+      buildGetLoginsInner({
+        id: associationId(ctx),
+        url: args.url,
+        submitUrl: args.submitUrl,
+        httpAuth: args.httpAuth ? "true" : undefined,
+        keys,
+      }),
+  });
+
+  if (!Array.isArray(response.entries)) {
+    throw makeProtocolError(
+      KpxcErrorCode.CANNOT_DECRYPT_MESSAGE,
+      "get-logins response has no entries array",
+    );
+  }
+
+  // The app may return the same entry through several aliases (URL, submitUrl,
+  // subdomain). De-duplicate by UUID, preserving server order.
+  const seen = new Set<string>();
+  const entries: CredentialEntry[] = [];
+  for (const entry of response.entries) {
+    const uuid = typeof entry?.uuid === "string" ? entry.uuid : "";
+    if (uuid && seen.has(uuid)) {
+      continue;
+    }
+    if (uuid) {
+      seen.add(uuid);
+    }
+    entries.push(entry);
+  }
+  return entries;
 }
 
 export async function setLogin(
-  _ctx: ActionContext,
-  _args: SaveLoginArgs,
+  ctx: ActionContext,
+  args: SaveLoginArgs,
 ): Promise<SaveLoginResult> {
-  throw new Error("TODO(WP3): implement set-login");
+  if (!args.url) {
+    throw makeProtocolError(KpxcErrorCode.NO_URL_PROVIDED);
+  }
+  if (args.login.includes("{REF:") || args.password.includes("{REF:")) {
+    throw makeProtocolError(KpxcErrorCode.CANNOT_USE_REFERENCES);
+  }
+
+  const update = typeof args.uuid === "string" && args.uuid.length > 0;
+  const response = await ctx.session.request<SetLoginResponse>({
+    action: KpxcAction.SET_LOGIN,
+    requiresAssociation: true,
+    triggerUnlock: true,
+    timeoutMs: timeoutFor(ctx, { long: true }),
+    buildInner: () =>
+      buildSetLoginInner({
+        id: associationId(ctx),
+        login: args.login,
+        password: args.password,
+        url: args.url,
+        submitUrl: args.submitUrl,
+        uuid: update ? args.uuid : undefined,
+        group: update ? undefined : args.group,
+        groupUuid: update ? undefined : args.groupUuid,
+        downloadFavicon: update ? undefined : "true",
+      }),
+  });
+
+  // `set-login` reports the operation result in the *inner* `error` field while
+  // `success` stays "true" (ACTIONS.md §4.6).
+  const ok = response.error === "success";
+  return {
+    success: ok,
+    message: ok
+      ? "success"
+      : response.error === "error"
+        ? "The save was declined"
+        : String(response.error ?? "Unknown save result"),
+  };
 }
 
 export async function getTotp(
-  _ctx: ActionContext,
-  _uuid: HexUuid,
+  ctx: ActionContext,
+  uuid: HexUuid,
 ): Promise<string> {
-  throw new Error("TODO(WP3): implement get-totp");
+  if (!isHexUuid(uuid)) {
+    throw makeProtocolError(KpxcErrorCode.NO_VALID_UUID_PROVIDED);
+  }
+  const response = await ctx.session.request<GetTotpResponse>({
+    action: KpxcAction.GET_TOTP,
+    requiresAssociation: true,
+    timeoutMs: timeoutFor(ctx),
+    buildInner: () => buildGetTotpInner(uuid),
+  });
+  return typeof response.totp === "string" ? response.totp : "";
 }
 
 export async function getDatabaseGroups(
-  _ctx: ActionContext,
+  ctx: ActionContext,
 ): Promise<DatabaseGroup[]> {
-  throw new Error("TODO(WP3): implement get-database-groups");
+  const response = await ctx.session.request<GetDatabaseGroupsResponse>({
+    action: KpxcAction.GET_DATABASE_GROUPS,
+    requiresAssociation: true,
+    timeoutMs: timeoutFor(ctx),
+    buildInner: () => buildGetDatabaseGroupsInner(),
+  });
+  // Frozen compatibility quirk: the wire value is `{groups: {groups: [root]}}`.
+  const groups = response.groups?.groups;
+  if (!Array.isArray(groups) || groups.length === 0) {
+    throw makeProtocolError(KpxcErrorCode.NO_GROUPS_FOUND);
+  }
+  return groups;
 }
 
 export async function createNewGroup(
-  _ctx: ActionContext,
-  _name: string,
+  ctx: ActionContext,
+  name: string,
 ): Promise<CreatedGroup> {
-  throw new Error("TODO(WP3): create-new-group is out of scope for phase 1");
+  void ctx;
+  void name;
+  // Reserved by protocol v1 (ACTIONS.md §4.11). The save UI must restrict the
+  // user to existing groups in phase 1.
+  throw makeProtocolError(
+    KpxcErrorCode.CANNOT_CREATE_NEW_GROUP,
+    "create-new-group is not implemented in protocol v1",
+  );
 }
 
-export async function generatePassword(_ctx: ActionContext): Promise<string> {
-  throw new Error("TODO(WP3): implement generate-password");
+export async function generatePassword(ctx: ActionContext): Promise<string> {
+  const requestID = newRequestId();
+  const response = await ctx.session.request<{ password?: string; entries?: string }>({
+    action: KpxcAction.GENERATE_PASSWORD,
+    requestID,
+    timeoutMs: timeoutFor(ctx, { long: true }),
+    buildInner: ({ nonce, clientID }) =>
+      buildGeneratePasswordInner({ nonce, clientID, requestID }),
+  });
+  if (typeof response.password === "string" && response.password.length > 0) {
+    return response.password;
+  }
+  // Legacy servers return the password in `entries`.
+  return typeof response.entries === "string" ? response.entries : "";
 }
 
-export async function lockDatabase(_ctx: ActionContext): Promise<void> {
-  throw new Error("TODO(WP3): implement lock-database");
+export async function lockDatabase(ctx: ActionContext): Promise<void> {
+  try {
+    await ctx.session.request<unknown>({
+      action: KpxcAction.LOCK_DATABASE,
+      timeoutMs: timeoutFor(ctx),
+      buildInner: () => buildLockDatabaseInner(),
+    });
+  } catch (cause) {
+    // KeePassXC answers error 1 when the database was already locked. The
+    // outcome the caller asked for is true either way (ACTIONS.md §4.9).
+    const code = (cause as { code?: unknown } | null)?.code;
+    if (code !== KpxcErrorCode.DATABASE_NOT_OPENED) {
+      throw cause;
+    }
+  }
+  // The app also broadcasts `database-locked`; update local state immediately in
+  // case the push is lost.
+  ctx.session.markLocked();
 }
