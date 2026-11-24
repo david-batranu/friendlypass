@@ -5,7 +5,7 @@
 
 import net from "node:net";
 import nacl from "tweetnacl";
-import { FrameDecoder, encodeFrame, incrementNonce } from "./frames.mjs";
+import { ObjectStreamDecoder, encodeObject, incrementNonce } from "./frames.mjs";
 
 interface Waiter {
   resolve: (frame: Record<string, unknown>) => void;
@@ -15,7 +15,7 @@ interface Waiter {
 
 export class AppSocketClient {
   readonly socket: net.Socket;
-  private readonly decoder = new FrameDecoder();
+  private readonly decoder = new ObjectStreamDecoder();
   private readonly frames: Array<Record<string, unknown>> = [];
   private readonly waiters: Waiter[] = [];
   private closed = false;
@@ -66,7 +66,7 @@ export class AppSocketClient {
   }
 
   send(frame: Record<string, unknown>): void {
-    this.socket.write(encodeFrame(frame));
+    this.socket.write(encodeObject(frame));
   }
 
   nextFrame(timeoutMs = 5000): Promise<Record<string, unknown>> {

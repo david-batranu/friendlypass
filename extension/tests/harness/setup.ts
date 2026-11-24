@@ -54,13 +54,42 @@ export function extensionIdForPath(extensionPath: string): string {
 
 /** IDs to allow in the manifest: the literal path and its realpath. */
 export function extensionIdCandidates(extensionPath: string): string[] {
-  const candidates = new Set<string>([extensionIdForPath(extensionPath)]);
+  const candidates = new Set<string>();
+  // A pinned manifest `key` fixes the id regardless of the load path.
+  const keyed = extensionIdFromManifestKey(extensionPath);
+  if (keyed) candidates.add(keyed);
+  candidates.add(extensionIdForPath(extensionPath));
   try {
     candidates.add(extensionIdForPath(fs.realpathSync(extensionPath)));
   } catch {
     /* path may not exist yet; only the literal candidate is used */
   }
   return [...candidates];
+}
+
+/**
+ * Chrome derives the id from a manifest `key` as SHA-256 of the Base64-decoded
+ * DER SubjectPublicKeyInfo, first 16 bytes, each nibble mapped 0→a … f→p.
+ * Returns null when the manifest has no key (path-derived id applies).
+ */
+export function extensionIdFromManifestKey(
+  extensionPath: string,
+): string | null {
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(extensionPath, "manifest.json"), "utf8"),
+    ) as { key?: unknown };
+    if (typeof manifest.key !== "string") return null;
+    const digest = createHash("sha256")
+      .update(Buffer.from(manifest.key, "base64"))
+      .digest("hex")
+      .slice(0, 32);
+    return [...digest]
+      .map((nibble) => String.fromCharCode(97 + Number.parseInt(nibble, 16)))
+      .join("");
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -199,7 +228,9 @@ export function writeHostWrapper(
       `export FRIENDLYPASS_BROWSER_SOCKET=${shellQuote(paths.appSocket)}`,
       `export FRIENDLYPASS_APP_SOCKET=${shellQuote(paths.appSocket)}`,
       `export FRIENDLYPASS_SOCKET=${shellQuote(paths.appSocket)}`,
-      `exec ${shellQuote(paths.hostBinary)}`,
+      // Keep the real host's stderr diagnostics in the temp root; Chrome
+      // otherwise discards them. Never contains credentials.
+      `exec ${shellQuote(paths.hostBinary)} 2>> ${shellQuote(path.join(paths.root, "host-stderr.log"))}`,
     );
   } else {
     throw new Error("real host mode selected but no host binary was provided");

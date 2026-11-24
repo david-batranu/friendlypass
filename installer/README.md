@@ -19,19 +19,31 @@ binary (it must be executable and the path is written absolute).
 ## Install
 
 ```sh
-./installer/install.sh --extension-id <your-extension-id>
+./installer/install.sh
 ```
 
-`<your-extension-id>` is the 32-character id from `chrome://extensions`
-(chrome-family browsers only; Firefox ignores it). To get a stable id during
-development, load the unpacked `extension/dist` build once and copy the id shown
-on the extensions page, or pin a `key` in the manifest (requested from WP0).
+The Chrome-family id is stable and baked in: the extension pins an RSA public
+key in `extension/src/manifest.json`, and the installer's default id
+(`pfdmagadklmhbghfipamhfbphcljdkbi`) is the SHA-256-derived id of that key. No
+`--extension-id` is needed; pass it only to override the default (for example a
+temporary unpacked build loaded without the key). Firefox uses
+`browser_specific_settings.gecko.id` (`friendlypass@friendlypass.org`).
+
+The private key lives outside the repository at
+`/Users/david/Work/Projects/friendlypass/secrets/extension-key.pem` (never
+commit or ship it). Recompute the id with:
+
+```sh
+openssl pkey -in secrets/extension-key.pem -pubout -outform DER |
+  openssl dgst -sha256 -binary | xxd -p -c 256 | cut -c1-32 |
+  tr '0-9a-f' 'a-p'
+```
 
 Options:
 
 | Option | Meaning |
 |---|---|
-| `--extension-id ID` | Chrome-family extension id (required to install; 32 chars `a`–`p`). |
+| `--extension-id ID` | Chrome-family extension id (default: the pinned-key id; 32 chars `a`–`p`). |
 | `--firefox-extension-id ID` | Firefox add-on id; default `friendlypass@friendlypass.org`. |
 | `--host-path PATH` | Override the host binary. |
 | `--home DIR` | Use `DIR` as `$HOME` (tests, alternate profiles). |

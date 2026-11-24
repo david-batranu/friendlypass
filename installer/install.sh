@@ -7,12 +7,12 @@
 # extension uses with `chrome.runtime.connectNative()`.
 #
 # Usage:
-#   ./installer/install.sh --extension-id <chrome-extension-id> [options]
+#   ./installer/install.sh [--extension-id <chrome-extension-id>] [options]
 #   ./installer/install.sh --uninstall [options]
 #
 # Options:
-#   --extension-id ID        Chrome-family extension id (required to install).
-#                           32 characters a-p, from chrome://extensions.
+#   --extension-id ID        Chrome-family extension id. Default: the id baked
+#                            into the extension manifest key (32 chars a-p).
 #   --firefox-extension-id  Firefox add-on id (default: friendlypass@friendlypass.org).
 #   --host-path PATH        friendlypass-browser-host binary. Default: newest
 #                           of target/release, target/debug, then $PATH.
@@ -29,6 +29,9 @@ set -euo pipefail
 HOST_NAME="org.friendlypass.browser"
 HOST_DESCRIPTION="friendlypass browser integration host"
 DEFAULT_FIREFOX_ID="friendlypass@friendlypass.org"
+# Chrome id derived from the RSA public key pinned in extension/src/manifest.json.
+# Reproduce with the one-liner in installer/README.md.
+DEFAULT_EXTENSION_ID="pfdmagadklmhbghfipamhfbphcljdkbi"
 ALL_BROWSERS=(chrome chromium brave edge firefox)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,7 +50,7 @@ note() {
     printf '%s\n' "$*" >&2
 }
 
-EXTENSION_ID=""
+EXTENSION_ID="$DEFAULT_EXTENSION_ID"
 FIREFOX_ID="$DEFAULT_FIREFOX_ID"
 HOST_PATH=""
 HOME_DIR="${HOME:-}"
@@ -219,7 +222,7 @@ fi
 # Install
 # ---------------------------------------------------------------------------
 
-[[ -n "$EXTENSION_ID" ]] || die "--extension-id is required to install (the id from chrome://extensions)"
+[[ -n "$EXTENSION_ID" ]] || die "--extension-id must not be empty"
 if [[ ! "$EXTENSION_ID" =~ ^[a-p]{32}$ ]]; then
     die "--extension-id must be 32 characters in the range a-p, got: $EXTENSION_ID"
 fi

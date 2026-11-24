@@ -39,6 +39,7 @@ import {
   type HostMode,
   writeHostWrapper,
 } from "./setup";
+import { RustApp } from "./rust-app";
 import { sleep } from "./frames.mjs";
 
 export interface HarnessOptions {
@@ -48,6 +49,27 @@ export interface HarnessOptions {
   hostBinary?: string | null;
   headless?: boolean;
   channel?: string;
+  /**
+   * `mock` (default) uses the Node app mock. `rust` runs the real
+   * `friendlypass-browser` protocol server from `fixtures/` (Phase-1 exit
+   * test); it always pairs with `hostMode: "real"`.
+   */
+  appMode?: "mock" | "rust";
+  /** Built `test_server` example; defaults to target/debug/examples/test_server. */
+  testServerBinary?: string;
+}
+
+/** The lifecycle surface the harness needs from either app backend. */
+export interface HarnessApp {
+  readonly socketPath: string;
+  readonly logPath: string;
+  readonly listening: boolean;
+  readonly connectionCount: number;
+  readonly currentConnections: number;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  restart(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export type NativeRoundTrip =
@@ -64,7 +86,7 @@ export interface HostEvent extends Record<string, unknown> {
 export class Harness {
   context: BrowserContext;
   readonly paths: HarnessPaths;
-  readonly app: AppMock;
+  readonly app: HarnessApp;
   /** The built extension directory passed to `--load-extension`. */
   readonly extensionPath: string;
   readonly requestedHostMode: HostMode | "auto";
@@ -77,7 +99,7 @@ export class Harness {
   private constructor(args: {
     context: BrowserContext;
     paths: HarnessPaths;
-    app: AppMock;
+    app: HarnessApp;
     extensionPath: string;
     extensionId: string;
     sw: Worker;
@@ -111,7 +133,7 @@ export class Harness {
       defaultHostBinary(REPO_ROOT);
 
     let paths: HarnessPaths | null = null;
-    let app: AppMock | null = null;
+    let app: HarnessApp | null = null;
     let context: BrowserContext | null = null;
     try {
       paths = createHarnessEnvironment({
@@ -122,10 +144,23 @@ export class Harness {
         extensionPath,
       });
 
-      app = new AppMock({
-        socketPath: paths.appSocket,
-        logPath: paths.appLog,
-      });
+      if (options.appMode === "rust") {
+        app = new RustApp({
+          socketPath: paths.appSocket,
+          binaryPath:
+            options.testServerBinary ??
+            process.env.FP_TEST_SERVER_BINARY ??
+            path.join(REPO_ROOT, "target/debug/examples/test_server"),
+          fixtureDatabase: path.join(REPO_ROOT, "fixtures/sample4.kdbx"),
+          root: paths.root,
+          logPath: path.join(paths.root, "app-server.jsonl"),
+        });
+      } else {
+        app = new AppMock({
+          socketPath: paths.appSocket,
+          logPath: paths.appLog,
+        });
+      }
       await app.start();
 
       const probeEnv: Record<string, string> = {
@@ -139,7 +174,7 @@ export class Harness {
       const mode = await resolveHostMode(
         requestedHostMode,
         hostBinary,
-        { socketPath: paths.appSocket, connectionCount: app.connectionCount },
+        app,
         probeEnv,
       );
       paths.mode = mode;
@@ -251,6 +286,24 @@ export class Harness {
     if (nonce) request.nonce = nonce;
     const result = await this.nativeRoundTrip(request);
     if (!result.ok) throw new Error(`native ping failed: ${result.error}`);
+    return result.frame;
+  }
+
+  /**
+   * Keep one native port open and ping until the host reports
+   * `appRunning: true`.
+   *
+   * A brand-new host process answers `ping` before its background probe has
+   * heard from the app, so a single ping on a fresh port legitimately reports
+   * false for about a second. Reusing the port makes readiness observable.
+   */
+  async waitForAppRunning(timeoutMs = 5000): Promise<Record<string, unknown>> {
+    const worker = await this.currentServiceWorker();
+    const result = await worker.evaluate(extensionWaitForAppRunning, {
+      hostName: NATIVE_HOST_NAME,
+      timeoutMs,
+    });
+    if (!result.ok) throw new Error(`app never reported running: ${result.error}`);
     return result.frame;
   }
 
@@ -382,11 +435,69 @@ export class Harness {
   }
 
   stallApp(ms: number): number {
-    return this.app.stall(ms);
+    if (this.app instanceof AppMock) {
+      return this.app.stall(ms);
+    }
+    throw new Error("stallApp() requires the Node app mock");
   }
 
   sendCorruptFrame(): boolean {
-    return this.app.sendCorruptFrame();
+    if (this.app instanceof AppMock) {
+      return this.app.sendCorruptFrame();
+    }
+    throw new Error("sendCorruptFrame() requires the Node app mock");
+  }
+
+  /**
+   * Call an internal background request through the service worker's debug
+   * bridge. This is the same handler map the popup uses, so specs exercise the
+   * real transport/session/action path without a test-only shortcut.
+   */
+  async internalRequest<A extends string>(
+    action: A,
+    args?: unknown,
+  ): Promise<unknown> {
+    const worker = await this.currentServiceWorker();
+    return worker.evaluate(
+      async ({ action: innerAction, args: innerArgs }) => {
+        const debug = (
+          globalThis as unknown as {
+            __friendlypassDebug?: {
+              request(a: string, v?: unknown): Promise<unknown>;
+            };
+          }
+        ).__friendlypassDebug;
+        if (!debug) throw new Error("friendlypass debug bridge is not installed");
+        return await debug.request(innerAction, innerArgs);
+      },
+      { action, args },
+    );
+  }
+
+  /** Unhandled rejections observed by the current service worker. */
+  async swRejections(): Promise<string[]> {
+    const worker = await this.currentServiceWorker();
+    return worker.evaluate(() => {
+      const debug = (
+        globalThis as unknown as {
+          __friendlypassDebug?: { rejections(): string[] };
+        }
+      ).__friendlypassDebug;
+      return debug?.rejections() ?? [];
+    });
+  }
+
+  /** The Rust app backend, when `appMode: "rust"` selected it. */
+  rustApp(): RustApp {
+    if (this.app instanceof RustApp) {
+      return this.app;
+    }
+    throw new Error("rustApp() requires appMode: \"rust\"");
+  }
+
+  /** PID written by the generated host wrapper, if a host is running. */
+  hostProcessId(): number | null {
+    return readHostPid(this.paths);
   }
 
   hostEvents(): HostEvent[] {
@@ -440,6 +551,15 @@ export class Harness {
   /** Wait until the host has an app-socket connection (for corrupt frames). */
   async waitForAppConnected(timeoutMs = 5000): Promise<void> {
     await waitForAppConnection(this.app, timeoutMs);
+  }
+
+  /**
+   * Wait for the app to have at least `minimum` live host connections. Each
+   * native port is a separate host process, so fault injection must target the
+   * port under test (not merely "some" host connection).
+   */
+  async waitForAppConnections(minimum: number, timeoutMs = 5000): Promise<void> {
+    await waitForAppConnection(this.app, timeoutMs, minimum);
   }
 
   /**
@@ -503,6 +623,9 @@ async function resolveHostMode(
 
   const connectionsBefore = app?.connectionCount ?? 0;
   const probe = await probeHostBinary(hostBinary, {
+    appConnected: app
+      ? () => app.connectionCount > connectionsBefore
+      : undefined,
     env: {
       ...env,
       ...(app
@@ -634,6 +757,88 @@ async function extensionNativeRoundTrip(args: {
     });
     try {
       port.postMessage(frame);
+    } catch (error) {
+      finish({ ok: false, error: String(error) });
+    }
+  });
+}
+
+/**
+ * Runs inside the service worker: open one native port and ping on it until
+ * `appRunning: true` or the deadline. Chrome gives each port its own host
+ * process, so reusing the port keeps the same status cache.
+ */
+async function extensionWaitForAppRunning(args: {
+  hostName: string;
+  timeoutMs: number;
+}): Promise<
+  { ok: true; frame: Record<string, unknown> } | { ok: false; error: string }
+> {
+  const { hostName, timeoutMs } = args;
+  return await new Promise((resolve) => {
+    let settled = false;
+    let port: chrome.runtime.Port | null = null;
+    let last: Record<string, unknown> | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let nextPing: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = (
+      value:
+        | { ok: true; frame: Record<string, unknown> }
+        | { ok: false; error: string },
+    ) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      if (nextPing !== null) clearTimeout(nextPing);
+      try {
+        port?.disconnect();
+      } catch {
+        /* already gone */
+      }
+      resolve(value);
+    };
+
+    timer = setTimeout(() => {
+      finish({
+        ok: false,
+        error: `appRunning stayed false for ${timeoutMs} ms (last: ${JSON.stringify(last)})`,
+      });
+    }, timeoutMs);
+
+    try {
+      port = chrome.runtime.connectNative(hostName);
+    } catch (error) {
+      finish({ ok: false, error: String(error) });
+      return;
+    }
+    port.onMessage.addListener((message) => {
+      const frame = message as Record<string, unknown>;
+      if (frame.action !== "ping") return;
+      last = frame;
+      if (frame.appRunning === true) {
+        finish({ ok: true, frame });
+        return;
+      }
+      if (nextPing === null) {
+        nextPing = setTimeout(() => {
+          nextPing = null;
+          try {
+            port?.postMessage({ action: "ping" });
+          } catch {
+            finish({ ok: false, error: "native port closed" });
+          }
+        }, 150);
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      finish({
+        ok: false,
+        error: chrome.runtime.lastError?.message ?? "native port disconnected",
+      });
+    });
+    try {
+      port.postMessage({ action: "ping" });
     } catch (error) {
       finish({ ok: false, error: String(error) });
     }

@@ -24,7 +24,9 @@ import { randomUUID } from "node:crypto";
 import {
   FrameDecoder,
   HOST_ERROR,
+  ObjectStreamDecoder,
   encodeFrame,
+  encodeObject,
   sleep,
 } from "./frames.mjs";
 
@@ -166,7 +168,7 @@ function handleHostAction(frame) {
  */
 function forwardToApp(frame) {
   if (appConnected && appSocket) {
-    appSocket.write(encodeFrame(frame));
+    appSocket.write(encodeObject(frame));
     logFrame("ext->app", frame);
     return;
   }
@@ -202,7 +204,7 @@ function flushPending() {
     if (!item) break;
     clearTimeout(item.timer);
     if (appSocket) {
-      appSocket.write(encodeFrame(item.frame));
+      appSocket.write(encodeObject(item.frame));
       logFrame("ext->app", item.frame);
     }
   }
@@ -225,7 +227,9 @@ process.stdin.on("data", (chunk) => {
 process.stdin.on("end", () => shutdown(0));
 process.stdin.on("error", () => shutdown(0));
 
-const appDecoder = new FrameDecoder();
+// The app socket is raw concatenated JSON objects (ACTIONS.md app-socket
+// section), not native-messaging framing.
+const appDecoder = new ObjectStreamDecoder();
 let reconnectDelay = 250;
 /** @type {NodeJS.Timeout|null} */
 let reconnectTimer = null;

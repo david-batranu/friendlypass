@@ -270,6 +270,29 @@ export function incrementBase64Nonce(nonce: string): string | null {
   }
 }
 
+/**
+ * Combine a `hello` reply with a status frame that arrived while the request
+ * was in flight.
+ *
+ * `hello` is a snapshot the host took *before* it wrote the reply, so a push or
+ * a probe answer handled in between is strictly newer. A freshly spawned host
+ * answers `hello` from a status cache that its first app probe has not filled
+ * yet (`appRunning:false`); without this merge the extension would cache "app
+ * down" and only recover on the next status change or the 20 s heartbeat.
+ */
+export function mergeObservedStatus(
+  hello: HostHelloResponse,
+  status: HostPingResponse,
+): HostHelloResponse {
+  return {
+    ...hello,
+    appRunning: status.appRunning === true,
+    appVersion: status.appVersion ?? hello.appVersion,
+    locked: status.locked ?? hello.locked,
+    databaseHash: status.databaseHash ?? hello.databaseHash,
+  };
+}
+
 export function createNativeTransport(
   handlers: TransportHandlers,
   options: NativeTransportOptions = {},
@@ -296,6 +319,10 @@ class NativeTransportImpl implements NativeTransport {
   private attemptValue = 0;
   private lastErrorValue: ProtocolError | null = null;
   private legacyModeValue = false;
+  /** Freshest status frame (push or ping answer) seen on the current port. */
+  private lastStatusValue: HostPingResponse | null = null;
+  /** Bumped for every status observation; detects a `hello` reply racing one. */
+  private statusEpoch = 0;
 
   private connectPromise: Promise<HostHelloResponse> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -391,6 +418,7 @@ class NativeTransportImpl implements NativeTransport {
     this.lastErrorValue = null;
     this.legacyModeValue = false;
     this.helloValue = null;
+    this.lastStatusValue = null;
     this.handlers.onStateChange?.({ type: "connecting" });
 
     let port: NativePortLike;
@@ -439,7 +467,18 @@ class NativeTransportImpl implements NativeTransport {
     }
 
     try {
-      const hello = await this.requestHello();
+      // The host may send a status frame (a `hello.statusPush` push, or the
+      // answer to our own probe) while `hello` is in flight, and the two are
+      // written by different host threads. A brand-new host answers `hello`
+      // from a status cache that its first app probe has not filled yet, so the
+      // reply often says `appRunning:false` even though the app is running.
+      // Never let that older snapshot overwrite a status frame we already saw:
+      // doing so pins `appRunning` at false until the next 20 s heartbeat.
+      const epoch = this.statusEpoch;
+      let hello = await this.requestHello();
+      if (this.statusEpoch !== epoch && this.lastStatusValue !== null) {
+        hello = mergeObservedStatus(hello, this.lastStatusValue);
+      }
       this.helloValue = hello;
       this.hostVersionValue = hello.hostVersion;
       this.appVersionValue = hello.appVersion;
@@ -455,6 +494,11 @@ class NativeTransportImpl implements NativeTransport {
       }
 
       this.startHeartbeat();
+      // Learn the app status immediately instead of waiting one heartbeat
+      // interval (20 s). Recovery and the "app down" badge both depend on it.
+      void this.ping().catch(() => {
+        // The heartbeat loop owns retries; an early miss is not fatal.
+      });
       return hello;
     } catch (cause) {
       const error = transportError(cause);
@@ -518,6 +562,9 @@ class NativeTransportImpl implements NativeTransport {
       action: "hello",
       ...(clientID ? { clientID } : {}),
       extensionVersion: this.options.extensionVersion ?? "0.1.0",
+      // Ask for immediate appRunning notifications so an app restart needs no
+      // manual reconnect and no 20 s heartbeat wait.
+      statusPush: true,
     };
     const response = await this.request(
       frame,
@@ -796,6 +843,13 @@ class NativeTransportImpl implements NativeTransport {
       console.warn("[friendlypass] transport onFrame handler failed:", asError(cause).message);
     }
 
+    // The host may push an unsolicited status frame (opt-in via
+    // `hello.statusPush`) when the app goes away or comes back. Treat it like
+    // any other host status answer so the transport's own view stays current.
+    if (isHostPingResponse(message)) {
+      this.noteHostStatus(message);
+    }
+
     if (isErrorFrame(message)) {
       const error = protocolErrorFromFrame(message);
       const action = typeof message.action === "string" ? message.action : "";
@@ -947,12 +1001,30 @@ class NativeTransportImpl implements NativeTransport {
 
   private noteHostStatus(status: HostPingResponse): void {
     const wasRunning = this.appRunningValue;
+    this.statusEpoch += 1;
+    this.lastStatusValue = status;
     this.appRunningValue = status.appRunning;
     if (typeof status.hostVersion === "string") {
       this.hostVersionValue = status.hostVersion;
     }
     this.appVersionValue = status.appVersion;
     this.protocolVersionValue = status.protocolVersion;
+
+    // `hello` is a status snapshot, and `connect()` resolves from the cached
+    // copy. Refresh it, otherwise a caller that connects after the app came up
+    // (session revalidation after a status push) would read a stale
+    // `appRunning: false` and abort the handshake.
+    if (this.helloValue !== null) {
+      this.helloValue = {
+        ...this.helloValue,
+        appRunning: status.appRunning,
+        appVersion: status.appVersion,
+        locked: status.locked,
+        databaseHash: status.databaseHash,
+        hostVersion: status.hostVersion,
+        protocolVersion: status.protocolVersion,
+      };
+    }
 
     if (status.appRunning !== wasRunning) {
       const event: TransportStateEvent = status.appRunning

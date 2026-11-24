@@ -99,7 +99,7 @@ impl Runtime {
 
         match action {
             "ping" => self.answer_ping(object.get("nonce").and_then(Value::as_str)),
-            "hello" => self.answer_hello(),
+            "hello" => self.answer_hello(object),
             _ if PUSH_ACTIONS.contains(&action) => self.out.value(&errors::host_error(
                 action,
                 errors::UNKNOWN_HOST_ACTION,
@@ -149,7 +149,16 @@ impl Runtime {
         self.out.value(&Value::Object(frame))
     }
 
-    fn answer_hello(&self) -> io::Result<()> {
+    fn answer_hello(&self, request: &Map<String, Value>) -> io::Result<()> {
+        // Opt-in: the new extension asks for appRunning pushes; nobody else
+        // (in particular stock KeePassXC clients) gets unsolicited frames.
+        if request
+            .get("statusPush")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            self.app.set_status_push(true);
+        }
         let snapshot = self.status.snapshot();
         let mut frame = Map::new();
         frame.insert("action".into(), Value::from("hello"));

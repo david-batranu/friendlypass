@@ -83,6 +83,7 @@ import type {
   TransportDisconnectReason,
   TransportHandlers,
 } from "./transport";
+import { mergeObservedStatus } from "./transport";
 
 // ---------------------------------------------------------------------------
 // Sizes and base64
@@ -703,6 +704,7 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
   let generation = 0;
   let inFlight: Promise<ConnectionSnapshot> | null = null;
   let revalidationQueued = false;
+  let revalidationAgain = false;
   let lastError: ProtocolError | null = null;
 
   const pendingByNonce = new Map<B64, Pending>();
@@ -1009,9 +1011,14 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
       locked: frame.locked ?? previous.locked,
       databaseHash: frame.databaseHash ?? previous.databaseHash,
     });
-    if (appRunning && !previous.appRunning && previous.state !== "HANDSHAKING") {
-      updateSnapshot({ state: "READY", lastError: null });
-      scheduleRevalidate();
+    if (appRunning && !previous.appRunning) {
+      // The app answered again: move READY back to a fresh handshake. When a
+      // handshake is already running it may have read a stale app-down `hello`,
+      // so re-run it once it settles rather than dropping the transition.
+      if (previous.state !== "HANDSHAKING") {
+        updateSnapshot({ state: "READY", lastError: null });
+      }
+      scheduleRevalidate(true);
     }
   }
 
@@ -1032,7 +1039,7 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
           associated: false,
           lastError: null,
         });
-        scheduleRevalidate();
+        scheduleRevalidate(true);
         break;
       case PushAction.DATABASE_CHANGED: {
         const nextHash =
@@ -1049,7 +1056,7 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
             lastError: null,
             databaseHash: nextHash,
           });
-          scheduleRevalidate();
+          scheduleRevalidate(true);
         } else if (nextHash !== null) {
           updateSnapshot({ databaseHash: nextHash });
         }
@@ -1067,7 +1074,22 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
     inFlight = null;
   }
 
-  function scheduleRevalidate(): void {
+  /**
+   * Rebuild the session in the background. `afterInFlight` marks events whose
+   * truth may post-date a handshake that is already running (status transitions,
+   * pushes); those must run again once it settles, otherwise the event is lost.
+   */
+  function scheduleRevalidate(afterInFlight = false): void {
+    if (inFlight !== null) {
+      // A handshake that started before this event may already have consumed a
+      // stale `hello` (app down). Dropping the event here used to leave the app
+      // marked down until the next status change or the 20 s heartbeat, so
+      // remember to run once more when that handshake settles.
+      if (afterInFlight) {
+        revalidationAgain = true;
+      }
+      return;
+    }
     if (revalidationQueued) {
       return;
     }
@@ -1078,8 +1100,29 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
       .catch(() => store.snapshot())
       .finally(() => {
         revalidationQueued = false;
+        if (revalidationAgain) {
+          revalidationAgain = false;
+          scheduleRevalidate();
+        }
       })
       .catch(() => undefined);
+  }
+
+  /**
+   * Ask the host for the app status (a host-level `ping`, answered locally in
+   * microseconds). Returns null when the port is gone or the host does not
+   * answer; the reconnect loop owns that failure mode, so callers then fail
+   * fast instead of waiting.
+   */
+  async function probeAppStatus(): Promise<HostPingResponse | null> {
+    if (!transport.connected) {
+      return null;
+    }
+    try {
+      return await transport.ping();
+    } catch {
+      return null;
+    }
   }
 
   // --- handshake -----------------------------------------------------------
@@ -1261,8 +1304,29 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
       });
 
       if (hello.appRunning !== true) {
-        // The host stays connected while the app is down. No keys yet; actions
-        // fail fast until a ping or a user action reports the app is up.
+        // The host stays connected while the app is down. Never trust a single
+        // `hello` snapshot here: a host that was spawned a moment ago answers
+        // from a status cache its first app probe has not filled yet, and an
+        // on-demand credential action must not wait for a status push (which
+        // can race this handshake) or the 20 s heartbeat. Ask the host once —
+        // it owns liveness — so recovery costs one round trip (§6.2).
+        const status = await probeAppStatus();
+        if (token !== generation) {
+          return store.snapshot();
+        }
+        if (status !== null && status.appRunning === true) {
+          hello = mergeObservedStatus(hello, status);
+          updateSnapshot({
+            appRunning: true,
+            appVersion: hello.appVersion ?? null,
+            locked: hello.locked === true,
+            databaseHash: hello.databaseHash ?? null,
+          });
+        }
+      }
+
+      if (hello.appRunning !== true) {
+        // No keys yet; actions fail fast until the host reports the app up.
         clearKeys();
         updateSnapshot({
           state: "READY",

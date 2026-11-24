@@ -259,6 +259,12 @@ export interface HostHelloRequest {
   action: typeof HostAction.HELLO;
   clientID?: B64;
   extensionVersion?: string;
+  /**
+   * Ask the host to push an unsolicited `ping` frame whenever `appRunning`
+   * changes. Additive; hosts that do not support it simply stay quiet and the
+   * 20 s heartbeat still converges.
+   */
+  statusPush?: boolean;
 }
 
 export type HostRequestFrame = HostPingRequest | HostHelloRequest;
@@ -693,6 +699,7 @@ export interface BackgroundRequestMap {
   "connection.connect": { args: void; result: StatusSummary };
   "connection.reconnect": { args: void; result: StatusSummary };
   "connection.ping": { args: void; result: HostPingResponse };
+  "association.create": { args: void; result: { id: string; hash: DbHash } };
   "logins.get": {
     args: {
       url: string;

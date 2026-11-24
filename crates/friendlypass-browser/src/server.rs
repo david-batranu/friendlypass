@@ -30,7 +30,17 @@ pub const MAX_FRAME: usize = 1024 * 1024;
 const PUSH_POLL: Duration = Duration::from_millis(200);
 
 /// The KeePassXC BrowserServer socket path (macOS form, like BrowserShared).
+///
+/// `FP_APP_SOCKET` overrides the path for tests and for a relocated app. The
+/// native host derives its app link from this same function, so setting the
+/// variable is sufficient to keep both ends of the app socket in sync and
+/// guarantees tests never touch the user's real socket.
 pub fn browser_server_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("FP_APP_SOCKET") {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
     let temp = user_temp_dir();
     temp.join("org.keepassxc.KeePassXC.BrowserServer")
 }

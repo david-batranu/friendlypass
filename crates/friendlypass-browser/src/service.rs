@@ -722,7 +722,13 @@ impl ClientSession {
         if !self.associated || !self.still_associated(state) {
             return Err(ERROR_ASSOCIATION_FAILED);
         }
-        Ok(vec![("password", json!(generate_password()))])
+        // `action` makes the asynchronous reply self-describing so the host can
+        // retire its pending entry (WP1 request 4); the extra field is additive
+        // and ignored by KeePassXC clients.
+        Ok(vec![
+            ("action", json!(ACTION_GENERATE_PASSWORD)),
+            ("password", json!(generate_password())),
+        ])
     }
 
     fn lock_database(state: &SharedState) -> Result<Vec<(&'static str, Value)>, i32> {

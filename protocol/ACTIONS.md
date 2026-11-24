@@ -105,12 +105,50 @@ Worked example — the frame for `{"action":"ping"}`:
 
 The host↔app socket framing is an **internal** concern of WP1/WP7a (the native
 host forwards the decoded JSON object unchanged). It is deliberately not frozen
-here, except for these invariants:
+here, except for these invariants (§1.1.1 records the Phase-1 decision):
 
 - cryptography is end-to-end between extension and app; the host MUST NOT
   re-encrypt, decrypt or rewrite `message`/`nonce` fields;
 - the host MUST NOT inject, drop or reorder fields inside a forwarded frame;
-- `ping`/`hello` are never forwarded to the app.
+- `ping`/`hello` are never forwarded to the app, except for the host's own
+  status probe described in §1.1.1.
+
+### 1.1.1 App socket framing (decision, Phase 1) **[friendlypass]**
+
+The app socket is **not** native messaging. It is a Unix stream socket
+(`<user temp dir>/org.keepassxc.KeePassXC.BrowserServer` by default) on which
+both directions carry **raw, concatenated, compact JSON objects** — exactly what
+KeePassXC's `BrowserServer` and `crates/friendlypass-browser/src/server.rs`
+speak:
+
+```
+{...object 1...}{...object 2...}           no length prefix, no separators
+```
+
+Rules:
+
+- Payloads are UTF-8 JSON **objects**; objects are delimited by brace counting
+  with string/escape awareness, not by newlines or a length prefix.
+- Maximum object size is 1 MiB, the same cap as §1.1. A peer that exceeds it is
+  answered with a `1001` host error frame and the object is discarded.
+- An object that is not valid JSON, or is valid JSON but not an object, is a
+  protocol violation: the host answers `1002` (§3.6) and keeps both links alive.
+  It MUST NOT forward an unparseable payload to the browser.
+- The host derives the path from the same function the app uses
+  (`friendlypass_browser::browser_server_path()`); it MUST honour the
+  `FP_APP_SOCKET` environment variable so tests and a relocated app never touch
+  the user's real socket. The app also honours `FP_APP_SOCKET`.
+- Liveness: the host writes `{"action":"ping"}` once per second and expects the
+  app's §5.2-shaped answer. Any answer means "alive"; `appVersion`/`locked`/
+  `databaseHash` populate the cached status. Two consecutive unanswered probes
+  (1 s timeout each) drop and reconnect the app link.
+- The host MAY push an unsolicited §5.2-shaped `ping` frame to the extension
+  when `appRunning` changes, but only after the client opted in with
+  `hello.statusPush: true` (§5.3). KeePassXC clients never receive unsolicited
+  frames.
+
+This decision keeps KeePassXC-compatible raw-JSON framing rather than the
+length-prefixed framing an earlier harness sketch assumed.
 
 ### 1.2 Backpressure and ordering
 
@@ -951,9 +989,16 @@ Request:
 {
   "action": "hello",
   "clientID": "<optional Base64 client id>",
-  "extensionVersion": "0.1.0"
+  "extensionVersion": "0.1.0",
+  "statusPush": true
 }
 ```
+
+`statusPush` is optional and additive. When it is `true`, the host MAY write an
+unsolicited `ping` frame (the §5.2 shape, no `nonce`) whenever `appRunning`
+changes, so the extension updates its status and starts recovery without
+waiting for the 20 s heartbeat. A host that does not implement it ignores the
+field; a client that does not send it keeps a strict request/reply stream.
 
 Response:
 
@@ -1288,3 +1333,4 @@ ID, database hash and nonce rule in each file.
 | Version | Date | Change |
 |---|---|---|
 | 1 | 2026-11-24 | Initial frozen contract: KeePassXC 2.8.0 actions, host `ping`/`hello`, push messages, state machine, fixtures |
+| 1 (note) | 2026-11-24 | Phase-1 integration: app-socket framing fixed to raw concatenated JSON (§1.1.1), `FP_APP_SOCKET` override, opt-in `hello.statusPush` app-status frames (§5.3/§5.4). Additive only; no KeePassXC-compatible field changed. |
