@@ -1,0 +1,105 @@
+name: browser-ext
+
+on:
+  push:
+    paths:
+      - "extension/**"
+      - "crates/friendlypass-browser/**"
+      - "crates/friendlypass-browser-host/**"
+      - "protocol/**"
+      - "scripts/e2e.sh"
+      - ".github/workflows/browser-ext.yml"
+  pull_request:
+    paths:
+      - "extension/**"
+      - "crates/friendlypass-browser/**"
+      - "crates/friendlypass-browser-host/**"
+      - "protocol/**"
+      - "scripts/e2e.sh"
+      - ".github/workflows/browser-ext.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: browser-ext-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: browser-ext (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Cargo protocol conformance (frozen fixture test)
+        run: cargo test -p friendlypass-browser --test fixtures_crypto
+
+      - name: Cargo native-host tests
+        run: cargo test -p friendlypass-browser-host
+
+      - name: npm ci
+        working-directory: extension
+        run: npm ci
+
+      - name: Extension build
+        working-directory: extension
+        run: npm run build
+
+      - name: Extension typecheck
+        working-directory: extension
+        run: npm run typecheck
+
+      - name: Unit tests (vitest)
+        working-directory: extension
+        run: npm test
+
+      - name: Install Playwright Chromium (Linux)
+        if: runner.os == 'Linux'
+        working-directory: extension
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright Chromium (macOS)
+        if: runner.os == 'macOS'
+        working-directory: extension
+        run: npx playwright install chromium
+
+      - name: Install Xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Playwright harness + e2e
+        env:
+          FP_HOST: auto
+          # Headed under Xvfb on Linux (most reliable extension loading);
+          # new-headless Chromium on macOS.
+          FP_HEADED: ${{ runner.os == 'Linux' && '1' || '0' }}
+          FP_SKIP_BROWSER_INSTALL: "1"
+        run: bash scripts/e2e.sh
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.os }}
+          path: extension/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
