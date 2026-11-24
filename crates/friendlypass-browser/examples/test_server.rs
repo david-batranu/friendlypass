@@ -4,8 +4,11 @@
 //! installs an auto-approving association bridge (so `associate` needs no
 //! GUI), and serves the KeePassXC-Browser protocol on
 //! `friendlypass_browser::browser_server_path()` — i.e. on `FP_APP_SOCKET`
-//! when the e2e harness sets it. Nothing ever touches the user's real socket
-//! or database: the harness passes a copied fixture path and a temp socket.
+//! when the e2e harness sets it. `set-login` writes the entry with the same
+//! code path as the GUI bridge (`entry_write::apply_set_login`) and saves the
+//! KDBX file, so a test can reopen it with the CLI. Nothing ever touches the
+//! user's real socket or database: the harness passes a copied fixture path and
+//! a temp socket.
 //!
 //! Usage:
 //!   test_server [--db PATH] [--associations PATH] [--log PATH]
@@ -23,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use friendlypass_browser::service::lock_state;
-use friendlypass_browser::{snapshot_from_database, start, AutoApproveBridge};
-use keepass::DatabaseKey;
+use friendlypass_browser::{snapshot_from_database, start, FileBridge};
+use keepass::{Database, DatabaseKey};
 
 const DEFAULT_DB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/sample4.kdbx");
 const DEFAULT_PASSWORD: &str = "testpassword";
@@ -69,10 +72,22 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let database =
-        friendlypass::saveutil::open(&db_path, DatabaseKey::new().with_password(&password))?;
-    let mut state = snapshot_from_database(&database);
-    state.set_bridge(Arc::new(AutoApproveBridge::new(ASSOCIATION_ID)));
+    let key = DatabaseKey::new().with_password(&password);
+    let database = friendlypass::saveutil::open(&db_path, key.clone())?;
+    let database: Arc<Mutex<Database>> = Arc::new(Mutex::new(database));
+    let mut state = {
+        let guard = database.lock().expect("test database");
+        snapshot_from_database(&guard)
+    };
+    // Auto-approve associations and persist every `set-login` with the same
+    // entry-writing code path the GUI uses, then save the KDBX file.
+    let bridge = Arc::new(FileBridge::new(
+        ASSOCIATION_ID,
+        Arc::clone(&database),
+        key,
+        db_path.clone(),
+    ));
+    state.set_bridge(bridge.clone());
     if let Some(path) = association_path.as_ref() {
         for (id, key) in load_associations(path) {
             state.associations.insert(id, key);
@@ -92,9 +107,11 @@ fn main() -> anyhow::Result<()> {
         socket.display()
     );
 
-    // Persist new associations and report connection counts for the harness.
+    // Persist new associations, refresh the served snapshot after a browser
+    // save, and report connection counts for the harness.
     let mut last_clients = 0usize;
     let mut last_written: Option<HashMap<String, String>> = None;
+    let mut last_save_error: Option<String> = None;
     loop {
         std::thread::sleep(Duration::from_millis(10));
         let (associations, changed) = {
@@ -112,6 +129,33 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+
+        // A `set-login` mutated and saved the file on the bridge; make the
+        // in-memory snapshot match so later get-logins calls see the entry.
+        if bridge.take_changed() {
+            let snapshot = {
+                let guard = database.lock().expect("test database");
+                snapshot_from_database(&guard)
+            };
+            {
+                let mut guard = lock_state(&state);
+                guard.entries = snapshot.entries;
+                guard.groups = snapshot.groups;
+                guard.db_hash = snapshot.db_hash;
+                guard.snapshot_signature = snapshot.snapshot_signature;
+                guard.push.send_changed(None);
+            }
+            log("database-saved", "");
+        }
+
+        let save_error = bridge.last_error();
+        if save_error != last_save_error {
+            if let Some(message) = save_error.as_deref() {
+                log("save-error", &format!("\"error\":{}", json_string(message)));
+            }
+            last_save_error = save_error;
+        }
+
         let clients = handle.client_count();
         if clients != last_clients {
             log("client-count", &format!("\"count\":{clients}"));

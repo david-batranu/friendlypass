@@ -19,7 +19,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use keepass::db::{fields, CustomDataItem, CustomDataValue, Database, GroupId};
+use keepass::db::{CustomDataItem, CustomDataValue};
 
 use friendlypass_browser::bridge::{AssociationRequest, BrowserBridge, SetLoginRequest};
 use friendlypass_browser::service::lock_state;
@@ -505,83 +505,12 @@ fn apply_set_login(app: &mut App, request: &SetLoginRequest) -> bool {
     let Some(db) = app.db.as_mut() else {
         return false;
     };
-    let now = chrono::Utc::now().naive_utc();
-    let mut accepted = false;
-
-    if let Some(uuid) = &request.uuid {
-        let target = db
-            .iter_all_entries()
-            .find(|entry| entry.id().uuid().simple().to_string() == *uuid)
-            .map(|entry| entry.id());
-        if let Some(id) = target {
-            if let Some(mut entry) = db.entry_mut(id) {
-                entry.set_unprotected(fields::USERNAME, &request.login);
-                entry.set_protected(fields::PASSWORD, &request.password);
-                entry.set_unprotected(fields::URL, &request.url);
-                if let Some(submit) = &request.submit_url {
-                    if submit != &request.url {
-                        entry.set_unprotected("KP2A_URL", submit);
-                    }
-                }
-                entry.times.last_modification = Some(now);
-                accepted = true;
-            }
-        }
-    } else {
-        let group_id = target_group(db, request.group_uuid.as_deref(), request.group.as_deref());
-        if let Some(mut group) = db.group_mut(group_id) {
-            let mut entry = group.add_entry();
-            entry.set_unprotected(fields::TITLE, title_for_url(&request.url));
-            entry.set_unprotected(fields::USERNAME, &request.login);
-            entry.set_protected(fields::PASSWORD, &request.password);
-            entry.set_unprotected(fields::URL, &request.url);
-            if let Some(submit) = &request.submit_url {
-                if submit != &request.url {
-                    entry.set_unprotected("KP2A_URL", submit);
-                }
-            }
-            entry.times.creation = Some(now);
-            entry.times.last_modification = Some(now);
-            accepted = true;
-        }
+    if !friendlypass_browser::entry_write::apply_set_login(db, request) {
+        return false;
     }
-
-    if accepted {
-        app.dirty = true;
-        app.status = "Saved a login from the browser".into();
-    }
-    accepted
-}
-
-fn target_group(db: &Database, uuid: Option<&str>, name: Option<&str>) -> GroupId {
-    if let Some(uuid) = uuid.and_then(friendlypass_browser::protocol::normalize_uuid) {
-        if let Some(group) = db
-            .iter_all_groups()
-            .find(|group| group.id().uuid().simple().to_string() == uuid)
-        {
-            return group.id();
-        }
-    }
-    if let Some(name) = name.filter(|name| !name.is_empty()) {
-        if let Some(group) = db.iter_all_groups().find(|group| group.name == name) {
-            return group.id();
-        }
-    }
-    db.root().id()
-}
-
-fn title_for_url(url: &str) -> String {
-    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .trim_start_matches("www.");
-    if host.is_empty() {
-        "Browser login".to_owned()
-    } else {
-        host.to_owned()
-    }
+    app.dirty = true;
+    app.status = "Saved a login from the browser".into();
+    true
 }
 
 fn sanitise_association_id(id: &str) -> String {
@@ -648,6 +577,7 @@ pub fn answer_approval(app: &App, name: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use friendlypass_browser::entry_write::title_for_url;
     use std::time::Duration;
 
     #[test]

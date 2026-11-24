@@ -1,28 +1,37 @@
 /**
  * WP4 end-to-end fill tests.
  *
- * Real extension bundle + real native host + a local protocol server that
- * behaves like the app's database for the duration of a test. The app is a
- * small in-spec implementation because the Phase-1 Rust test server's bridge
- * accepts `set-login` but does not persist it yet (WP7b); everything else —
- * Chrome, the manifest, the content script, the service worker, the transport,
- * the native-messaging host and the protocol envelopes — is the production
- * stack.
+ * Real extension bundle + real native host. Two app backends are used:
  *
- * Test pages are served from a Node HTTP server bound to 127.0.0.1 on an
- * ephemeral port, so database entries match the real page URLs. No fixtures in
- * `fixtures/` are modified and credentials never appear in logs.
+ *  - a small in-spec protocol app for pure fill/detection scenarios (fast and
+ *    mutable, so a test can add a second login without rebuilding a database);
+ *  - the REAL Rust protocol server (`examples/test_server.rs`) with a
+ *    throwaway KDBX created by the `friendlypass` CLI for the save/update
+ *    scenarios. Those tests reopen the file with the CLI and assert the
+ *    persisted entry, so `set-login` is proven to reach disk.
+ *
+ * Chrome, the manifest, the content script, the service worker, the transport,
+ * the native-messaging host and the protocol envelopes are the production
+ * stack in both cases. Test pages are served from Node HTTP servers bound to
+ * 127.0.0.1 on ephemeral ports, so database entries match the real page URLs.
+ * No fixtures in `fixtures/` are modified and credentials never appear in
+ * logs written by production code.
  */
 
 import { expect, test as base } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { AddressInfo } from "node:net";
 import nacl from "tweetnacl";
 import { Harness } from "../harness/harness";
+import { REPO_ROOT } from "../harness/app-mock";
+import type { RustApp } from "../harness/rust-app";
 import {
   ObjectStreamDecoder,
   encodeObject,
@@ -475,6 +484,23 @@ const LOGIN_FORM = `<!doctype html><html><head><meta charset="utf-8"><title>Logi
 </form>
 </body></html>`;
 
+function plainPage(title: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head>
+<body><h1>${title}</h1></body></html>`;
+}
+
+function rustLoginPage(action: string, title: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head>
+<body>
+<h1>${title}</h1>
+<form id="login-form" action="${action}" method="post">
+  <input id="username" name="username" type="text" autocomplete="username">
+  <input id="password" name="password" type="password" autocomplete="current-password">
+  <button id="submit" type="submit">Log in</button>
+</form>
+</body></html>`;
+}
+
 const PAGES: Record<string, string> = {
   "/login": LOGIN_FORM,
   "/two-step": `<!doctype html><html><head><meta charset="utf-8"><title>Two step</title></head>
@@ -584,6 +610,34 @@ const PAGES: Record<string, string> = {
   <button type="submit">Verify</button>
 </form>
 </body></html>`,
+  // -- real-server save/update pages (WP4b) ---------------------------------
+  "/rust-save": rustLoginPage("/rust-save", "Save login"),
+  "/rust-save-home": plainPage("Signed in"),
+  "/rust-update": rustLoginPage("/rust-update", "Change password"),
+  "/rust-update-home": plainPage("Password changed"),
+  "/rust-match": rustLoginPage("/rust-match", "Already saved"),
+  "/rust-match-home": plainPage("Welcome back"),
+  "/rust-expiry": rustLoginPage("/rust-expiry", "Slow redirect"),
+  "/rust-expiry-home": plainPage("Expired offer"),
+  "/rust-different": rustLoginPage("/rust-different", "Cross-site redirect"),
+  "/rust-other": plainPage("Other site"),
+  // A JS "login" that never fires a submit event: XHR, then location.href.
+  "/rust-js": `<!doctype html><html><head><meta charset="utf-8"><title>JS login</title></head>
+<body>
+<h1>JS login</h1>
+<form id="login-form">
+  <input id="username" name="username" type="text" autocomplete="username">
+  <input id="password" name="password" type="password" autocomplete="current-password">
+  <button id="submit" type="button">Log in</button>
+</form>
+<script>
+  document.getElementById('submit').addEventListener('click', async () => {
+    await fetch('/rust-js-step', { method: 'POST' });
+    location.href = '/rust-js-home';
+  });
+</script>
+</body></html>`,
+  "/rust-js-home": plainPage("JS signed in"),
 };
 
 interface PagesServer {
@@ -591,9 +645,54 @@ interface PagesServer {
   close(): Promise<void>;
 }
 
+/**
+ * Destination of the throwaway Rust-server DB: a second pages server on a
+ * different loopback port, i.e. a genuinely different site for the
+ * cross-site suppression check.
+ */
+let crossSiteBaseUrl = "";
+
+/** Long enough for a shortened pending TTL to expire before the redirect. */
+const EXPIRY_REDIRECT_DELAY_MS = 1_400;
+
 async function startPages(): Promise<PagesServer> {
   const server = http.createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+    if (request.method === "POST") {
+      request.resume();
+      if (url.pathname === "/rust-js-step") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"ok":true}');
+        return;
+      }
+      const destinations: Record<string, string> = {
+        "/rust-save": "/rust-save-home",
+        "/rust-update": "/rust-update-home",
+        "/rust-match": "/rust-match-home",
+        "/rust-expiry": "/rust-expiry-home",
+        "/rust-different": crossSiteBaseUrl
+          ? `${crossSiteBaseUrl}/rust-other`
+          : "/rust-other",
+      };
+      const destination = destinations[url.pathname];
+      if (!destination) {
+        response.writeHead(404, { "content-type": "text/plain" });
+        response.end("not found");
+        return;
+      }
+      const redirect = (): void => {
+        response.writeHead(302, { location: destination });
+        response.end();
+      };
+      if (url.pathname === "/rust-expiry") {
+        setTimeout(redirect, EXPIRY_REDIRECT_DELAY_MS);
+      } else {
+        redirect();
+      }
+      return;
+    }
+
     const html = PAGES[url.pathname];
     if (!html) {
       response.writeHead(404, { "content-type": "text/plain" });
@@ -698,7 +797,180 @@ async function startStack(): Promise<Stack> {
   }
 }
 
-const test = base.extend<{ stack: Stack }>({
+// ---------------------------------------------------------------------------
+// Real Rust protocol server with a throwaway KDBX (WP4b save tests)
+// ---------------------------------------------------------------------------
+
+interface RustStack {
+  harness: Harness;
+  rust: RustApp;
+  baseUrl: string;
+}
+
+interface StatusLike {
+  appRunning: boolean;
+  state: string;
+  associated: boolean;
+  databaseHash: string | null;
+}
+
+interface AssociationLike {
+  id: string;
+  hash: string;
+}
+
+/** Matches `test_server`'s default (`FP_TEST_DB_PASSWORD` unset). */
+const TEST_DB_PASSWORD = "testpassword";
+
+let rustPages: PagesServer;
+let otherPages: PagesServer;
+let rustTempRoot = "";
+let pristineRustDb = "";
+
+function binaryPath(name: string): string {
+  return path.join(REPO_ROOT, "target/debug", name);
+}
+
+function ensureBinary(target: string, args: string[]): void {
+  if (fs.existsSync(target)) return;
+  const result = spawnSync("cargo", args, {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    timeout: 300_000,
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `failed to build ${target}:\n${result.stderr ?? result.stdout ?? ""}`,
+    );
+  }
+}
+
+function runCli(args: string[], input: string): void {
+  const result = spawnSync(binaryPath("friendlypass"), args, {
+    encoding: "utf8",
+    input,
+    timeout: 120_000,
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `friendlypass ${args.join(" ")} failed:\n${result.stderr ?? ""}`,
+    );
+  }
+}
+
+/**
+ * Pristine KDBX for the save tests. The two seeded entries are what the
+ * update/no-banner scenarios match; the save pages have no entry.
+ */
+function createRustDatabase(dbPath: string, baseUrl: string): void {
+  fs.rmSync(dbPath, { force: true });
+  runCli(
+    ["db-create", "-p", dbPath],
+    `${TEST_DB_PASSWORD}\n${TEST_DB_PASSWORD}\n`,
+  );
+  const entries = [
+    {
+      title: "Existing update",
+      username: "update@example.com",
+      password: "old-password",
+      url: `${baseUrl}/rust-update`,
+    },
+    {
+      title: "Existing match",
+      username: "match@example.com",
+      password: "match-password",
+      url: `${baseUrl}/rust-match`,
+    },
+  ];
+  for (const entry of entries) {
+    runCli(
+      [
+        "add",
+        "-p",
+        dbPath,
+        entry.title,
+        "-u",
+        entry.username,
+        "-U",
+        entry.url,
+      ],
+      `${TEST_DB_PASSWORD}\n${entry.password}\n`,
+    );
+  }
+}
+
+/**
+ * Reopen the KDBX with the friendlypass CLI, exactly as another process would.
+ * Returns `null` while the entry is not there yet (used with `expect.poll`).
+ */
+function readEntryViaCli(
+  dbPath: string,
+  title: string,
+): Record<string, string> | null {
+  const result = spawnSync(binaryPath("friendlypass"), ["show", dbPath, title], {
+    encoding: "utf8",
+    input: `${TEST_DB_PASSWORD}\n`,
+    timeout: 30_000,
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+  const entry: Record<string, string> = {};
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const match = /^(Title|UserName|Password|URL):\s*(.*)$/.exec(line);
+    if (match) {
+      entry[match[1]] = match[2];
+    }
+  }
+  return Object.keys(entry).length > 0 ? entry : null;
+}
+
+/** Shorten the pending store TTL for the expiry test (test-only setting). */
+async function setPendingTtl(harness: Harness, ttlMs: number): Promise<void> {
+  const worker = await harness.currentServiceWorker();
+  await worker.evaluate(async (value) => {
+    await chrome.storage.local.set({
+      "friendlypass.pending.settings.v1": { ttlMs: value },
+    });
+  }, ttlMs);
+}
+
+async function status(harness: Harness): Promise<StatusLike> {
+  return (await harness.internalRequest("status.get")) as StatusLike;
+}
+
+async function prepareRust(harness: Harness): Promise<void> {
+  const rust = harness.rustApp();
+  await rust.stop();
+  fs.copyFileSync(pristineRustDb, rust.databasePath);
+  fs.rmSync(rust.associationsPath, { force: true });
+  await rust.start();
+
+  // The database hash changed; rebuild the session and associate explicitly.
+  await harness.internalRequest("connection.reconnect").catch(() => undefined);
+  await expect
+    .poll(async () => (await status(harness)).appRunning, { timeout: 15_000 })
+    .toBe(true);
+
+  let lastError: unknown = null;
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    try {
+      const association = (await harness.internalRequest(
+        "association.create",
+      )) as AssociationLike;
+      if (association.id.length > 0 && /^[0-9a-f]{64}$/.test(association.hash)) {
+        return;
+      }
+    } catch (cause) {
+      lastError = cause;
+    }
+    await sleep(150);
+  }
+  throw new Error(`could not associate the test database: ${String(lastError)}`);
+}
+
+const test = base.extend<{ stack: Stack; rust: RustStack }>({
   stack: async ({}, use) => {
     const stack = await startStack();
     try {
@@ -709,6 +981,50 @@ const test = base.extend<{ stack: Stack }>({
       await stack.pages.close().catch(() => undefined);
     }
   },
+
+  rust: async ({}, use) => {
+    const harness = await Harness.start({ hostMode: "real", appMode: "rust" });
+    try {
+      await prepareRust(harness);
+      await use({ harness, rust: harness.rustApp(), baseUrl: rustPages.baseUrl });
+    } finally {
+      await harness.close().catch(() => undefined);
+    }
+  },
+});
+
+test.beforeAll(async () => {
+  test.setTimeout(300_000);
+  ensureBinary(binaryPath("friendlypass"), ["build", "-q", "-p", "friendlypass"]);
+  ensureBinary(binaryPath("friendlypass-browser-host"), [
+    "build",
+    "-q",
+    "-p",
+    "friendlypass-browser-host",
+  ]);
+  ensureBinary(path.join(REPO_ROOT, "target/debug/examples/test_server"), [
+    "build",
+    "-q",
+    "-p",
+    "friendlypass-browser",
+    "--example",
+    "test_server",
+  ]);
+
+  rustPages = await startPages();
+  otherPages = await startPages();
+  crossSiteBaseUrl = otherPages.baseUrl;
+  rustTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fp-wp4b-save-"));
+  pristineRustDb = path.join(rustTempRoot, "save.kdbx");
+  createRustDatabase(pristineRustDb, rustPages.baseUrl);
+});
+
+test.afterAll(async () => {
+  await rustPages?.close().catch(() => undefined);
+  await otherPages?.close().catch(() => undefined);
+  if (rustTempRoot) {
+    fs.rmSync(rustTempRoot, { recursive: true, force: true });
+  }
 });
 
 async function openPage(stack: Stack, path: string): Promise<Page> {
@@ -860,68 +1176,182 @@ test("search boxes never get an icon", async ({ stack }) => {
   await expect(page.locator('[data-friendlypass="menu"]')).toHaveCount(0);
 });
 
-test("save banner stores a new login in the database", async ({ stack }) => {
-  const page = await openPage(stack, "/save");
-  await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+test("save banner survives a form-submit navigation and stores the login on disk", async ({
+  rust,
+}) => {
+  const page = await rust.harness.context.newPage();
+  try {
+    await page.goto(`${rust.baseUrl}/rust-save`, { waitUntil: "load" });
+    await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
 
-  await page.fill("#username", "new-user@example.com");
-  await page.fill("#password", "brand-new-password");
-  await page.click("#submit");
+    await page.fill("#username", "nav-save@example.com");
+    await page.fill("#password", "nav-save-password");
+    await page.click("#submit");
+    await page.waitForURL("**/rust-save-home");
+    expect(page.url()).toContain("/rust-save-home");
 
-  const banner = page.locator('[data-friendlypass="banner"]');
-  await expect(banner).toHaveCount(1, { timeout: 5_000 });
-  await expect(banner).toHaveAttribute("data-friendlypass-kind", "create");
-  await banner.locator('[data-action="save"]').click();
+    const banner = page.locator('[data-friendlypass="banner"]');
+    await expect(banner).toHaveCount(1, { timeout: 10_000 });
+    await expect(banner).toHaveAttribute("data-friendlypass-kind", "create");
+    await banner.locator('[data-action="save"]').click();
+    await expect(banner).toHaveCount(0);
 
-  await expect
-    .poll(
-      () =>
-        stack.app.entries.find(
-          (entry) => entry.url === `${stack.pages.baseUrl}/save`,
-        )?.login,
-      { timeout: 10_000 },
-    )
-    .toBe("new-user@example.com");
+    // Reopen the KDBX with the CLI: the save must be on disk, not just in the
+    // server process.
+    const title = new URL(`${rust.baseUrl}/rust-save`).host;
+    await expect
+      .poll(() => readEntryViaCli(rust.rust.databasePath, title), {
+        timeout: 10_000,
+      })
+      .not.toBeNull();
+    const entry = readEntryViaCli(rust.rust.databasePath, title);
+    expect(entry?.UserName).toBe("nav-save@example.com");
+    expect(entry?.Password).toBe("nav-save-password");
+    expect(entry?.URL).toBe(`${rust.baseUrl}/rust-save`);
 
-  await expect(banner).toHaveCount(0);
-
-  const saved = await stack.harness.internalRequest("logins.get", {
-    url: `${stack.pages.baseUrl}/save`,
-  });
-  const entries = saved as Array<{ login: string; password: string }>;
-  expect(entries.some((entry) => entry.login === "new-user@example.com")).toBe(true);
+    await expect
+      .poll(
+        async () => {
+          try {
+            const saved = (await rust.harness.internalRequest("logins.get", {
+              url: `${rust.baseUrl}/rust-save`,
+            })) as Array<{ login: string }>;
+            return saved.some((item) => item.login === "nav-save@example.com");
+          } catch {
+            return false;
+          }
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
 });
 
-test("save banner updates an existing entry", async ({ stack }) => {
-  stack.app.addEntry({
-    login: "update@example.com",
-    password: "old-password",
-    name: "WP4 update login",
-    uuid: newUuid(),
-    group: "KeePassXC-Browser Passwords",
-    url: `${stack.pages.baseUrl}/save-update`,
-  });
+test("save banner survives JS navigation after an XHR (no submit event)", async ({
+  rust,
+}) => {
+  const page = await rust.harness.context.newPage();
+  try {
+    await page.goto(`${rust.baseUrl}/rust-js`, { waitUntil: "load" });
+    await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
 
-  const page = await openPage(stack, "/save-update");
-  await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+    await page.fill("#username", "xhr-save@example.com");
+    await page.fill("#password", "xhr-save-password");
+    await page.click("#submit");
+    await page.waitForURL("**/rust-js-home");
 
-  await page.fill("#username", "update@example.com");
-  await page.fill("#password", "new-password");
-  await page.click("#submit");
+    const banner = page.locator('[data-friendlypass="banner"]');
+    await expect(banner).toHaveCount(1, { timeout: 10_000 });
+    await banner.locator('[data-action="save"]').click();
+    await expect(banner).toHaveCount(0);
 
-  const banner = page.locator('[data-friendlypass="banner"]');
-  await expect(banner).toHaveCount(1, { timeout: 5_000 });
-  await expect(banner).toHaveAttribute("data-friendlypass-kind", "update");
-  await banner.locator('[data-action="save"]').click();
+    const title = new URL(`${rust.baseUrl}/rust-js`).host;
+    await expect
+      .poll(() => readEntryViaCli(rust.rust.databasePath, title), {
+        timeout: 10_000,
+      })
+      .not.toBeNull();
+    const entry = readEntryViaCli(rust.rust.databasePath, title);
+    expect(entry?.UserName).toBe("xhr-save@example.com");
+    expect(entry?.Password).toBe("xhr-save-password");
+    expect(entry?.URL).toBe(`${rust.baseUrl}/rust-js`);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+});
 
-  await expect
-    .poll(
-      () =>
-        stack.app.entries.find((entry) => entry.login === "update@example.com")
-          ?.password,
-      { timeout: 10_000 },
-    )
-    .toBe("new-password");
+test("update banner changes the existing entry's password in the KDBX", async ({
+  rust,
+}) => {
+  const page = await rust.harness.context.newPage();
+  try {
+    await page.goto(`${rust.baseUrl}/rust-update`, { waitUntil: "load" });
+    await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+
+    await page.fill("#username", "update@example.com");
+    await page.fill("#password", "new-password");
+    await page.click("#submit");
+    await page.waitForURL("**/rust-update-home");
+
+    const banner = page.locator('[data-friendlypass="banner"]');
+    await expect(banner).toHaveCount(1, { timeout: 10_000 });
+    await expect(banner).toHaveAttribute("data-friendlypass-kind", "update");
+    await banner.locator('[data-action="save"]').click();
+    await expect(banner).toHaveCount(0);
+
+    await expect
+      .poll(() => readEntryViaCli(rust.rust.databasePath, "Existing update"), {
+        timeout: 10_000,
+      })
+      .not.toBeNull();
+    const entry = readEntryViaCli(rust.rust.databasePath, "Existing update");
+    expect(entry?.UserName).toBe("update@example.com");
+    expect(entry?.Password).toBe("new-password");
+    expect(entry?.URL).toBe(`${rust.baseUrl}/rust-update`);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+});
+
+test("no save banner after navigating to a different site", async ({ rust }) => {
+  const page = await rust.harness.context.newPage();
+  try {
+    await page.goto(`${rust.baseUrl}/rust-different`, { waitUntil: "load" });
+    await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+
+    await page.fill("#username", "cross-site@example.com");
+    await page.fill("#password", "cross-site-password");
+    await page.click("#submit");
+    await page.waitForURL("**/rust-other");
+    expect(new URL(page.url()).port).not.toBe(new URL(rust.baseUrl).port);
+
+    await sleep(1_000);
+    await expect(page.locator('[data-friendlypass="banner"]')).toHaveCount(0);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+});
+
+test("no save banner when the submitted credentials already match", async ({
+  rust,
+}) => {
+  const page = await rust.harness.context.newPage();
+  try {
+    await page.goto(`${rust.baseUrl}/rust-match`, { waitUntil: "load" });
+    await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+
+    await page.fill("#username", "match@example.com");
+    await page.fill("#password", "match-password");
+    await page.click("#submit");
+    await page.waitForURL("**/rust-match-home");
+
+    await sleep(1_000);
+    await expect(page.locator('[data-friendlypass="banner"]')).toHaveCount(0);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+});
+
+test("pending save banner expires before the next page loads", async ({ rust }) => {
+  await setPendingTtl(rust.harness, 700);
+  const page = await rust.harness.context.newPage();
+  try {
+    await page.goto(`${rust.baseUrl}/rust-expiry`, { waitUntil: "load" });
+    await expect(loginIcon(page)).toHaveCount(1, { timeout: 20_000 });
+
+    await page.fill("#username", "expired@example.com");
+    await page.fill("#password", "expired-password");
+    await page.click("#submit");
+    // The server holds the redirect for 1.4 s, longer than the 700 ms TTL.
+    await page.waitForURL("**/rust-expiry-home");
+
+    await sleep(500);
+    await expect(page.locator('[data-friendlypass="banner"]')).toHaveCount(0);
+  } finally {
+    await page.close().catch(() => undefined);
+  }
 });
 
 test("TOTP field is filled from get-totp", async ({ stack }) => {

@@ -24,11 +24,19 @@ through the typed internal API in `src/common/messages.ts`.
 
 - `logins.get` — matching entries for `location.href` / form action
 - `logins.save` — create/update from the save banner
+- `submit.store` — remember a just-submitted pair before the page can unload
+- `submit.pending` — consume the pair on the next page in the same tab/site
+- `submit.clear`, `submit.never` — dismiss/opt out of the save offer
 - `totp.get` — current code, with the `get-logins` value as fallback
 - `settings.get`, `status.get` — background settings/status
 - content commands: `content.fillLogin`, `content.fillTotp`,
   `content.clearCredentials`, `content.redetectFields`,
   `content.showSaveBanner`, `content.showConnectedStatus`
+
+The pending store lives in `chrome.storage.session` (never on disk), keyed by
+tab, and is only returned to the frame that submitted the form, on the same
+registrable site, within 60 s. Two loopback ports are different sites, and
+"Never for this site" is remembered per origin in `chrome.storage.local`.
 
 ## Content-only settings
 
@@ -46,7 +54,7 @@ key; the background's `ExtensionSettings` does not own it.
 - No passkeys, password generator, custom login fields, StringField filling,
   segmented TOTP boxes, site-specific exception list, site ignore list,
   auto-submit or context-menu fill.
-- A save banner is lost if the form navigates the page (upstream persists the
-  submitted pair in the background); only same-page SPA submits keep it.
+- A pending submission is offered only once (it is consumed when the banner is
+  shown); there is no "review missed logins" list.
 - Closed shadow roots are not traversed (open roots are).
 - Settings are read once per document load; changes apply on the next page.

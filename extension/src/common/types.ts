@@ -690,6 +690,35 @@ export interface TotpArgs {
 }
 
 /**
+ * A submitted login waiting for the next page (WP4b). Stored in
+ * `chrome.storage.session`, keyed by tab; the plaintext password never touches
+ * `chrome.storage.local` or a disk-backed store.
+ */
+export interface PendingCredential {
+  /** URL of the page that contained the form. */
+  url: string;
+  origin: string;
+  username: string;
+  password: string;
+  /** Form action, when it differed from the page URL. */
+  submitUrl?: string;
+  /** Epoch milliseconds of the submission. */
+  submittedAt: number;
+}
+
+export interface StoreSubmittedArgs {
+  url: string;
+  username: string;
+  password: string;
+  submitUrl?: string;
+}
+
+export interface StoreSubmittedResult {
+  /** False when the submission was ignored (never-for-site, bad URL, empty). */
+  stored: boolean;
+}
+
+/**
  * Requests handled by the service worker. `args: void` means "call with no
  * arguments"; `sendBackgroundMessage` enforces that at compile time.
  */
@@ -727,6 +756,14 @@ export interface BackgroundRequestMap {
   "settings.get": { args: void; result: ExtensionSettings };
   "settings.set": { args: Partial<ExtensionSettings>; result: ExtensionSettings };
   "diagnostics.get": { args: void; result: DiagnosticsSnapshot };
+  /** Store the pair a form just submitted, before the page can unload. */
+  "submit.store": { args: StoreSubmittedArgs; result: StoreSubmittedResult };
+  /** Consume the pending pair for the calling tab/frame/page. */
+  "submit.pending": { args: { url: string }; result: PendingCredential | null };
+  /** Drop the pending pair for the calling tab (save, dismiss). */
+  "submit.clear": { args: void; result: void };
+  /** Never offer to save on this origin again. */
+  "submit.never": { args: { origin: string }; result: void };
 }
 
 export type BackgroundRequestAction = keyof BackgroundRequestMap;

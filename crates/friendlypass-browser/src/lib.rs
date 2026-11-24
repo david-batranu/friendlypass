@@ -16,12 +16,15 @@
 
 pub mod bridge;
 pub mod crypto;
+pub mod entry_write;
+pub mod file_bridge;
 pub mod protocol;
 pub mod push;
 pub mod server;
 pub mod service;
 
 pub use bridge::{AssociationRequest, AutoApproveBridge, BrowserBridge, DenyAllBridge, SetLoginRequest};
+pub use file_bridge::FileBridge;
 pub use push::PushHub;
 pub use server::{browser_server_path, start, user_temp_dir, ServerHandle};
 pub use service::SharedState;
