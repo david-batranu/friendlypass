@@ -701,14 +701,11 @@ export function sendBackgroundEvent<A extends BackgroundEventAction>(
     requestId: nextRequestId(),
   };
   try {
-    const result = chrome.runtime.sendMessage(envelope) as unknown;
-    if (
-      typeof result === "object" &&
-      result !== null &&
-      typeof (result as Promise<unknown>).catch === "function"
-    ) {
-      (result as Promise<unknown>).catch(() => undefined);
-    }
+    // Callback form works in Firefox's `chrome` namespace; Chrome also accepts
+    // it and the callback consumes `lastError` for a closed page.
+    chrome.runtime.sendMessage(envelope, () => {
+      void chrome.runtime.lastError;
+    });
   } catch {
     // No listener (service worker starting, all pages closed) or a context that
     // was destroyed mid-send. Events are best-effort by design.

@@ -37,14 +37,40 @@ contract and `../protocol/OWNERSHIP.md` for file ownership.
 
 ```sh
 npm install          # first time
-npm run build        # esbuild bundle -> dist/ (+ manifest.json)
+npm run build        # esbuild bundle -> dist/ (+ manifest.json), Chrome MV3
+npm run build:firefox# esbuild bundle -> dist-firefox/ (+ Firefox MV3 manifest)
+npm run package      # both builds -> artifacts/friendlypass-{chrome,firefox}-<ver>.zip
 npm run typecheck    # tsc: src/ (tsconfig.json) + tests/ (tsconfig.tests.json)
 npm test             # vitest (tests/unit only)
-npm run e2e          # playwright (config in playwright.config.ts)
+npm run e2e          # playwright Chromium e2e (config in playwright.config.ts)
+npm run e2e:firefox  # Puppeteer/WebDriver BiDi Firefox e2e (tests/firefox)
 ```
 
-`dist/` and `node_modules/` are git-ignored. The built `dist/manifest.json` is
-generated from `src/manifest.json`; edit the source, never `dist/`.
+`dist/`, `dist-firefox/`, `artifacts/`, `.cache/` and `node_modules/` are
+git-ignored. The built manifests are generated from `src/manifest.json`; edit
+the source, never the build output.
+
+## Firefox
+
+One source tree, two manifests. `npm run build:firefox` reuses the same bundles
+and produces `dist-firefox/` with:
+
+- `background.scripts` (a classic IIFE) instead of Chrome's `service_worker`;
+- `browser_specific_settings.gecko.id = friendlypass@friendlypass.org` and
+  `strict_min_version = 128.0` (MV3 event pages, `storage.session`, blocking
+  `webRequest`);
+- `webRequestBlocking` instead of `webRequestAuthProvider` (Firefox supports
+  blocking auth in MV3, Chrome does not);
+- no Chrome `key` and no `minimum_chrome_version`.
+
+`src/common/platform.ts` holds the only browser branches: callback/promise
+storage, the 1-minute Firefox `alarms` minimum, `port.error` vs
+`runtime.lastError`, tabs/commands/windows wrappers and the options shortcut
+link. `HttpAuthAdapter` has a Firefox `["blocking"]` + `Promise` implementation
+next to Chrome's `asyncBlocking` callback one; both feed the same controller.
+
+`npm run package` runs `web-ext lint` over `dist-firefox` and fails if the
+Firefox build has manifest errors.
 
 ## Stable extension id
 

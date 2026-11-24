@@ -19,6 +19,10 @@
 #   FP_CHANNEL=chromium|chrome Chromium channel (default: chromium)
 #   FP_KEEP_TEMP=1             keep the harness temp dirs for debugging
 #   FP_SKIP_BROWSER_INSTALL=1  do not run `playwright install chromium`
+#   FP_FIREFOX=1               after Playwright, run `npm run e2e:firefox`
+#                              (downloads the pinned Firefox once into
+#                              extension/.cache, then uses the real host +
+#                              real Rust server)
 #
 set -euo pipefail
 
@@ -53,9 +57,19 @@ PLAYWRIGHT=(npx playwright test "$@")
 if [[ "${FP_HEADED:-0}" == "1" && -z "${DISPLAY:-}" && "$(uname -s)" == "Linux" ]]; then
   if command -v xvfb-run >/dev/null 2>&1; then
     echo "==> running under xvfb-run"
-    exec xvfb-run -a --server-args="-screen 0 1280x1024x24" "${PLAYWRIGHT[@]}"
+    xvfb-run -a --server-args="-screen 0 1280x1024x24" "${PLAYWRIGHT[@]}"
+    if [[ "${FP_FIREFOX:-0}" == "1" ]]; then
+      echo "==> running Firefox e2e (Puppeteer/WebDriver BiDi)"
+      npm run e2e:firefox
+    fi
+    exit 0
   fi
   echo "FP_HEADED=1 but no DISPLAY and no xvfb-run; continuing headless" >&2
 fi
 
-exec "${PLAYWRIGHT[@]}"
+"${PLAYWRIGHT[@]}"
+
+if [[ "${FP_FIREFOX:-0}" == "1" ]]; then
+  echo "==> running Firefox e2e (Puppeteer/WebDriver BiDi)"
+  npm run e2e:firefox
+fi

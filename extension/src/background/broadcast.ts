@@ -14,6 +14,7 @@
 
 import { INTERNAL_CHANNEL } from "../common/types";
 import { newRequestId } from "../common/messages";
+import { queryTabs as queryBrowserTabs } from "../common/platform";
 
 export interface BroadcastTab {
   id?: number;
@@ -28,25 +29,22 @@ export interface BroadcastScope {
   sendToTab(tabId: number, message: unknown): void;
 }
 
-/** The production scope, backed by the Chrome extension APIs. */
+/** The production scope, backed by the WebExtension APIs (Chrome + Firefox). */
 export function chromeBroadcastScope(): BroadcastScope {
   return {
     sendToExtensionPages(message) {
       try {
-        const pending = chrome.runtime.sendMessage(message) as unknown;
-        if (
-          typeof pending === "object" &&
-          pending !== null &&
-          typeof (pending as Promise<unknown>).catch === "function"
-        ) {
-          (pending as Promise<unknown>).catch(() => undefined);
-        }
+        // Callback form works in Firefox's `chrome` namespace; Chrome accepts it
+        // too and the callback doubles as the lastError consumer.
+        chrome.runtime.sendMessage(message, () => {
+          void chrome.runtime.lastError;
+        });
       } catch {
         // No listener alive: events are best-effort by design.
       }
     },
     async queryTabs() {
-      const tabs = await chrome.tabs.query({});
+      const tabs = await queryBrowserTabs({});
       return tabs.map((tab) => ({ ...(typeof tab.id === "number" ? { id: tab.id } : {}) }));
     },
     sendToTab(tabId, message) {

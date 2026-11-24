@@ -48,6 +48,7 @@ import {
   makeProtocolError,
   protocolErrorFromFrame,
 } from "../common/messages";
+import { nativePortErrorMessage } from "../common/platform";
 
 /** Ten-second guard for `connectNative()` + `hello` (§6.3). */
 const CONNECT_GUARD_MS = 10000;
@@ -138,6 +139,12 @@ export interface NativeTransport {
 export interface NativePortLike {
   postMessage(message: unknown): void;
   disconnect(): void;
+  /**
+   * Firefox reports the terminal port error here; Chrome uses
+   * `runtime.lastError` inside the disconnect listener. Optional so Chrome and
+   * test doubles stay assignable.
+   */
+  error?: { message?: string } | null;
   onMessage: {
     addListener(listener: (message: unknown, port: NativePortLike) => void): void;
     removeListener(
@@ -606,7 +613,7 @@ class NativeTransportImpl implements NativeTransport {
       if (this.port !== port) {
         return;
       }
-      const detail = safeLastError();
+      const detail = nativePortErrorMessage(port);
       this.losePort("port-closed", detail, true);
     };
 
@@ -1120,13 +1127,4 @@ function nonceMatches(requestNonce: string | null, responseNonce: string): boole
   }
   const incremented = incrementBase64Nonce(requestNonce);
   return incremented !== null && incremented === responseNonce;
-}
-
-function safeLastError(): string | undefined {
-  try {
-    const lastError = chrome.runtime.lastError;
-    return lastError?.message;
-  } catch {
-    return undefined;
-  }
 }

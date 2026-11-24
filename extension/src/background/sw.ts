@@ -58,7 +58,15 @@ import {
   setHttpAuthSettingsBridge,
 } from "./http-auth";
 import { createPendingStore, readPendingTtlMs } from "./pending";
-import type { PendingStore } from "./pending";
+import type { PendingStorageArea, PendingStore } from "./pending";
+import {
+  detectBrowserKind,
+  queryTabs,
+  storageGet,
+  storageRemove,
+  storageSet,
+  windowsCreate,
+} from "../common/platform";
 
 const EXTENSION_VERSION = "0.1.0";
 
@@ -148,15 +156,64 @@ function getSession(): ProtocolSession {
 }
 
 /**
+ * Promise adapter over a `chrome.storage` area (WP9). Firefox's `chrome`
+ * namespace only implements the callback form, so the pending store and the
+ * "never for this site" list must never call `.get()` directly.
+ */
+function pendingStorageArea(area: chrome.storage.StorageArea): PendingStorageArea {
+  return {
+    get: (key) => storageGet(area, key),
+    set: (items) => storageSet(area, items),
+    remove: (key) => storageRemove(area, key),
+  };
+}
+
+/**
+ * Session-scoped storage for submitted plaintext credentials (WP9).
+ *
+ * Firefox 128 (our `strict_min_version`) and Chrome MV3 both have
+ * `storage.session`, which is memory-backed and never written to disk. If the
+ * area is somehow missing, fall back to an in-memory map rather than
+ * `storage.local`: a pending password must never become disk state.
+ */
+function pendingSessionStorage(): PendingStorageArea {
+  const storage = chrome.storage as unknown as {
+    session?: chrome.storage.StorageArea;
+  };
+  if (storage.session) {
+    return pendingStorageArea(storage.session);
+  }
+  const memory = new Map<string, unknown>();
+  return {
+    get: async (key) =>
+      memory.has(key) ? { [key]: memory.get(key) } : {},
+    set: async (items) => {
+      for (const [key, value] of Object.entries(items)) {
+        memory.set(key, structuredCloneSafe(value));
+      }
+    },
+    remove: async (key) => {
+      memory.delete(key);
+    },
+  };
+}
+
+function structuredCloneSafe<T>(value: T): T {
+  return typeof structuredClone === "function"
+    ? structuredClone(value)
+    : (JSON.parse(JSON.stringify(value)) as T);
+}
+
+/**
  * Pending submitted-credential store (WP4b). Lazily created so this module can
  * be imported without `chrome` (unit tests build the store themselves).
  */
 function getPendingStore(): PendingStore {
   if (pendingStore === null) {
     pendingStore = createPendingStore({
-      storage: chrome.storage.session,
-      neverStorage: chrome.storage.local,
-      ttlMs: () => readPendingTtlMs(chrome.storage.local),
+      storage: pendingSessionStorage(),
+      neverStorage: pendingStorageArea(chrome.storage.local),
+      ttlMs: () => readPendingTtlMs(pendingStorageArea(chrome.storage.local)),
     });
   }
   return pendingStore;
@@ -503,7 +560,7 @@ function installDebugBridge(handlers: BackgroundHandlers): void {
 function fillActiveTabFromCommand(): void {
   void (async () => {
     try {
-      const [tab] = await chrome.tabs.query({
+      const [tab] = await queryTabs({
         active: true,
         lastFocusedWindow: true,
       });
@@ -553,7 +610,7 @@ function sendWp6bContentCommand(tabId: number, action: string): void {
 }
 
 async function activeHttpTab(): Promise<{ tabId: number } | null> {
-  const [tab] = await chrome.tabs.query({
+  const [tab] = await queryTabs({
     active: true,
     lastFocusedWindow: true,
   });
@@ -669,8 +726,14 @@ async function openPopupForTab(
   const actionApi = chrome.action as unknown as {
     openPopup?: () => Promise<void>;
   };
-  if (typeof actionApi.openPopup === "function") {
-    const pending = actionApi.openPopup();
+  const openPopup = actionApi.openPopup;
+  // Firefox exposes `browser.action.openPopup()` but it requires the call to
+  // originate from a user gesture; a content-script message never carries one,
+  // so it always rejects there. Skip the 750 ms probe and use the window.
+  const mayOpenActionPopup =
+    detectBrowserKind() !== "firefox" && typeof openPopup === "function";
+  if (mayOpenActionPopup) {
+    const pending = openPopup();
     let timer: number | null = null;
     const timedOut = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), POPUP_OPEN_TIMEOUT_MS);
@@ -699,7 +762,7 @@ async function openPopupForTab(
     const base = chrome.runtime.getURL("popup/popup.html");
     const url =
       typeof tabId === "number" ? `${base}?tab=${encodeURIComponent(tabId)}` : base;
-    await chrome.windows.create({
+    await windowsCreate({
       url,
       type: "popup",
       width: 380,

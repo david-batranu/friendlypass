@@ -5,7 +5,12 @@ One command:
 ```sh
 scripts/e2e.sh            # builds extension + host, runs Playwright
 scripts/e2e.sh smoke      # extra args are passed to `playwright test`
+FP_FIREFOX=1 scripts/e2e.sh  # also runs the WP9 Firefox suite (tests/firefox)
 ```
+
+The Chromium harness is described below. The Firefox suite lives in
+`extension/tests/firefox/README.md` and uses Puppeteer/WebDriver BiDi with the
+same real native host and Rust protocol server.
 
 The harness launches **Playwright Chromium** (persistent context, new headless
 or headed under Xvfb), loads `extension/dist`, installs a native-messaging

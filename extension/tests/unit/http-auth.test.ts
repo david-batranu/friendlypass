@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createChromeHttpAuthAdapter,
+  createDefaultHttpAuthAdapter,
+  createFirefoxHttpAuthAdapter,
   createHttpAuthController,
   createMemoryHttpAuthSettingsStore,
   HTTP_AUTH_DEADLINE_MS,
@@ -170,6 +172,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   delete (globalThis as { chrome?: unknown }).chrome;
+  delete (globalThis as { browser?: unknown }).browser;
 });
 
 // ---------------------------------------------------------------------------
@@ -256,6 +259,159 @@ describe("chrome webRequest adapter", () => {
       challenger: { host: "intranet.example.com", port: 443 },
     });
     expect(responses).toEqual([{ cancel: false }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Firefox platform adapter
+// ---------------------------------------------------------------------------
+
+interface FakeFirefoxEvent {
+  listener?: (details: Record<string, unknown>) => Promise<HttpAuthResponse>;
+  filter?: { urls: string[] };
+  extra?: string[];
+}
+
+function installFirefoxWebRequest(): {
+  auth: FakeFirefoxEvent;
+  completed: ReturnType<typeof vi.fn>;
+  errored: ReturnType<typeof vi.fn>;
+} {
+  const auth: FakeFirefoxEvent = {};
+  const completed = vi.fn();
+  const errored = vi.fn();
+  (globalThis as { browser?: unknown }).browser = {
+    runtime: { getBrowserInfo: () => Promise.resolve({ name: "Firefox" }) },
+    webRequest: {
+      onAuthRequired: {
+        addListener: (
+          listener: FakeFirefoxEvent["listener"],
+          filter: { urls: string[] },
+          extra: string[],
+        ) => {
+          auth.listener = listener;
+          auth.filter = filter;
+          auth.extra = extra;
+        },
+      },
+      onCompleted: { addListener: completed },
+      onErrorOccurred: { addListener: errored },
+    },
+  };
+  return { auth, completed, errored };
+}
+
+const FIREFOX_DETAILS = {
+  requestId: "firefox-request-1",
+  url: "https://intranet.example.com/private",
+  realm: "Intranet",
+  scheme: "basic",
+  isProxy: false,
+  tabId: 3,
+  challenger: { host: "intranet.example.com", port: 443 },
+};
+
+describe("firefox webRequest adapter", () => {
+  it("registers blocking and resolves a Promise<BlockingResponse>", async () => {
+    const fake = installFirefoxWebRequest();
+    const adapter = createFirefoxHttpAuthAdapter();
+    expect(adapter).not.toBeNull();
+    expect(adapter?.kind).toBe("firefox");
+
+    const seen: HttpAuthChallengeDetails[] = [];
+    adapter?.install((details, callback) => {
+      seen.push(details);
+      callback({ authCredentials: { username: "alice", password: "alice-secret" } });
+    });
+    adapter?.onCompleted(() => undefined);
+    adapter?.onErrorOccurred(() => undefined);
+
+    expect(fake.auth.filter).toEqual({ urls: ["<all_urls>"] });
+    expect(fake.auth.extra).toEqual(["blocking"]);
+    expect(fake.completed).toHaveBeenCalledWith(expect.any(Function), {
+      urls: ["<all_urls>"],
+    });
+    expect(fake.errored).toHaveBeenCalledWith(expect.any(Function), {
+      urls: ["<all_urls>"],
+    });
+
+    const response = await fake.auth.listener?.(FIREFOX_DETAILS);
+    expect(response).toEqual({
+      authCredentials: { username: "alice", password: "alice-secret" },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      requestId: "firefox-request-1",
+      url: "https://intranet.example.com/private",
+      realm: "Intranet",
+      scheme: "basic",
+      isProxy: false,
+      tabId: 3,
+      challenger: { host: "intranet.example.com", port: 443 },
+    });
+  });
+
+  it("settles exactly once even if the listener answers twice", async () => {
+    const fake = installFirefoxWebRequest();
+    const adapter = createFirefoxHttpAuthAdapter();
+    adapter?.install((_details, callback) => {
+      callback({ cancel: false });
+      callback({ authCredentials: { username: "late", password: "late" } });
+    });
+
+    await expect(fake.auth.listener?.(FIREFOX_DETAILS)).resolves.toEqual({
+      cancel: false,
+    });
+  });
+
+  it("answers cancel:false when the listener throws", async () => {
+    const fake = installFirefoxWebRequest();
+    const adapter = createFirefoxHttpAuthAdapter();
+    adapter?.install(() => {
+      throw new Error("listener bug");
+    });
+
+    await expect(fake.auth.listener?.(FIREFOX_DETAILS)).resolves.toEqual({
+      cancel: false,
+    });
+  });
+
+  it("never leaves a blocked request hanging (safety deadline)", async () => {
+    const fake = installFirefoxWebRequest();
+    const adapter = createFirefoxHttpAuthAdapter();
+    adapter?.install(() => {
+      // Simulates a listener that loses its callback; the adapter must still
+      // settle so Firefox can show its own prompt.
+    });
+
+    const pending = fake.auth.listener?.(FIREFOX_DETAILS);
+    await vi.advanceTimersByTimeAsync(HTTP_AUTH_DEADLINE_MS + 2_000);
+    await expect(pending).resolves.toEqual({ cancel: false });
+  });
+
+  it("is selected as the default adapter on Firefox", () => {
+    installFirefoxWebRequest();
+    const adapter = createDefaultHttpAuthAdapter();
+    expect(adapter?.kind).toBe("firefox");
+  });
+
+  it("returns null when Firefox's webRequest API is absent", () => {
+    (globalThis as { browser?: unknown }).browser = {
+      runtime: { getBrowserInfo: () => Promise.resolve({}) },
+    };
+    expect(createFirefoxHttpAuthAdapter()).toBeNull();
+  });
+
+  it("ignores Chromium's browser alias", () => {
+    (globalThis as { browser?: unknown }).browser = {
+      runtime: {},
+      webRequest: {
+        onAuthRequired: { addListener: () => undefined },
+        onCompleted: { addListener: () => undefined },
+        onErrorOccurred: { addListener: () => undefined },
+      },
+    };
+    expect(createFirefoxHttpAuthAdapter()).toBeNull();
   });
 });
 
