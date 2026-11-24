@@ -1,0 +1,196 @@
+/*
+ * Options page layout (WP6a). Single column, 8 px grid, no external assets.
+ */
+
+body {
+  font-size: 14px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--fp-space-2);
+  max-width: 760px;
+  margin: 0 auto;
+  padding: var(--fp-space-3) var(--fp-space-2) var(--fp-space-2);
+}
+
+.page-header h1 {
+  font-size: 20px;
+}
+
+.page-header p {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.save-state {
+  flex: none;
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--fp-ok);
+}
+
+.save-state[data-state="error"] {
+  color: var(--fp-danger);
+}
+
+.page-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fp-space-2);
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 var(--fp-space-2) var(--fp-space-3);
+}
+
+.group {
+  padding: var(--fp-space-2);
+}
+
+.group h2 {
+  margin-bottom: var(--fp-space);
+}
+
+.group > p {
+  font-size: 13px;
+  margin-bottom: var(--fp-space);
+}
+
+.setting {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--fp-space-2);
+  padding: 10px 0;
+  border-top: 1px solid var(--fp-border);
+}
+
+.setting:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.setting-copy label {
+  display: inline-block;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.setting-copy p {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.setting > input[type="checkbox"] {
+  margin-top: 3px;
+}
+
+.setting-input {
+  max-width: 240px;
+}
+
+/* --- connection ----------------------------------------------------------- */
+
+.connection {
+  padding-top: 12px;
+  border-top: 1px solid var(--fp-border);
+}
+
+.connection-state {
+  display: flex;
+  align-items: center;
+  gap: var(--fp-space);
+  font-weight: 500;
+}
+
+.connection-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+
+.connection-grid dt {
+  color: var(--fp-muted);
+}
+
+.connection-grid dd {
+  overflow-wrap: anywhere;
+}
+
+.connection-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--fp-space);
+  margin-top: 12px;
+}
+
+.connection-actions p {
+  font-size: 12px;
+}
+
+/* --- site exceptions ------------------------------------------------------ */
+
+.exception-form {
+  display: flex;
+  gap: var(--fp-space);
+  margin-bottom: var(--fp-space);
+}
+
+.exception-form .fp-input {
+  max-width: 320px;
+}
+
+.exception-error {
+  margin-bottom: var(--fp-space);
+  color: var(--fp-danger);
+  font-size: 12px;
+}
+
+.exception-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.exception-table th,
+.exception-table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--fp-border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.exception-table th {
+  color: var(--fp-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.exception-table td.origin-cell {
+  font-family: var(--fp-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.exception-table td.toggle-cell,
+.exception-table th.toggle-head {
+  text-align: center;
+  width: 72px;
+}
+
+.exception-table td.action-cell {
+  text-align: right;
+  width: 88px;
+}
+
+.exception-table tbody:empty {
+  display: none;
+}
+
+.exception-table:has(tbody:empty) {
+  display: none;
+}

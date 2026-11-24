@@ -49,7 +49,11 @@ import {
   setLogin,
 } from "./actions";
 import type { ActionContext } from "./actions";
-import { installHttpAuthListener } from "./http-auth";
+import {
+  installHttpAuthListener,
+  migrateHttpAuthAutoFill,
+  setHttpAuthSettingsBridge,
+} from "./http-auth";
 import { createPendingStore, readPendingTtlMs } from "./pending";
 import type { PendingStore } from "./pending";
 
@@ -410,6 +414,13 @@ function buildBackgroundHandlers(): BackgroundHandlers {
         await getPendingStore().clear(tabId);
       }
     },
+
+    "tab.fillLogin": async (args, sender) => {
+      if (!isPopupSender(sender)) {
+        throw new Error("tab.fillLogin is only available from extension pages");
+      }
+      return fillTabFromPopup(args);
+    },
   };
 }
 
@@ -498,6 +509,62 @@ function installContentCommandListener(): void {
     debug("command", `listener not installed: ${messageOf(cause)}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// WP6a — popup/options support (owner: WP6a; keep edits inside this block)
+// ---------------------------------------------------------------------------
+
+/** True when a message came from our own popup page (not a content script). */
+function isPopupSender(sender: chrome.runtime.MessageSender): boolean {
+  const base =
+    typeof chrome.runtime.getURL === "function" ? chrome.runtime.getURL("") : "";
+  const url = sender.url ?? "";
+  return base.length > 0 && url.startsWith(`${base}popup/`);
+}
+
+/**
+ * Fill one tab on the popup's behalf. The entry comes from this service
+ * worker's own `logins.get` result; nothing is logged here.
+ */
+async function fillTabFromPopup(
+  args: BackgroundRequestArgs<"tab.fillLogin">,
+): Promise<BackgroundRequestResult<"tab.fillLogin">> {
+  const tabId = Number(args?.tabId);
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    throw new Error("Invalid tab id");
+  }
+  const entry = args?.entry;
+  if (
+    !entry ||
+    typeof entry !== "object" ||
+    typeof entry.uuid !== "string" ||
+    typeof entry.login !== "string" ||
+    typeof entry.password !== "string"
+  ) {
+    throw new Error("Invalid login entry");
+  }
+  const result = await sendContentCommand(tabId, "content.fillLogin", { entry });
+  return { delivered: result.ok };
+}
+
+// `httpAuthAutoFill` is part of the unified settings (WP6a). Register the
+// bridge here so it is in place before `bootstrap()` installs the HTTP-auth
+// listener, and migrate the pre-WP6a value exactly once.
+const wp6aSettingsStore = getStateStore();
+const wp6aSettingsBridge = {
+  getAutoFill: async () =>
+    (await wp6aSettingsStore.getSettings()).httpAuthAutoFill,
+  setAutoFill: async (value: boolean) => {
+    await wp6aSettingsStore.setSettings({ httpAuthAutoFill: value });
+  },
+};
+setHttpAuthSettingsBridge(wp6aSettingsBridge);
+void migrateHttpAuthAutoFill({
+  bridge: wp6aSettingsBridge,
+  log: (event, detail) => debug(event, detail ?? ""),
+}).catch((cause: unknown) => {
+  debug("settings", `http-auth migration failed: ${messageOf(cause)}`);
+});
 
 // ---------------------------------------------------------------------------
 // Bootstrap

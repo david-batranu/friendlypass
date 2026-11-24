@@ -427,8 +427,47 @@ export function isInternalResult(value: unknown): value is InternalResult<unknow
   return (
     isRecord(value) &&
     typeof value["ok"] === "boolean" &&
-    (value["ok"] === true ? "value" in value : isRecord(value["error"]))
+    // `{ok: true}` with no `value` is the normal shape for void results: Chrome
+    // JSON-serialises messages, so `value: undefined` is dropped on the wire.
+    (value["ok"] === true || isRecord(value["error"]))
   );
+}
+
+/**
+ * Convert a thrown protocol/session error into an {@link InternalErr}.
+ *
+ * The session rejects with plain `{code, name, message, retryable}` objects
+ * (not `Error` instances), so a plain `String(cause)` would collapse every
+ * failure to "[object Object]" and lose the error code. UI code needs the code
+ * (15 = "no logins" is a normal empty state, 8 = not associated, ...).
+ */
+export function internalErrorFromCause(cause: unknown): InternalErr {
+  if (
+    isRecord(cause) &&
+    typeof cause["code"] === "number" &&
+    typeof cause["message"] === "string"
+  ) {
+    const error = internalError(cause["code"], cause["message"]);
+    if (typeof cause["name"] === "string" && cause["name"].length > 0) {
+      error.error.name = cause["name"];
+    }
+    if (typeof cause["retryable"] === "boolean") {
+      error.error.retryable = cause["retryable"];
+    }
+    return error;
+  }
+  if (cause instanceof Error) {
+    const code = (cause as Error & { code?: unknown }).code;
+    if (typeof code === "number") {
+      const error = internalError(code, cause.message);
+      if (cause.name && cause.name !== "Error") {
+        error.error.name = cause.name;
+      }
+      return error;
+    }
+    return internalError("INTERNAL_ERROR", cause.message);
+  }
+  return internalError("INTERNAL_ERROR", String(cause));
 }
 
 function isInternalEnvelope(value: unknown): value is InternalEnvelope<string, unknown> {
@@ -531,9 +570,7 @@ export function onBackgroundMessage(handlers: {
     Promise.resolve()
       .then(() => handler(message.args, sender))
       .then((value) => sendResponse({ ok: true, value }))
-      .catch((cause: unknown) =>
-        sendResponse(internalError("INTERNAL_ERROR", String(cause))),
-      );
+      .catch((cause: unknown) => sendResponse(internalErrorFromCause(cause)));
     return true;
   };
 
@@ -693,7 +730,11 @@ export function onBackgroundEvent(
     if (!isEventEnvelope(message)) {
       return false;
     }
-    if (message.action === "status.changed" || message.action === "state.snapshot") {
+    if (
+      message.action === "status.changed" ||
+      message.action === "state.snapshot" ||
+      message.action === "settings.changed"
+    ) {
       try {
         listener(
           message.action as BackgroundEventAction,

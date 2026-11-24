@@ -32,17 +32,120 @@ import {
   type ExtensionSettings,
   type HostStatus,
   type PersistedState,
+  type SiteException,
   type StatusSummary,
 } from "../common/types";
 
+/**
+ * Unified settings defaults (WP6a). This object is frozen; callers always get
+ * a deep copy (the `siteExceptions` array is cloned) so no consumer can mutate
+ * the defaults.
+ */
 export const DEFAULT_SETTINGS: Readonly<ExtensionSettings> = Object.freeze({
-  autoFillHttpAuth: false,
+  autoFillSingleEntry: false,
+  showFieldIcons: true,
+  httpAuthAutoFill: true,
   autoFillAndSubmit: false,
   launchAppOnConnect: false,
   defaultGroup: "",
   defaultGroupAlwaysAsk: false,
   debugLogging: false,
+  siteExceptions: Object.freeze([]) as unknown as SiteException[],
 });
+
+/** Boolean settings, in the order the options page groups them. */
+const BOOLEAN_SETTINGS = [
+  "autoFillSingleEntry",
+  "showFieldIcons",
+  "httpAuthAutoFill",
+  "autoFillAndSubmit",
+  "launchAppOnConnect",
+  "defaultGroupAlwaysAsk",
+  "debugLogging",
+] as const;
+
+/** Upper bound on the number of stored site exceptions. */
+export const MAX_SITE_EXCEPTIONS = 500;
+
+/** Upper bound on `defaultGroup` (a group path, not a document). */
+export const MAX_DEFAULT_GROUP_LENGTH = 256;
+
+/** A fresh, mutable copy of the defaults. */
+export function defaultSettings(): ExtensionSettings {
+  return { ...DEFAULT_SETTINGS, siteExceptions: [] };
+}
+
+/** Deep copy; `siteExceptions` entries are plain records. */
+export function cloneSettings(settings: ExtensionSettings): ExtensionSettings {
+  return {
+    ...settings,
+    siteExceptions: settings.siteExceptions.map((entry) => ({ ...entry })),
+  };
+}
+
+/**
+ * Normalise a user-supplied origin to `scheme://host[:port]`.
+ *
+ * `example.com` and `https://example.com/login` both become
+ * `https://example.com` (a bare host defaults to HTTPS). Returns null for
+ * anything that is not a plausible http(s) origin.
+ */
+export function normaliseOrigin(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  // An origin never contains whitespace; Chrome's URL parser would otherwise
+  // silently percent-encode it ("https://not a url!").
+  if (text.length === 0 || text.length > 2048 || /\s/.test(text)) {
+    return null;
+  }
+  try {
+    const url = new URL(text.includes("://") ? text : `https://${text}`);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    if (url.hostname.length === 0 || /\s/.test(url.hostname)) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function sanitiseSiteExceptions(value: unknown): SiteException[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: SiteException[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (out.length >= MAX_SITE_EXCEPTIONS) {
+      break;
+    }
+    if (!isRecord(raw)) {
+      continue;
+    }
+    const origin = normaliseOrigin(raw["origin"]);
+    if (origin === null || seen.has(origin)) {
+      continue;
+    }
+    seen.add(origin);
+    const entry: SiteException = { origin };
+    if (typeof raw["disableFill"] === "boolean") {
+      entry.disableFill = raw["disableFill"];
+    }
+    if (typeof raw["disableSave"] === "boolean") {
+      entry.disableSave = raw["disableSave"];
+    }
+    if (typeof raw["disableIcons"] === "boolean") {
+      entry.disableIcons = raw["disableIcons"];
+    }
+    out.push(entry);
+  }
+  return out;
+}
 
 /** `chrome.storage.local` key holding the persisted {@link PersistedState}. */
 export const STORAGE_KEY = "friendlypass.state.v1";
@@ -62,6 +165,8 @@ export interface StateStoreOptions {
   maxDiagnostics?: number;
   /** Called after every emitted status; defaults to `sendBackgroundEvent`. */
   broadcast?: (status: StatusSummary) => void;
+  /** Called after every settings change; defaults to `sendBackgroundEvent`. */
+  broadcastSettings?: (settings: ExtensionSettings) => void;
 }
 
 export type StateListener = (
@@ -69,11 +174,15 @@ export type StateListener = (
   snapshot: ConnectionSnapshot,
 ) => void;
 
+export type SettingsListener = (settings: ExtensionSettings) => void;
+
 export interface StateStore {
   load(): Promise<PersistedState>;
   save(partial: Partial<PersistedState>): Promise<PersistedState>;
   getSettings(): Promise<ExtensionSettings>;
   setSettings(partial: Partial<ExtensionSettings>): Promise<ExtensionSettings>;
+  /** Subscribe to settings changes; returns an unsubscribe function. */
+  subscribeSettings(listener: SettingsListener): () => void;
   keyRing(): Promise<Record<DbHash, AssociationRecord>>;
   putAssociation(hash: DbHash, record: AssociationRecord): Promise<void>;
   deleteAssociation(hash: DbHash): Promise<void>;
@@ -110,7 +219,7 @@ function emptyPersistedState(): PersistedState {
   return {
     clientId: null,
     keyRing: {},
-    settings: { ...DEFAULT_SETTINGS },
+    settings: defaultSettings(),
   };
 }
 
@@ -156,30 +265,67 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function sanitiseSettings(value: unknown): ExtensionSettings {
-  const settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
+/**
+ * Validate an arbitrary value into {@link ExtensionSettings}.
+ *
+ * Rules (WP6a):
+ *  - unknown keys are dropped; wrong types fall back to the default;
+ *  - `autoFillHttpAuth` (the pre-WP6a field) is migrated to `httpAuthAutoFill`
+ *    once, and only when the new field is absent;
+ *  - site exceptions are normalised to a bare origin, de-duplicated, and
+ *    capped at {@link MAX_SITE_EXCEPTIONS}.
+ *
+ * Exported for the unit suite; the state store is the only production caller.
+ */
+export function sanitiseSettings(value: unknown): ExtensionSettings {
+  const settings = defaultSettings();
   if (!isRecord(value)) {
     return settings;
   }
-  if (typeof value["autoFillHttpAuth"] === "boolean") {
-    settings.autoFillHttpAuth = value["autoFillHttpAuth"];
+  for (const key of BOOLEAN_SETTINGS) {
+    if (typeof value[key] === "boolean") {
+      settings[key] = value[key] as boolean;
+    }
   }
-  if (typeof value["autoFillAndSubmit"] === "boolean") {
-    settings.autoFillAndSubmit = value["autoFillAndSubmit"];
-  }
-  if (typeof value["launchAppOnConnect"] === "boolean") {
-    settings.launchAppOnConnect = value["launchAppOnConnect"];
+  // Legacy migration: the extension previously stored `autoFillHttpAuth`
+  // (default false) outside the unified record. Prefer an explicit new value.
+  if (
+    typeof value["httpAuthAutoFill"] !== "boolean" &&
+    typeof value["autoFillHttpAuth"] === "boolean"
+  ) {
+    settings.httpAuthAutoFill = value["autoFillHttpAuth"];
   }
   if (typeof value["defaultGroup"] === "string") {
-    settings.defaultGroup = value["defaultGroup"];
+    settings.defaultGroup = value["defaultGroup"]
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .trim()
+      .slice(0, MAX_DEFAULT_GROUP_LENGTH);
   }
-  if (typeof value["defaultGroupAlwaysAsk"] === "boolean") {
-    settings.defaultGroupAlwaysAsk = value["defaultGroupAlwaysAsk"];
-  }
-  if (typeof value["debugLogging"] === "boolean") {
-    settings.debugLogging = value["debugLogging"];
-  }
+  settings.siteExceptions = sanitiseSiteExceptions(value["siteExceptions"]);
   return settings;
+}
+
+/**
+ * Keep only the keys of `partial` that have an acceptable type, so a bad write
+ * can never silently reset an unrelated valid setting.
+ */
+function validSettingsPatch(partial: Partial<ExtensionSettings>): Partial<ExtensionSettings> {
+  const out: Partial<ExtensionSettings> = {};
+  if (!isRecord(partial)) {
+    return out;
+  }
+  for (const key of BOOLEAN_SETTINGS) {
+    if (typeof partial[key] === "boolean") {
+      out[key] = partial[key] as boolean;
+    }
+  }
+  if (typeof partial.defaultGroup === "string") {
+    out.defaultGroup = partial.defaultGroup;
+  }
+  if (Array.isArray(partial.siteExceptions)) {
+    out.siteExceptions = partial.siteExceptions;
+  }
+  return out;
 }
 
 function sanitiseAssociation(value: unknown): AssociationRecord | null {
@@ -264,11 +410,17 @@ export function createStateStore(options: StateStoreOptions = {}): StateStore {
   const broadcast =
     options.broadcast ??
     ((status: StatusSummary) => sendBackgroundEvent("status.changed", status));
+  const broadcastSettings =
+    options.broadcastSettings ??
+    ((settings: ExtensionSettings) =>
+      sendBackgroundEvent("settings.changed", settings));
 
   let cached: PersistedState | null = null;
   let loading: Promise<PersistedState> | null = null;
   let snapshot = initialSnapshot();
+  let reconnects = 0;
   const listeners = new Set<StateListener>();
+  const settingsListeners = new Set<SettingsListener>();
   const diagnostics: DiagnosticEntry[] = [];
 
   async function load(): Promise<PersistedState> {
@@ -339,15 +491,36 @@ export function createStateStore(options: StateStoreOptions = {}): StateStore {
     save,
 
     async getSettings() {
-      return { ...(await load()).settings };
+      return cloneSettings((await load()).settings);
     },
 
     async setSettings(partial) {
       const current = await load();
       const next = await save({
-        settings: sanitiseSettings({ ...current.settings, ...partial }),
+        settings: sanitiseSettings({
+          ...current.settings,
+          ...validSettingsPatch(partial),
+        }),
       });
-      return { ...next.settings };
+      const settings = cloneSettings(next.settings);
+      for (const listener of [...settingsListeners]) {
+        try {
+          listener(cloneSettings(settings));
+        } catch {
+          // A broken UI listener must not break settings persistence.
+        }
+      }
+      try {
+        broadcastSettings(cloneSettings(settings));
+      } catch {
+        // No page is listening; the persisted value is authoritative.
+      }
+      return settings;
+    },
+
+    subscribeSettings(listener) {
+      settingsListeners.add(listener);
+      return () => settingsListeners.delete(listener);
     },
 
     async keyRing() {
@@ -399,6 +572,10 @@ export function createStateStore(options: StateStoreOptions = {}): StateStore {
         lastError: next.lastError ? { ...next.lastError } : null,
       };
       const changed = !sameSnapshot(snapshot, merged);
+      if (changed && snapshot.state !== "DISCONNECTED" && merged.state === "DISCONNECTED") {
+        // A lost connection (not the initial DISCONNECTED snapshot).
+        reconnects += 1;
+      }
       snapshot = merged;
       if (changed) {
         emit();
@@ -428,6 +605,7 @@ export function createStateStore(options: StateStoreOptions = {}): StateStore {
         entries: diagnostics.map((entry) => ({ ...entry })),
         connection: this.snapshot(),
         host,
+        reconnects,
       };
     },
 

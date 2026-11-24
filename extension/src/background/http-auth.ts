@@ -5,7 +5,8 @@
  * level through {@link installHttpAuthListener} (called from `sw.ts`), then:
  *
  *  - looks credentials up with `get-logins` + `"httpAuth": "true"`;
- *  - answers a single match automatically (`httpAuthAutoFill`, default ON);
+ *  - answers a single match automatically (`httpAuthAutoFill` from the unified
+ *    {@link ExtensionSettings}, default ON; WP6a);
  *  - shows a small extension picker for multiple matches unless the username
  *    last used for that origin is still among them;
  *  - retries at most once with the *next* candidate when the browser
@@ -40,6 +41,12 @@ const HISTORY_TTL_MS = 30_000;
 
 /** `chrome.storage.local` key holding non-secret HTTP-auth preferences. */
 export const HTTP_AUTH_STORAGE_KEY = "friendlypass.httpAuth.v1";
+
+/**
+ * Marker set once the legacy `httpAuthAutoFill` flag has been copied into the
+ * unified {@link ExtensionSettings} (WP6a). Never re-run after this is set.
+ */
+export const HTTP_AUTH_MIGRATION_KEY = "friendlypass.httpAuthAutoFill.migrated.v1";
 
 /** Internal picker page channel (never used by content scripts). */
 export const HTTP_AUTH_PICKER_CHANNEL = "friendlypass-http-auth";
@@ -112,6 +119,120 @@ export interface HttpAuthSettingsStore {
   rememberLastUsed(origin: string, username: string): Promise<void>;
   rememberRealm(uuid: string, realm: string): Promise<void>;
   setAutoFill(value: boolean): Promise<void>;
+}
+
+/**
+ * WP6a bridge: `httpAuthAutoFill` now lives in the unified
+ * {@link ExtensionSettings} (`settings.get` / `settings.set`). The
+ * service worker installs one before {@link installHttpAuthListener} runs.
+ */
+export interface HttpAuthSettingsBridge {
+  getAutoFill(): Promise<boolean>;
+  setAutoFill(value: boolean): Promise<void>;
+}
+
+let unifiedSettingsBridge: HttpAuthSettingsBridge | null = null;
+
+/**
+ * Route the `httpAuthAutoFill` flag through the unified settings.
+ *
+ * Called once at service-worker startup (WP6a). Pass `null` to fall back to the
+ * legacy `chrome.storage.local` flag (unit tests, Firefox shim).
+ */
+export function setHttpAuthSettingsBridge(
+  bridge: HttpAuthSettingsBridge | null,
+): void {
+  unifiedSettingsBridge = bridge;
+}
+
+/**
+ * Settings store for the controller: `httpAuthAutoFill` is read from and
+ * written to the unified settings, while the non-secret per-origin hints
+ * (`lastUsed`, `realms`) stay in the legacy key, which they have always used.
+ */
+export function createUnifiedHttpAuthSettingsStore(
+  bridge: HttpAuthSettingsBridge,
+  legacy: HttpAuthSettingsStore | null,
+): HttpAuthSettingsStore {
+  const base = legacy ?? createMemoryHttpAuthSettingsStore();
+  return {
+    async load() {
+      let settings: HttpAuthSettings;
+      try {
+        settings = sanitiseHttpAuthSettings(await base.load());
+      } catch {
+        settings = defaultHttpAuthSettings();
+      }
+      try {
+        settings.httpAuthAutoFill = await bridge.getAutoFill();
+      } catch {
+        // Keep the legacy/default value when the unified store is unavailable.
+      }
+      return settings;
+    },
+    rememberLastUsed: (origin, username) => base.rememberLastUsed(origin, username),
+    rememberRealm: (uuid, realm) => base.rememberRealm(uuid, realm),
+    setAutoFill: (value) => bridge.setAutoFill(value),
+  };
+}
+
+/** Minimal storage surface used by {@link migrateHttpAuthAutoFill}. */
+export interface HttpAuthLegacyStorage {
+  get(key: string): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+}
+
+/**
+ * Copy the pre-WP6a `chrome.storage.local["friendlypass.httpAuth.v1"]
+ * .httpAuthAutoFill` value into the unified settings once, then drop it from
+ * the legacy record (its `lastUsed`/`realms` siblings stay).
+ *
+ * Returns `"migrated"` when a value was copied, `"none"` when there was nothing
+ * to copy, and `"skipped"` when the migration marker was already set.
+ */
+export async function migrateHttpAuthAutoFill(options: {
+  bridge: HttpAuthSettingsBridge;
+  storage?: HttpAuthLegacyStorage | null;
+  log?: (event: string, detail?: string) => void;
+}): Promise<"migrated" | "none" | "skipped"> {
+  const storage =
+    options.storage ??
+    (typeof chrome !== "undefined" && chrome.storage?.local
+      ? {
+          get: (key: string) => chromeStorageGet(key),
+          set: (items: Record<string, unknown>) => chromeStorageSet(items),
+        }
+      : null);
+  if (storage === null) {
+    return "none";
+  }
+
+  const marker = await storage.get(HTTP_AUTH_MIGRATION_KEY);
+  if (marker[HTTP_AUTH_MIGRATION_KEY] === true) {
+    return "skipped";
+  }
+
+  const items = await storage.get(HTTP_AUTH_STORAGE_KEY);
+  const legacy = items[HTTP_AUTH_STORAGE_KEY];
+  const value =
+    isRecord(legacy) && typeof legacy["httpAuthAutoFill"] === "boolean"
+      ? legacy["httpAuthAutoFill"]
+      : null;
+
+  if (value === null) {
+    await storage.set({ [HTTP_AUTH_MIGRATION_KEY]: true });
+    return "none";
+  }
+
+  await options.bridge.setAutoFill(value);
+  const rest: Record<string, unknown> = { ...(legacy as Record<string, unknown>) };
+  delete rest["httpAuthAutoFill"];
+  await storage.set({
+    [HTTP_AUTH_STORAGE_KEY]: rest,
+    [HTTP_AUTH_MIGRATION_KEY]: true,
+  });
+  options.log?.("http-auth", "migrated httpAuthAutoFill into unified settings");
+  return "migrated";
 }
 
 export interface HttpAuthPickerRequest {
@@ -1177,8 +1298,12 @@ export function installHttpAuthListener(
       : options.adapter;
   const picker =
     options.picker === undefined ? createChromeHttpAuthPicker() : options.picker;
+  const legacySettings = createChromeHttpAuthSettingsStore();
   const settings =
-    options.settings ?? createChromeHttpAuthSettingsStore() ?? createMemoryHttpAuthSettingsStore();
+    options.settings ??
+    (unifiedSettingsBridge
+      ? createUnifiedHttpAuthSettingsStore(unifiedSettingsBridge, legacySettings)
+      : legacySettings ?? createMemoryHttpAuthSettingsStore());
 
   let lookup = options.lookup;
   if (!lookup) {
