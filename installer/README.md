@@ -4,6 +4,25 @@ Registers `friendlypass-browser-host` with browsers as
 `org.friendlypass.browser`, the host name the extension uses with
 `chrome.runtime.connectNative()`.
 
+Most people do not need this script: the app writes the same manifests from
+**Settings and tools → Browser… → Enable browser integration**. The script is
+for terminal installs, automation and development builds. It finds the host
+binary and forwards every option to
+`friendlypass-browser-host --install/--uninstall`, so the app and the installer
+share one implementation (the `friendlypass_browser::native_messaging` module).
+
+## End-user flow
+
+1. Install the app (see [`../packaging/README.md`](../packaging/README.md)).
+2. Start friendlypass → **Settings and tools → Browser…** → tick **Enable
+   browser integration** and the browsers you use.
+3. Install the friendlypass extension in those browsers.
+
+The app rewrites a stale manifest on every start (for example after the app is
+moved or updated) and removes the manifest when a browser is unticked. It only
+ever touches `org.friendlypass.browser.json`; other native hosts' manifests are
+left alone.
+
 ## Build the host first
 
 ```sh
@@ -39,7 +58,7 @@ openssl pkey -in secrets/extension-key.pem -pubout -outform DER |
   tr '0-9a-f' 'a-p'
 ```
 
-Options:
+Options (the script forwards them to the host CLI):
 
 | Option | Meaning |
 |---|---|
@@ -51,6 +70,14 @@ Options:
 | `--browsers LIST` | Comma list of `chrome,chromium,brave,edge,firefox`; default all. |
 | `--dry-run` | Print targets, write nothing. |
 | `--uninstall` | Remove the manifests (no extension id needed). |
+
+The host binary accepts the same options directly, with `--browser NAME`
+(repeatable, or comma-separated via `--browsers`) instead of `--browsers LIST`:
+
+```sh
+friendlypass-browser-host --install --browser chrome --browser firefox
+friendlypass-browser-host --uninstall --browser firefox --home /tmp/test-home
+```
 
 ## Where the manifests go
 
@@ -83,4 +110,14 @@ other native hosts) stay.
 
 Runs the installer in a temporary `$HOME` for both layouts, validates every
 JSON file with Python, checks idempotence, browser selection, validation
-errors, dry-run and uninstall.
+errors, dry-run and uninstall. It builds
+`target/debug/friendlypass-browser-host` when needed and also exercises the
+host's `--install/--uninstall --browser` flags directly.
+
+The Rust-level tests (all browsers × both platforms, path-change rewrite,
+idempotence, uninstall leaving other hosts alone) live in
+`crates/friendlypass-browser/tests/native_messaging_install.rs`:
+
+```sh
+cargo test -p friendlypass-browser --test native_messaging_install
+```

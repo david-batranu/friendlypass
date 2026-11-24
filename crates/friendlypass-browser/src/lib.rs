@@ -18,6 +18,7 @@ pub mod bridge;
 pub mod crypto;
 pub mod entry_write;
 pub mod file_bridge;
+pub mod native_messaging;
 pub mod protocol;
 pub mod push;
 pub mod server;

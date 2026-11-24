@@ -12,6 +12,7 @@ mod app;
 mod dispatch;
 mod errors;
 mod framing;
+mod install_cli;
 mod status;
 mod writer;
 
@@ -23,6 +24,12 @@ use status::StatusCell;
 use writer::Writer;
 
 fn main() {
+    // `--install`/`--uninstall` (used by the app settings and install.sh)
+    // never speak the native-messaging protocol, so they are handled first.
+    if let Some(code) = install_cli::run_if_requested(std::env::args().skip(1)) {
+        std::process::exit(code);
+    }
+
     let socket_path = friendlypass_browser::browser_server_path();
     eprintln!(
         "{} {} (protocol {}, pid {}, app socket {})",

@@ -7,6 +7,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL="$HERE/../install.sh"
+ROOT="$(cd "$HERE/../.." && pwd)"
 
 CHROME_ID="abcdefghijklmnopabcdefghijklmnop"
 FF_ID="friendlypass@test.invalid"
@@ -25,10 +26,15 @@ ok() {
 
 [[ -x "$INSTALL" ]] || fail "install.sh is not executable: $INSTALL"
 
-FAKE_HOST="$TMP_ROOT/bin/friendlypass-browser-host"
-mkdir -p "$(dirname "$FAKE_HOST")"
-printf '#!/bin/sh\nexit 0\n' > "$FAKE_HOST"
-chmod +x "$FAKE_HOST"
+# The manifest logic now lives in the host binary (install.sh is a thin
+# delegate), so these tests exercise the real host CLI's --install/--uninstall
+# flags rather than a stub.
+HOST_BIN="$ROOT/target/debug/friendlypass-browser-host"
+if [[ ! -x "$HOST_BIN" ]]; then
+    (cd "$ROOT" && cargo build -q -p friendlypass-browser-host) ||
+        fail "cannot build friendlypass-browser-host"
+fi
+[[ -x "$HOST_BIN" ]] || fail "missing friendlypass-browser-host: $HOST_BIN"
 
 install_ok() {
     if ! "$INSTALL" "$@" >"$TMP_ROOT/last.log" 2>&1; then
@@ -46,7 +52,7 @@ expect_fail() {
 check_manifest() {
     local file="$1" kind="$2"
     [[ -f "$file" ]] || fail "missing manifest: $file"
-    python3 - "$file" "$kind" "$FAKE_HOST" "$CHROME_ID" "$FF_ID" <<'PY'
+    python3 - "$file" "$kind" "$HOST_BIN" "$CHROME_ID" "$FF_ID" <<'PY'
 import json
 import os
 import sys
@@ -80,7 +86,7 @@ MAC_HOME="$TMP_ROOT/home mac" # a space proves the quoting
 mkdir -p "$MAC_HOME"
 
 install_ok --platform macos --home "$MAC_HOME" --extension-id "$CHROME_ID" \
-    --firefox-extension-id "$FF_ID" --host-path "$FAKE_HOST"
+    --firefox-extension-id "$FF_ID" --host-path "$HOST_BIN"
 
 MAC_CHROME="Library/Application Support/Google/Chrome/NativeMessagingHosts"
 MAC_CHROMIUM="Library/Application Support/Chromium/NativeMessagingHosts"
@@ -96,7 +102,7 @@ ok "macOS manifests for chrome, chromium, brave, edge, firefox"
 
 # Idempotent re-install.
 install_ok --platform macos --home "$MAC_HOME" --extension-id "$CHROME_ID" \
-    --firefox-extension-id "$FF_ID" --host-path "$FAKE_HOST"
+    --firefox-extension-id "$FF_ID" --host-path "$HOST_BIN"
 check_manifest "$MAC_HOME/$MAC_CHROME/org.friendlypass.browser.json" chromium
 ok "macOS re-install is idempotent"
 
@@ -108,7 +114,7 @@ LINUX_HOME="$TMP_ROOT/home-linux"
 mkdir -p "$LINUX_HOME"
 
 install_ok --platform linux --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
-    --firefox-extension-id "$FF_ID" --host-path "$FAKE_HOST"
+    --firefox-extension-id "$FF_ID" --host-path "$HOST_BIN"
 
 LINUX_CHROME=".config/google-chrome/NativeMessagingHosts"
 LINUX_CHROMIUM=".config/chromium/NativeMessagingHosts"
@@ -129,7 +135,7 @@ ok "Linux manifests for chrome, chromium, brave, edge, firefox"
 SELECT_HOME="$TMP_ROOT/home-select"
 mkdir -p "$SELECT_HOME"
 install_ok --platform linux --home "$SELECT_HOME" --extension-id "$CHROME_ID" \
-    --host-path "$FAKE_HOST" --browsers chrome,firefox
+    --host-path "$HOST_BIN" --browsers chrome,firefox
 
 [[ -f "$SELECT_HOME/$LINUX_CHROME/org.friendlypass.browser.json" ]] || fail "chrome not written"
 [[ -f "$SELECT_HOME/$LINUX_FIREFOX/org.friendlypass.browser.json" ]] || fail "firefox not written"
@@ -138,7 +144,7 @@ ok "--browsers limits the manifests written"
 
 # --extension-id=value spelling also works.
 install_ok --platform=linux --home="$SELECT_HOME" --extension-id="$CHROME_ID" \
-    --host-path="$FAKE_HOST" --browsers=chromium
+    --host-path="$HOST_BIN" --browsers=chromium
 [[ -f "$SELECT_HOME/$LINUX_CHROMIUM/org.friendlypass.browser.json" ]] || fail "chromium not written"
 ok "--option=value spelling works"
 
@@ -149,14 +155,14 @@ ok "--option=value spelling works"
 # No --extension-id: the pinned manifest key's id becomes the default.
 DEFAULT_HOME="$TMP_ROOT/default-home"
 mkdir -p "$DEFAULT_HOME"
-install_ok --platform linux --home "$DEFAULT_HOME" --host-path "$FAKE_HOST" --browsers chrome
+install_ok --platform linux --home "$DEFAULT_HOME" --host-path "$HOST_BIN" --browsers chrome
 DEFAULT_MANIFEST="$DEFAULT_HOME/.config/google-chrome/NativeMessagingHosts/org.friendlypass.browser.json"
 grep -q 'chrome-extension://pfdmagadklmhbghfipamhfbphcljdkbi/' "$DEFAULT_MANIFEST" ||
     fail "default extension id was not used"
 ok "default extension id is used when --extension-id is omitted"
 
 expect_fail --platform linux --home "$LINUX_HOME" --extension-id "not-an-id" \
-    --host-path "$FAKE_HOST"
+    --host-path "$HOST_BIN"
 ok "invalid --extension-id is rejected"
 
 expect_fail --platform linux --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
@@ -164,11 +170,15 @@ expect_fail --platform linux --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
 ok "missing host binary is rejected"
 
 expect_fail --platform linux --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
-    --host-path "$FAKE_HOST" --browsers netscape
+    --host-path "$HOST_BIN" --browsers netscape
 ok "unknown browser is rejected"
 
+expect_fail --platform linux --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
+    --host-path "$HOST_BIN" --browsers ""
+ok "empty browser list is rejected"
+
 expect_fail --platform windows --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
-    --host-path "$FAKE_HOST"
+    --host-path "$HOST_BIN"
 ok "unsupported platform is rejected"
 
 # ---------------------------------------------------------------------------
@@ -178,7 +188,7 @@ ok "unsupported platform is rejected"
 DRY_HOME="$TMP_ROOT/home-dry"
 mkdir -p "$DRY_HOME"
 install_ok --platform linux --home "$DRY_HOME" --extension-id "$CHROME_ID" \
-    --host-path "$FAKE_HOST" --dry-run
+    --host-path "$HOST_BIN" --dry-run
 [[ ! -e "$DRY_HOME/.config" ]] || fail "--dry-run wrote files"
 ok "--dry-run writes nothing"
 
@@ -186,18 +196,36 @@ ok "--dry-run writes nothing"
 # Uninstall
 # ---------------------------------------------------------------------------
 
-install_ok --uninstall --platform linux --home "$LINUX_HOME"
+install_ok --uninstall --platform linux --home "$LINUX_HOME" --host-path "$HOST_BIN"
 for dir in "$LINUX_CHROME" "$LINUX_CHROMIUM" "$LINUX_BRAVE" "$LINUX_EDGE" "$LINUX_FIREFOX"; do
     [[ ! -e "$LINUX_HOME/$dir/org.friendlypass.browser.json" ]] || fail "uninstall left $dir"
 done
 ok "Linux uninstall removes every manifest"
 
 # Uninstall is idempotent and needs no extension id.
-install_ok --uninstall --platform linux --home "$LINUX_HOME"
+install_ok --uninstall --platform linux --home "$LINUX_HOME" --host-path "$HOST_BIN"
 ok "second uninstall is a no-op"
 
-install_ok --uninstall --platform macos --home "$MAC_HOME"
+install_ok --uninstall --platform macos --home "$MAC_HOME" --host-path "$HOST_BIN"
 [[ ! -e "$MAC_HOME/$MAC_CHROME/org.friendlypass.browser.json" ]] || fail "macOS uninstall left chrome"
 ok "macOS uninstall removes manifests"
+
+# ---------------------------------------------------------------------------
+# The host CLI itself (install.sh forwards to these exact flags)
+# ---------------------------------------------------------------------------
+
+DIRECT_HOME="$TMP_ROOT/home-direct"
+mkdir -p "$DIRECT_HOME"
+"$HOST_BIN" --install --platform linux --home "$DIRECT_HOME" \
+    --host-path "$HOST_BIN" --extension-id "$CHROME_ID" \
+    --firefox-extension-id "$FF_ID" --browser edge >/dev/null
+check_manifest "$DIRECT_HOME/$LINUX_EDGE/org.friendlypass.browser.json" chromium
+[[ ! -e "$DIRECT_HOME/$LINUX_CHROME/org.friendlypass.browser.json" ]] ||
+    fail "host --browser edge wrote chrome"
+"$HOST_BIN" --uninstall --platform linux --home "$DIRECT_HOME" \
+    --browser edge >/dev/null
+[[ ! -e "$DIRECT_HOME/$LINUX_EDGE/org.friendlypass.browser.json" ]] ||
+    fail "host --uninstall --browser edge left the manifest"
+ok "host --install/--uninstall --browser flags work directly"
 
 printf 'all installer tests passed\n'

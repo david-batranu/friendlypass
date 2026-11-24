@@ -282,6 +282,164 @@ pub fn stop(app: &mut App) {
     app.status = "Browser integration stopped".into();
 }
 
+// -- native-messaging manifests ------------------------------------------
+
+/// What one settings change did, for the status bar.
+struct NativeMessagingOutcome {
+    enabled: bool,
+    installed: usize,
+    removed: usize,
+    /// Integration is on but every per-browser box is off.
+    no_browsers: bool,
+}
+
+/// Where the host binary that registrations point at lives.
+pub fn native_host_path(app: &App) -> Option<std::path::PathBuf> {
+    app.browser_install_host
+        .clone()
+        .or_else(friendlypass_browser::native_messaging::resolve_host_path)
+}
+
+fn manifest_platform(
+    app: &App,
+) -> anyhow::Result<friendlypass_browser::native_messaging::Platform> {
+    app.browser_install_platform
+        .or_else(friendlypass_browser::native_messaging::Platform::current)
+        .ok_or_else(|| anyhow::anyhow!("browser integration is only supported on macOS and Linux"))
+}
+
+/// Options for removing manifests: no host binary is needed.
+fn remove_options(
+    app: &App,
+    browsers: Vec<friendlypass_browser::native_messaging::Browser>,
+) -> anyhow::Result<friendlypass_browser::native_messaging::InstallOptions> {
+    let mut options = friendlypass_browser::native_messaging::InstallOptions::new(
+        app.browser_install_home.clone(),
+        manifest_platform(app)?,
+        std::path::PathBuf::new(),
+    );
+    options.browsers = browsers;
+    Ok(options)
+}
+
+/// Options for writing manifests, resolving the bundled host next to the app
+/// when the caller did not supply one.
+fn install_options(
+    app: &App,
+    browsers: Vec<friendlypass_browser::native_messaging::Browser>,
+) -> anyhow::Result<friendlypass_browser::native_messaging::InstallOptions> {
+    let mut options = remove_options(app, browsers)?;
+    options.host_path = native_host_path(app).ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot find {} next to the app; reinstall the app or build the host",
+            friendlypass_browser::native_messaging::HOST_BINARY_NAME
+        )
+    })?;
+    Ok(options)
+}
+
+fn apply_native_messaging(app: &App) -> anyhow::Result<NativeMessagingOutcome> {
+    use friendlypass_browser::native_messaging::{self, Browser};
+
+    let selected = app.prefs.selected_browsers();
+    if !app.prefs.browser_integration {
+        let options = remove_options(app, Browser::ALL.to_vec())?;
+        let report = native_messaging::uninstall(&options)?;
+        return Ok(NativeMessagingOutcome {
+            enabled: false,
+            installed: 0,
+            removed: report.removed.len(),
+            no_browsers: false,
+        });
+    }
+    if selected.is_empty() {
+        // Enabled with no browser ticked: clean up anything left behind and
+        // tell the user to pick at least one.
+        let options = remove_options(app, Browser::ALL.to_vec())?;
+        let report = native_messaging::uninstall(&options)?;
+        return Ok(NativeMessagingOutcome {
+            enabled: true,
+            installed: 0,
+            removed: report.removed.len(),
+            no_browsers: true,
+        });
+    }
+
+    let install = install_options(app, selected.clone())?;
+    let report = native_messaging::install(&install)?;
+
+    // Unchecked browsers lose their manifest, so per-browser toggles take
+    // effect immediately. Only our own file is removed.
+    let unselected: Vec<Browser> = Browser::ALL
+        .into_iter()
+        .filter(|browser| !selected.contains(browser))
+        .collect();
+    let removed = if unselected.is_empty() {
+        0
+    } else {
+        let options = remove_options(app, unselected)?;
+        native_messaging::uninstall(&options)?.removed.len()
+    };
+
+    Ok(NativeMessagingOutcome {
+        enabled: true,
+        installed: report.changed.len(),
+        removed,
+        no_browsers: false,
+    })
+}
+
+/// Apply the Browser Integration settings: write the manifests for the
+/// selected browsers and remove the rest. Called when a toggle changes.
+pub fn sync_native_messaging(app: &mut App) {
+    match apply_native_messaging(app) {
+        Ok(outcome) if outcome.no_browsers => {
+            app.status = "Browser integration is on but no browser is selected; manifests removed"
+                .into();
+        }
+        Ok(outcome) if outcome.enabled => {
+            app.status = if outcome.installed == 0 {
+                "Browser integration manifests are up to date".into()
+            } else {
+                format!(
+                    "Browser integration enabled: {} manifest(s) written",
+                    outcome.installed
+                )
+            };
+        }
+        Ok(outcome) => {
+            app.status = if outcome.removed == 0 {
+                "Browser integration disabled".into()
+            } else {
+                format!(
+                    "Browser integration disabled: {} manifest(s) removed",
+                    outcome.removed
+                )
+            };
+        }
+        Err(error) => {
+            app.status = format!("cannot update browser integration manifests: {error:#}");
+        }
+    }
+}
+
+/// Startup refresh: rewrite manifests when the host path changed (the app was
+/// moved or updated) without replacing an unrelated startup status message.
+pub fn refresh_native_messaging(app: &mut App) {
+    if !app.prefs.browser_integration {
+        return;
+    }
+    let previous = app.status.clone();
+    match apply_native_messaging(app) {
+        Ok(_) => app.status = previous,
+        Err(error) => {
+            if previous.is_empty() {
+                app.status = format!("cannot update browser integration manifests: {error:#}");
+            }
+        }
+    }
+}
+
 /// Run once per frame, before drawing. Processes bridge requests, keeps the
 /// served snapshot in sync and emits lock/unlock/changed pushes.
 pub fn pump(app: &mut App, ctx: &egui::Context) {
