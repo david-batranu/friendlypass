@@ -109,6 +109,14 @@ class FakeHost {
   silentPing = false;
   holdRequests = false;
   helloOverride: Partial<HostHelloResponse> = {};
+  /**
+   * `hello` replies with this value instead of {@link appRunning}: a host that
+   * was spawned moments ago answers from a status cache its first app probe has
+   * not filled yet, while a later status frame already reports the app up.
+   */
+  helloAppRunning: boolean | null = null;
+  /** Send a `ping` status push (app up) before replying to `hello`. */
+  pushStatusBeforeHello = false;
 
   readonly ports: FakePort[] = [];
   readonly requests: Array<Record<string, unknown>> = [];
@@ -123,6 +131,12 @@ class FakeHost {
     const frame = message as Record<string, unknown>;
     switch (frame.action) {
       case "hello":
+        if (this.pushStatusBeforeHello) {
+          // The host's reader thread writes the probe answer while the stdin
+          // thread composes the hello reply; both take the same writer, so the
+          // push can legitimately land first on the wire.
+          this.replyPing(port, null);
+        }
         if (!this.silentHello) {
           this.replyHello(port);
         }
@@ -157,14 +171,15 @@ class FakeHost {
   }
 
   replyHello(port: FakePort): void {
+    const appRunning = this.helloAppRunning ?? this.appRunning;
     port.reply({
       action: "hello",
       success: "true",
       protocolVersion: 1,
       hostVersion: "0.1.0",
-      appRunning: this.appRunning,
-      appVersion: this.appRunning ? "0.1.0" : null,
-      locked: this.appRunning ? false : null,
+      appRunning,
+      appVersion: appRunning ? "0.1.0" : null,
+      locked: appRunning ? false : null,
       databaseHash: null,
       sessionId: "test-session",
       hostPid: 4242,
@@ -272,6 +287,34 @@ describe("native transport connect", () => {
     // A later call joins the already-established session.
     await transport.connect();
     expect(host.ports).toHaveLength(1);
+  });
+
+  it("never lets a stale hello snapshot overwrite a fresher status push", async () => {
+    // Reproduces the post-SIGKILL recovery race: the replacement host answers
+    // `hello` from a status cache its first app probe has not filled yet
+    // (`appRunning:false`), and the probe answer is written first on the wire.
+    // Caching the older hello used to pin the app to "not running" until the
+    // next status change or the 20 s heartbeat.
+    const host = new FakeHost();
+    host.appRunning = true;
+    host.helloAppRunning = false;
+    host.pushStatusBeforeHello = true;
+    const { transport, events } = setup(host);
+
+    const hello = await transport.connect();
+
+    expect(hello.appRunning).toBe(true);
+    expect(transport.appRunning).toBe(true);
+    expect(transport.hello?.appRunning).toBe(true);
+    expect(transport.status.appRunning).toBe(true);
+    expect(events.filter((event) => event.type === "appDown")).toHaveLength(0);
+    expect(events.filter((event) => event.type === "appUp")).toHaveLength(1);
+    const connected = events.filter((event) => event.type === "connected");
+    expect(connected).toHaveLength(1);
+    expect(
+      (connected[0] as Extract<TransportStateEvent, { type: "connected" }>).hello
+        .appRunning,
+    ).toBe(true);
   });
 
   it("correlates out-of-order success frames by action and nonce", async () => {

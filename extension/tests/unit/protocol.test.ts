@@ -17,7 +17,7 @@
  */
 
 import { readFileSync, readdirSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildAssociateInner,
@@ -260,15 +260,32 @@ class FakeTransport implements NativeTransport {
   handlers!: TransportHandlers;
   responder: ((frame: NativeRequestFrame) => void) | null = null;
   hello: HostHelloResponse;
+  /**
+   * What the host's live status probe reports. Deliberately independent of
+   * {@link hello}: a cached `hello` can say "down" while the host has already
+   * probed the app up (the post-SIGKILL race).
+   */
+  liveAppRunning: boolean;
+  /** Model a host whose probe path does not answer (port still open). */
+  pingFails = false;
+  /** One-shot gate that holds `connect()` after it read the cached hello. */
+  connectGate: Promise<void> | null = null;
 
   constructor(hello: HostHelloResponse) {
     this.hello = hello;
+    this.liveAppRunning = hello.appRunning;
   }
 
   async connect(): Promise<HostHelloResponse> {
     this.connected = true;
     this.handlers.onConnect();
-    return this.hello;
+    const snapshot = this.hello;
+    const gate = this.connectGate;
+    this.connectGate = null;
+    if (gate) {
+      await gate;
+    }
+    return snapshot;
   }
 
   disconnect(): void {
@@ -277,16 +294,24 @@ class FakeTransport implements NativeTransport {
   }
 
   async ping() {
-    return {
+    if (this.pingFails) {
+      throw new Error("native transport is not connected");
+    }
+    const frame = {
       action: "ping" as const,
       success: "true" as const,
       protocolVersion: 1,
       hostVersion: "0.1.0",
-      appRunning: true,
+      appRunning: this.liveAppRunning,
       appVersion: "0.1.0",
       locked: false,
       databaseHash: DB_HASH,
     };
+    // Mirror the real transport: every status frame refreshes the cached hello
+    // and reaches the session as a status observation.
+    this.hello = { ...this.hello, appRunning: frame.appRunning };
+    this.handlers.onFrame(frame as unknown as HostToExtensionFrame);
+    return frame;
   }
 
   async send(frame: NativeRequestFrame): Promise<void> {
@@ -920,6 +945,90 @@ describe("session lifecycle", () => {
         buildInner: () => buildGetLoginsInner({ url: "https://example.com/" }),
       }),
     ).rejects.toMatchObject({ code: KpxcErrorCode.TIMEOUT_OR_NOT_CONNECTED });
+  });
+
+  it("probes the host once when a credential action finds the app believed down", async () => {
+    const harness = await createHarness({
+      association: STANDARD_ASSOCIATION,
+      appRunning: false,
+    });
+    const down = await harness.session.ensureSession();
+    expect(down.state).toBe("READY");
+    expect(down.appRunning).toBe(false);
+
+    // The app is back, but the status push that should announce it was lost and
+    // the cached `hello` still says "down": a fresh host answered before its
+    // first app probe completed. Only an on-demand probe can see the truth.
+    harness.transport.liveAppRunning = true;
+
+    const response = (await harness.session.request({
+      action: "get-logins",
+      requiresAssociation: true,
+      buildInner: () => buildGetLoginsInner({ url: "https://example.com/" }),
+    })) as unknown as { count: number };
+    expect(response.count).toBe(1);
+
+    const recovered = harness.session.snapshot();
+    expect(recovered.appRunning).toBe(true);
+    expect(recovered.state).toBe("READY");
+    expect(recovered.associated).toBe(true);
+    expect(harness.counters.changePublicKeys).toBe(1);
+    expect(harness.counters.testAssociate).toBe(1);
+  });
+
+  it("re-runs the handshake when an app-up transition lands inside a stale one", async () => {
+    const harness = await createHarness({
+      association: STANDARD_ASSOCIATION,
+      appRunning: false,
+    });
+    await harness.session.ensureSession();
+    expect(harness.session.snapshot().appRunning).toBe(false);
+
+    // Hold the next connect(): it has already read the stale app-down hello, and
+    // its probe path is momentarily unavailable, so that handshake can only end
+    // in the app-down branch.
+    let release = (): void => undefined;
+    harness.transport.connectGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    harness.transport.liveAppRunning = true;
+    harness.transport.pingFails = true;
+    const staleHandshake = harness.session.ensureSession();
+    // Let it reach the gated `connect()` so it has already read the stale hello.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The host's status push reports the app up while that handshake is running.
+    harness.session.handleFrame({
+      action: "ping",
+      success: "true",
+      protocolVersion: 1,
+      hostVersion: "0.1.0",
+      appRunning: true,
+      appVersion: "0.1.0",
+      locked: false,
+      databaseHash: null,
+    } as unknown as HostToExtensionFrame);
+    expect(harness.session.snapshot().appRunning).toBe(true);
+
+    // The transport refreshes its cached hello from that frame; the probe path
+    // recovers too.
+    harness.transport.hello = { ...harness.transport.hello, appRunning: true };
+    harness.transport.pingFails = false;
+    release();
+    await staleHandshake;
+
+    // Without the queued revalidation the store stayed at the stale app-down
+    // answer written by `staleHandshake`.
+    await vi.waitFor(
+      () => {
+        expect(harness.session.snapshot().appRunning).toBe(true);
+        expect(harness.session.snapshot().state).toBe("READY");
+        expect(harness.session.snapshot().associated).toBe(true);
+      },
+      { timeout: 2000, interval: 10 },
+    );
+    expect(harness.counters.changePublicKeys).toBe(1);
+    expect(harness.counters.testAssociate).toBe(1);
   });
 
   it("does not re-handshake for a content-only database-changed push", async () => {
