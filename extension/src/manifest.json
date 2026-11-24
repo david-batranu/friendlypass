@@ -36,6 +36,27 @@
         "mac": "Command+Shift+L"
       },
       "description": "Fill the best matching login with friendlypass"
+    },
+    "open-inline-menu": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Open the friendlypass menu for the focused field"
+    },
+    "generate-password": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+G",
+        "mac": "Command+Shift+G"
+      },
+      "description": "Generate a password into the focused field"
+    },
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+O",
+        "mac": "Command+Shift+O"
+      },
+      "description": "Open friendlypass"
     }
   },
   "action": {

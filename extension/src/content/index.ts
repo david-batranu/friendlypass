@@ -1,14 +1,17 @@
 /**
- * friendlypass content script entry point (WP4).
+ * friendlypass content script entry point (WP4 engine, WP6b in-page UX).
  *
  * Runs in every frame (`all_frames: true`) and:
  *   1. detects login/TOTP fields, including late-rendered SPA forms, open
  *      shadow roots and cross-origin frames;
- *   2. renders one inline icon per fillable field;
+ *   2. renders one inline icon per fillable field, with 1Password-style states
+ *      (matches / no matches / locked / hidden);
  *   3. fetches matching logins through the internal message API only;
- *   4. fills from the icon/dropdown or from a background shortcut command;
+ *   4. fills from the icon, the inline menu (search + keyboard) or a background
+ *      shortcut command, and generates passwords into signup forms;
  *   5. offers to save a newly submitted login with `set-login`;
- *   6. fills TOTP fields through `get-totp`.
+ *   6. fills TOTP fields through `get-totp`;
+ *   7. reacts live to `settings.changed` and enforces per-origin exceptions.
  *
  * Nothing here talks to the native host, and credentials never leave the
  * isolated content-script world except through the typed internal API.
@@ -19,21 +22,27 @@ import {
   onContentCommand,
   sendBackgroundMessage,
 } from "../common/messages";
+import { INTERNAL_CHANNEL } from "../common/types";
 import type {
   CredentialEntry,
-  ExtensionSettings,
   PendingCredential,
   StatusSummary,
 } from "../common/types";
+import { InlineMenu } from "./autocomplete";
+import type { MenuAction } from "./autocomplete";
 import { dismissSaveBanner, showSaveBanner } from "./banner";
-import { CredentialAutocomplete } from "./credential-autocomplete";
-import { fillCombination, fillTotp } from "./fill";
+import { loginMenuEntries } from "./credential-autocomplete";
+import { fillCombination, fillTotp, setValue } from "./fill";
 import type { FieldCombination } from "./fields";
 import {
   buildCombinations,
   findCombination,
+  findForm,
   getInputs,
   isLoginCombination,
+  isNewPasswordField,
+  isSearchField,
+  passwordInputsForForm,
 } from "./fields";
 import {
   findExistingEntry,
@@ -41,33 +50,46 @@ import {
   readSubmittedCredentials,
 } from "./form";
 import type { SubmittedCredentials } from "./form";
-import { cleanupIcons, ensureIcon, hasIcon, setIconState } from "./icon";
+import {
+  cleanupIcons,
+  ensureIcon,
+  hasIcon,
+  removeAllIcons,
+  setIconState,
+} from "./icon";
+import { iconStateFor } from "./icon-state";
 import { startDomObserver, startNavigationObserver } from "./observer";
 import type { DomObserver } from "./observer";
-import { TOTPAutocomplete } from "./totp-autocomplete";
+import {
+  CONTENT_SETTINGS_KEY,
+  DEFAULT_CONTENT_SETTINGS,
+  currentOrigin,
+  isSettingsChangedMessage,
+  normaliseSettings,
+  readContentSettings,
+  sitePolicyFor,
+} from "./settings";
+import type { ContentSettings, SitePolicy } from "./settings";
+import { totpMenuEntries } from "./totp-autocomplete";
 import { entryHasTotp, entryStringTotp } from "./totp-field";
-import { formActionUrl, showNotification } from "./ui";
+import { formActionUrl, isOwnElement, showNotification } from "./ui";
 import { ensureLoginIcon } from "./username-field";
 
-/** Content-only preferences. Kept separate from the background settings. */
-interface ContentSettings {
-  /** Fill automatically when exactly one matching login exists. Default off. */
-  autoFillSingleEntry: boolean;
-  /** Render field icons. Default on. */
-  showIcons: boolean;
-}
-
-const CONTENT_SETTINGS_KEY = "friendlypass.content.settings.v1";
 const CONTENT_SINGLETON_KEY = "__friendlypassContentInstalled";
 const FETCH_THROTTLE_MS = 1000;
+/** Wait before opening the menu on field focus, so typing never races it. */
+const AUTO_OPEN_DELAY_MS = 280;
+/** After a user close, don't immediately reopen on the same focus. */
+const AUTO_OPEN_SUPPRESS_MS = 900;
+/** How long a field focus counts as "the field the user is on" for shortcuts. */
+const FOCUS_RECENCY_MS = 15_000;
+const GENERATE_ITEM_ID = "generate-password";
+const OPEN_APP_ITEM_ID = "open-friendlypass";
+const UNLOCK_ITEM_ID = "unlock";
+const FILL_TOTP_ITEM_ID = "fill-totp";
 
-const DEFAULT_CONTENT_SETTINGS: ContentSettings = {
-  autoFillSingleEntry: false,
-  showIcons: true,
-};
-
-let extensionSettings: ExtensionSettings | null = null;
-let contentSettings: ContentSettings = { ...DEFAULT_CONTENT_SETTINGS };
+let settings: ContentSettings = { ...DEFAULT_CONTENT_SETTINGS };
+let policy: SitePolicy = sitePolicyFor(DEFAULT_CONTENT_SETTINGS, "");
 let status: StatusSummary | null = null;
 let combinations: FieldCombination[] = [];
 let credentials: CredentialEntry[] = [];
@@ -77,16 +99,19 @@ let lastFetchUrl = "";
 let lastPageUrl = "";
 let autoFilled = false;
 let detectTimer: number | null = null;
+let autoOpenTimer: number | null = null;
+let suppressAutoOpenUntil = 0;
+let lastFocusedField: HTMLInputElement | null = null;
+let lastFocusedAt = 0;
 
 const boundForms = new WeakSet<HTMLFormElement>();
-const credentialMenu = new CredentialAutocomplete();
-const totpMenu = new TOTPAutocomplete();
+const menu = new InlineMenu();
 
 let domObserver: DomObserver | null = null;
 let navigationObserver: DomObserver | null = null;
 
 function logDebug(message: string): void {
-  if (extensionSettings?.debugLogging) {
+  if (settings.debugLogging) {
     // Never pass values from credential entries to this helper.
     console.debug(`[friendlypass content] ${message}`);
   }
@@ -113,48 +138,86 @@ function isStatusSummary(value: unknown): value is StatusSummary {
   );
 }
 
+function totpCredentials(): CredentialEntry[] {
+  return credentials.filter((entry) => entryHasTotp(entry));
+}
+
+function canFill(): boolean {
+  return Boolean(
+    status &&
+      status.appRunning &&
+      status.databaseOpen &&
+      !status.locked &&
+      status.associated &&
+      !policy.disableFill,
+  );
+}
+
+function appReachable(): boolean {
+  return status?.appRunning === true;
+}
+
+// ---------------------------------------------------------------------------
+// Settings and icon state
+// ---------------------------------------------------------------------------
+
+function applyPolicy(): void {
+  policy = sitePolicyFor(settings, currentOrigin());
+}
+
+function updateIconStates(): void {
+  const visible = settings.showFieldIcons && !policy.disableIcons;
+  const base = {
+    visible,
+    appRunning: status?.appRunning ?? false,
+    locked: status?.locked ?? true,
+    databaseOpen: status?.databaseOpen ?? false,
+    associated: status?.associated ?? false,
+  };
+  setIconState(
+    iconStateFor({ ...base, hasMatches: credentials.length > 0 }),
+    "login",
+  );
+  setIconState(
+    iconStateFor({ ...base, hasMatches: totpCredentials().length > 0 }),
+    "totp",
+  );
+}
+
 function applyStatus(next: StatusSummary): void {
   status = next;
-  if (!next.appRunning) {
-    setIconState("disconnected");
-  } else if (next.locked || !next.databaseOpen) {
-    setIconState("locked");
-  } else if (!next.associated) {
-    // App reachable but this browser is not associated: the icon can still
-    // trigger a fetch, which may raise the association UI.
-    setIconState("locked");
-  } else {
-    setIconState("unlocked");
+  if (!next.appRunning || next.locked) {
+    menu.close("programmatic");
   }
+  updateIconStates();
 }
 
-function updateIconStateFromState(): void {
-  if (status) {
-    applyStatus(status);
-    return;
+function applySettings(next: ContentSettings): void {
+  settings = next;
+  applyPolicy();
+  if (!settings.showFieldIcons || policy.disableIcons) {
+    removeAllIcons();
   }
-  setIconState("disconnected");
+  if (policy.disableFill) {
+    menu.close("programmatic");
+  }
+  updateIconStates();
+  detectAndRender();
 }
 
-async function readContentSettings(): Promise<ContentSettings> {
-  const settings: ContentSettings = { ...DEFAULT_CONTENT_SETTINGS };
+/** Re-read `settings.get` (plus the legacy content key). */
+async function refreshSettings(): Promise<void> {
   try {
-    const stored = await chrome.storage.local.get(CONTENT_SETTINGS_KEY);
-    const raw = stored[CONTENT_SETTINGS_KEY];
-    if (typeof raw === "object" && raw !== null) {
-      const record = raw as Record<string, unknown>;
-      if (typeof record["autoFillSingleEntry"] === "boolean") {
-        settings.autoFillSingleEntry = record["autoFillSingleEntry"];
-      }
-      if (typeof record["showIcons"] === "boolean") {
-        settings.showIcons = record["showIcons"];
-      }
-    }
-  } catch {
-    // Storage may be unavailable while the extension starts; defaults are safe.
+    const next = await readContentSettings();
+    applySettings(next);
+  } catch (cause) {
+    logDebug(`settings refresh failed: ${String(cause)}`);
   }
-  return settings;
 }
+
+// ---------------------------------------------------------------------------
+// Field detection and credential fetch
+// ---------------------------------------------------------------------------
 
 /** Rebuild the field map synchronously from the current DOM. */
 function refreshCombinations(): void {
@@ -203,10 +266,11 @@ async function fetchCredentials(triggerUnlock = false, force = false): Promise<v
       lastFetchAt = Date.now();
       lastFetchUrl = url;
       logDebug(`logins.get ${result.ok ? "ok" : "failed"}; entries=${credentials.length}`);
-      updateIconStateFromState();
+      updateIconStates();
       maybeAutoFill();
     } catch {
       credentials = [];
+      updateIconStates();
     } finally {
       fetching = null;
     }
@@ -253,6 +317,9 @@ async function pendingSubmissionForPage(): Promise<PendingCredential | null> {
  * one (often a dashboard), so "already saved"/"update existing" still work.
  */
 async function checkPendingSubmission(): Promise<void> {
+  if (policy.disableSave) {
+    return;
+  }
   const pending = await pendingSubmissionForPage();
   if (!pending) {
     return;
@@ -285,7 +352,7 @@ function largestCombination(): FieldCombination | undefined {
 }
 
 function maybeAutoFill(): void {
-  if (!contentSettings.autoFillSingleEntry || autoFilled) {
+  if (!settings.autoFillSingleEntry || autoFilled || !canFill()) {
     return;
   }
   if (credentials.length !== 1) {
@@ -301,6 +368,10 @@ function maybeAutoFill(): void {
 }
 
 function fillWithEntry(combination: FieldCombination | undefined, entry: CredentialEntry): void {
+  if (policy.disableFill) {
+    showNotification("info", "Filling is disabled for this site.");
+    return;
+  }
   if (!combination) {
     showNotification("warning", "No fillable login field was found on this page.");
     return;
@@ -313,28 +384,243 @@ function fillWithEntry(combination: FieldCombination | undefined, entry: Credent
   fillCombination(combination, entry, {
     passOnly: combination.username === null && combination.password !== null,
   });
-  credentialMenu.close();
-  totpMenu.close();
+  menu.close("programmatic");
+}
+
+// ---------------------------------------------------------------------------
+// Inline menu
+// ---------------------------------------------------------------------------
+
+function closeForUser(): void {
+  suppressAutoOpenUntil = Date.now() + AUTO_OPEN_SUPPRESS_MS;
+}
+
+function openFriendlypassApp(): void {
+  // The action popup can only be opened from an extension page; content
+  // scripts have no API for it, so point the user at the toolbar instead.
+  showNotification("info", "Open friendlypass from the toolbar to manage logins.");
+}
+
+async function unlockFriendlypass(): Promise<void> {
+  try {
+    const result = await sendBackgroundMessage("database.unlock");
+    if (result.ok) {
+      applyStatus(result.value);
+      if (result.value.locked) {
+        showNotification("info", "Unlock friendlypass to continue.");
+      } else {
+        showNotification("success", "friendlypass unlocked.");
+        void fetchCredentials(false, true);
+      }
+    } else {
+      showNotification("info", "Unlock friendlypass to continue.");
+    }
+  } catch {
+    showNotification("info", "Unlock friendlypass to continue.");
+  }
+}
+
+function openLockedMenu(field: HTMLInputElement): void {
+  const actions: MenuAction[] = [
+    {
+      id: UNLOCK_ITEM_ID,
+      label: "Locked — unlock friendlypass",
+      icon: "lock",
+      tone: "primary",
+    },
+    {
+      id: OPEN_APP_ITEM_ID,
+      label: "Open friendlypass",
+      icon: "external",
+    },
+  ];
+  menu.open(field, [], {
+    focusSearch: false,
+    label: "friendlypass locked",
+    emptyMessage: "",
+    actions,
+    onAction: (action) => {
+      if (action.id === UNLOCK_ITEM_ID) {
+        settle(unlockFriendlypass(), "unlock");
+      } else {
+        openFriendlypassApp();
+      }
+    },
+    onClose: (reason) => {
+      if (reason === "user") {
+        closeForUser();
+      }
+    },
+  });
+}
+
+function openAppMenu(field: HTMLInputElement, emptyMessage: string): void {
+  const actions: MenuAction[] = [
+    {
+      id: OPEN_APP_ITEM_ID,
+      label: "Open friendlypass",
+      icon: "external",
+      tone: "primary",
+    },
+  ];
+  menu.open(field, [], {
+    focusSearch: false,
+    label: "friendlypass",
+    emptyMessage,
+    actions,
+    onAction: (action) => {
+      if (action.id === OPEN_APP_ITEM_ID) {
+        openFriendlypassApp();
+      }
+    },
+    onClose: (reason) => {
+      if (reason === "user") {
+        closeForUser();
+      }
+    },
+  });
+}
+
+function openLoginMenu(
+  field: HTMLInputElement,
+  combination: FieldCombination | undefined,
+  focusSearch: boolean,
+): void {
+  const actions: MenuAction[] = [];
+  if (combination && isNewPasswordField(field, combination)) {
+    actions.push({
+      id: GENERATE_ITEM_ID,
+      label: "Generate password",
+      icon: "generate",
+    });
+  }
+
+  menu.open(field, loginMenuEntries(credentials), {
+    focusSearch,
+    label: "friendlypass logins",
+    searchPlaceholder: "Search logins",
+    emptyMessage: "No saved login for this page",
+    actions,
+    onPick: (picked) => {
+      const entry = credentials.find((candidate) => candidate.uuid === picked.uuid);
+      if (!entry) {
+        return;
+      }
+      refreshCombinations();
+      fillWithEntry(
+        findCombination(combinations, field) ?? combination,
+        entry,
+      );
+    },
+    onAction: (action) => {
+      if (action.id === GENERATE_ITEM_ID) {
+        settle(
+          generatePasswordInto(combination, field),
+          "generate-password",
+        );
+      }
+    },
+    onClose: (reason) => {
+      if (reason === "user") {
+        closeForUser();
+      }
+    },
+  });
+}
+
+function openTotpMenu(field: HTMLInputElement, focusSearch: boolean): void {
+  const entries = totpCredentials();
+  const actions: MenuAction[] = [
+    {
+      id: FILL_TOTP_ITEM_ID,
+      label: "Fill TOTP",
+      icon: "totp",
+      tone: "primary",
+      needsEntry: true,
+    },
+    {
+      id: OPEN_APP_ITEM_ID,
+      label: "Open friendlypass",
+      icon: "external",
+    },
+  ];
+
+  const fillFor = (entry: CredentialEntry): void => {
+    settle(fillTotpForEntry(field, entry), "fill-totp");
+  };
+
+  menu.open(field, totpMenuEntries(credentials), {
+    focusSearch,
+    label: "friendlypass one-time passwords",
+    searchPlaceholder: "Search entries",
+    emptyMessage: "No one-time password is saved for this page",
+    actions,
+    onPick: (picked) => {
+      const entry = credentials.find((candidate) => candidate.uuid === picked.uuid);
+      if (entry) {
+        fillFor(entry);
+      }
+    },
+    onAction: (action, activeEntry) => {
+      if (action.id === OPEN_APP_ITEM_ID) {
+        openFriendlypassApp();
+        return;
+      }
+      if (action.id !== FILL_TOTP_ITEM_ID) {
+        return;
+      }
+      const uuid = activeEntry?.uuid ?? entries[0]?.uuid;
+      const entry = credentials.find((candidate) => candidate.uuid === uuid);
+      if (entry) {
+        fillFor(entry);
+      }
+    },
+    onClose: (reason) => {
+      if (reason === "user") {
+        closeForUser();
+      }
+    },
+  });
 }
 
 async function onLoginIconClick(field: HTMLInputElement): Promise<void> {
-  if (credentialMenu.isOpenFor(field)) {
-    credentialMenu.close();
+  if (menu.isOpenFor(field)) {
+    menu.close("user");
+    return;
+  }
+  if (policy.disableFill) {
+    showNotification("info", "Filling is disabled for this site.");
+    return;
+  }
+  if (!appReachable()) {
     return;
   }
 
-  logDebug(`login icon click; entries=${credentials.length}`);
   refreshCombinations();
-  const combination = findCombination(combinations, field) ?? largestCombination();
+  // A step transition can leave the icon attached to a field the page just
+  // removed; fall back to the page's best login combination.
+  const combination =
+    findCombination(combinations, field) ?? largestCombination();
+  logDebug(`login icon click; entries=${credentials.length}`);
+
+  if (!canFill()) {
+    openLockedMenu(field);
+    return;
+  }
 
   if (credentials.length === 0) {
     await ensureCredentials();
   }
   refreshCombinations();
   const fresh = findCombination(combinations, field) ?? combination;
+  updateIconStates();
 
   if (credentials.length === 0) {
-    showNotification("info", "No saved login matches this page.");
+    if (fresh && isNewPasswordField(field, fresh)) {
+      openLoginMenu(field, fresh, true);
+    } else {
+      openAppMenu(field, "No saved login for this page");
+    }
     return;
   }
 
@@ -346,39 +632,54 @@ async function onLoginIconClick(field: HTMLInputElement): Promise<void> {
     return;
   }
 
-  credentialMenu.show(field, credentials, (entry) => {
-    refreshCombinations();
-    fillWithEntry(findCombination(combinations, field) ?? fresh, entry);
-  });
+  openLoginMenu(field, fresh, true);
 }
 
 async function onTotpIconClick(field: HTMLInputElement): Promise<void> {
-  if (totpMenu.isOpenFor(field)) {
-    totpMenu.close();
+  if (menu.isOpenFor(field)) {
+    menu.close("user");
     return;
   }
+  if (policy.disableFill) {
+    showNotification("info", "Filling is disabled for this site.");
+    return;
+  }
+  if (!appReachable()) {
+    return;
+  }
+  if (!canFill()) {
+    openLockedMenu(field);
+    return;
+  }
+
+  refreshCombinations();
+  // The field may have been replaced by a step transition between the icon
+  // render and the click.
+  const target =
+    findCombination(combinations, field)?.totp ??
+    combinations.find((candidate) => candidate.totp)?.totp ??
+    field;
 
   if (credentials.length === 0) {
     await ensureCredentials();
   }
+  updateIconStates();
 
-  const withTotp = credentials.filter((entry) => entryHasTotp(entry));
+  const withTotp = totpCredentials();
   if (withTotp.length === 0) {
-    showNotification("warning", "No one-time password is saved for this page.");
+    openAppMenu(target, "No one-time password is saved for this page");
     return;
   }
 
   if (withTotp.length === 1) {
     const entry = withTotp[0];
     if (entry) {
-      await fillTotpForEntry(field, entry);
+      await fillTotpForEntry(target, entry);
     }
     return;
   }
 
-  totpMenu.show(field, withTotp, (entry) => {
-    settle(fillTotpForEntry(field, entry), "fill-totp");
-  });
+  openTotpMenu(target, true);
 }
 
 async function fillTotpForEntry(field: HTMLInputElement, entry: CredentialEntry): Promise<void> {
@@ -395,8 +696,178 @@ async function fillTotpForEntry(field: HTMLInputElement, entry: CredentialEntry)
     return;
   }
   fillTotp(field, code);
-  totpMenu.close();
+  menu.close("programmatic");
 }
+
+// ---------------------------------------------------------------------------
+// Password generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Inputs that should receive a generated password: explicit
+ * `autocomplete=new-password` fields, otherwise every password field after the
+ * current one in a multi-password form, otherwise the single password field.
+ */
+function generatedPasswordTargets(
+  combination: FieldCombination | undefined,
+  field: HTMLInputElement | null,
+): HTMLInputElement[] {
+  const form = combination?.form ?? (field ? findForm(field) : null);
+  const inputs = form ? passwordInputsForForm(form) : [];
+  const explicit = inputs.filter(
+    (input) =>
+      (input.getAttribute("autocomplete") ?? "").toLowerCase() === "new-password",
+  );
+  let targets: HTMLInputElement[] = explicit;
+  if (targets.length === 0) {
+    if (inputs.length >= 2) {
+      targets = inputs.slice(1);
+    } else if (inputs.length === 1) {
+      targets = inputs;
+    } else if (field && field.type === "password") {
+      targets = [field];
+    }
+  }
+  return Array.from(new Set(targets));
+}
+
+function generatedUsername(
+  combination: FieldCombination | undefined,
+  field: HTMLInputElement | null,
+): string {
+  const direct = combination?.username?.value.trim();
+  if (direct) {
+    return direct;
+  }
+  const form = combination?.form ?? (field ? findForm(field) : null);
+  const input = form?.querySelector<HTMLInputElement>(
+    'input[type="text"], input[type="email"]',
+  );
+  return input?.value.trim() ?? "";
+}
+
+async function generatePasswordInto(
+  combination: FieldCombination | undefined,
+  field: HTMLInputElement | null,
+): Promise<void> {
+  if (policy.disableFill) {
+    showNotification("info", "Filling is disabled for this site.");
+    return;
+  }
+  if (!canFill()) {
+    showNotification("info", "Locked — unlock friendlypass to continue.");
+    return;
+  }
+  refreshCombinations();
+  const fresh =
+    (field ? findCombination(combinations, field) : undefined) ??
+    combination ??
+    largestCombination();
+  const targets = generatedPasswordTargets(fresh, field);
+  if (targets.length === 0) {
+    showNotification("warning", "No password field was found on this page.");
+    return;
+  }
+
+  const result = await sendBackgroundMessage("password.generate");
+  const password = result.ok && typeof result.value === "string" ? result.value : "";
+  if (!password) {
+    showNotification("warning", "friendlypass could not generate a password.");
+    return;
+  }
+
+  for (const target of targets) {
+    setValue(target, password, true);
+  }
+  logDebug(`generated password into ${targets.length} field(s)`);
+
+  if (!policy.disableSave) {
+    showBannerForSubmission(
+      {
+        username: generatedUsername(fresh, field),
+        password,
+        passwordChange: targets.length > 1,
+      },
+      credentials,
+      document.location.href,
+      true,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shortcut entry points (background command -> raw content message)
+// ---------------------------------------------------------------------------
+
+function focusedLoginField(): HTMLInputElement | null {
+  const active = document.activeElement;
+  if (active instanceof HTMLInputElement && !isSearchField(active)) {
+    return active;
+  }
+  if (
+    lastFocusedField &&
+    lastFocusedField.isConnected &&
+    Date.now() - lastFocusedAt < FOCUS_RECENCY_MS &&
+    (document.hasFocus() || Date.now() - lastFocusedAt < 1500)
+  ) {
+    return lastFocusedField;
+  }
+  return null;
+}
+
+function openMenuForFocusedField(): void {
+  const field = focusedLoginField();
+  if (!field) {
+    showNotification("info", "Focus a login field first.");
+    return;
+  }
+  refreshCombinations();
+  const combination = findCombination(combinations, field);
+  if (!combination) {
+    return;
+  }
+  if (combination.totp === field) {
+    settle(onTotpIconClick(field), "shortcut-totp-menu");
+    return;
+  }
+  settle(onLoginIconClick(field), "shortcut-login-menu");
+}
+
+function generateForFocusedField(): void {
+  const field = focusedLoginField();
+  refreshCombinations();
+  let combination = field
+    ? findCombination(combinations, field)
+    : undefined;
+  if (!combination) {
+    // No focused login field: only a signup/password-change form is a safe
+    // target. Never overwrite an unrelated login password.
+    combination = combinations.find((candidate) => {
+      const form = candidate.form;
+      if (!form) {
+        return false;
+      }
+      const inputs = passwordInputsForForm(form);
+      return (
+        inputs.length >= 2 ||
+        inputs.some(
+          (input) =>
+            (input.getAttribute("autocomplete") ?? "").toLowerCase() ===
+            "new-password",
+        )
+      );
+    });
+  }
+  if (!combination) {
+    showNotification("info", "Focus a password field first.");
+    return;
+  }
+  settle(generatePasswordInto(combination, field), "shortcut-generate");
+}
+
+// ---------------------------------------------------------------------------
+// Icons and save offers
+// ---------------------------------------------------------------------------
 
 function renderIcons(): void {
   for (const combination of combinations) {
@@ -430,6 +901,9 @@ function handlerForForm(form: HTMLFormElement): FieldCombination | undefined {
  * call is dispatched from the capture-phase listener ahead of navigation.
  */
 function storeSubmission(submitted: SubmittedCredentials): void {
+  if (policy.disableSave) {
+    return;
+  }
   void sendBackgroundMessage("submit.store", {
     url: document.location.href,
     username: submitted.username,
@@ -443,7 +917,11 @@ function showBannerForSubmission(
   submitted: SubmittedCredentials,
   entries: CredentialEntry[],
   url: string,
+  skipFocus = false,
 ): void {
+  if (policy.disableSave) {
+    return;
+  }
   if (isAlreadySaved(entries, submitted.username, submitted.password)) {
     return;
   }
@@ -461,6 +939,9 @@ function showBannerForSubmission(
       onSaved: () => {
         void fetchCredentials(false, true);
       },
+      groupAlwaysAsk: settings.defaultGroupAlwaysAsk,
+      defaultGroup: settings.defaultGroup,
+      skipFocus,
     },
   );
 }
@@ -471,6 +952,9 @@ function showBannerForSubmission(
  * produces "update" and an exact match produces no banner at all.
  */
 function offerSave(submitted: SubmittedCredentials): void {
+  if (policy.disableSave) {
+    return;
+  }
   // Capture the page URL before any await: if the document navigates, the
   // banner must still be attributed to the page that submitted the form.
   const url = document.location.href;
@@ -485,7 +969,7 @@ function offerSave(submitted: SubmittedCredentials): void {
 }
 
 function onSubmit(event: Event): void {
-  if (!event.isTrusted) {
+  if (!event.isTrusted || policy.disableSave) {
     return;
   }
   const form = event.currentTarget;
@@ -507,7 +991,7 @@ function onSubmit(event: Event): void {
  * listener still reports the pair before the page navigates.
  */
 function onSubmitControlClick(event: Event): void {
-  if (!event.isTrusted || !(event.target instanceof Element)) {
+  if (!event.isTrusted || !(event.target instanceof Element) || policy.disableSave) {
     return;
   }
   const control = event.target.closest(
@@ -534,6 +1018,7 @@ function onSubmitControlClick(event: Event): void {
 /** Enter in a password field, for sites without a real submit button. */
 function onPasswordKeydown(event: Event): void {
   if (
+    policy.disableSave ||
     !(event instanceof KeyboardEvent) ||
     !event.isTrusted ||
     event.key !== "Enter" ||
@@ -575,11 +1060,24 @@ function detectAndRender(): void {
 
     refreshCombinations();
     bindForms();
-    if (contentSettings.showIcons) {
+
+    if (!settings.showFieldIcons || policy.disableIcons) {
+      removeAllIcons();
+      menu.close("programmatic");
+    } else {
       renderIcons();
+      cleanupIcons();
     }
-    cleanupIcons();
-    updateIconStateFromState();
+    updateIconStates();
+
+    if (menu.anchorField) {
+      const anchor = menu.anchorField;
+      if (!anchor.isConnected || !findCombination(combinations, anchor)) {
+        menu.close("programmatic");
+      } else {
+        menu.reposition();
+      }
+    }
 
     if (combinations.length > 0) {
       if (credentials.length > 0) {
@@ -603,6 +1101,89 @@ function scheduleDetect(): void {
   }, 60);
 }
 
+// ---------------------------------------------------------------------------
+// Focus-driven menu opening
+// ---------------------------------------------------------------------------
+
+function scheduleAutoOpen(field: HTMLInputElement): void {
+  if (autoOpenTimer !== null) {
+    window.clearTimeout(autoOpenTimer);
+    autoOpenTimer = null;
+  }
+  if (
+    Date.now() < suppressAutoOpenUntil ||
+    policy.disableFill ||
+    !settings.showFieldIcons ||
+    policy.disableIcons ||
+    field.value !== ""
+  ) {
+    return;
+  }
+
+  autoOpenTimer = window.setTimeout(() => {
+    autoOpenTimer = null;
+    if (!field.matches(":focus") || field.value !== "" || menu.isOpen()) {
+      return;
+    }
+    if (!canFill()) {
+      return;
+    }
+    refreshCombinations();
+    const combination = findCombination(combinations, field);
+    if (!combination || combination.totp || !isLoginCombination(combination)) {
+      return;
+    }
+    void (async () => {
+      if (credentials.length === 0) {
+        await ensureCredentials();
+      }
+      if (
+        !field.matches(":focus") ||
+        field.value !== "" ||
+        menu.isOpen() ||
+        !canFill()
+      ) {
+        return;
+      }
+      if (credentials.length === 0) {
+        return;
+      }
+      openLoginMenu(field, findCombination(combinations, field) ?? combination, false);
+    })();
+  }, AUTO_OPEN_DELAY_MS);
+}
+
+function onFocusIn(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    if (menu.isOpen() && (!(target instanceof Element) || !isOwnElement(target))) {
+      menu.close("programmatic");
+    }
+    return;
+  }
+
+  lastFocusedField = target;
+  lastFocusedAt = Date.now();
+
+  if (menu.isOpen() && menu.anchorField !== target) {
+    menu.close("programmatic");
+  }
+  scheduleAutoOpen(target);
+}
+
+function onDocumentInput(event: Event): void {
+  if (!(event.target instanceof HTMLInputElement) || !event.isTrusted) {
+    return;
+  }
+  if (menu.isOpenFor(event.target)) {
+    menu.close("user");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
 async function init(): Promise<void> {
   try {
     if (
@@ -612,11 +1193,8 @@ async function init(): Promise<void> {
       return;
     }
 
-    const settingsResult = await sendBackgroundMessage("settings.get");
-    if (settingsResult.ok) {
-      extensionSettings = settingsResult.value;
-    }
-    contentSettings = await readContentSettings();
+    settings = await readContentSettings();
+    applyPolicy();
 
     const statusResult = await sendBackgroundMessage("status.get");
     if (statusResult.ok) {
@@ -624,7 +1202,9 @@ async function init(): Promise<void> {
     }
 
     detectAndRender();
-    void checkPendingSubmission();
+    if (!policy.disableSave) {
+      void checkPendingSubmission();
+    }
     domObserver = startDomObserver(() => scheduleDetect());
     navigationObserver = startNavigationObserver(() => scheduleDetect());
   } catch (cause) {
@@ -635,6 +1215,9 @@ async function init(): Promise<void> {
 function registerHandlers(): void {
   onContentCommand({
     "content.fillLogin": ({ entry }) => {
+      if (policy.disableFill) {
+        return;
+      }
       refreshCombinations();
       const combination = largestCombination();
       if (!combination) {
@@ -646,6 +1229,9 @@ function registerHandlers(): void {
     },
 
     "content.fillTotp": ({ totp }) => {
+      if (policy.disableFill) {
+        return;
+      }
       refreshCombinations();
       const combination = combinations.find((candidate) => candidate.totp !== null);
       if (combination?.totp) {
@@ -655,10 +1241,9 @@ function registerHandlers(): void {
 
     "content.clearCredentials": () => {
       credentials = [];
-      credentialMenu.close();
-      totpMenu.close();
+      menu.close("programmatic");
       dismissSaveBanner();
-      updateIconStateFromState();
+      updateIconStates();
     },
 
     "content.redetectFields": () => {
@@ -667,6 +1252,9 @@ function registerHandlers(): void {
     },
 
     "content.showSaveBanner": ({ kind, entry }) => {
+      if (policy.disableSave) {
+        return;
+      }
       if (entry) {
         showSaveBanner({
           kind,
@@ -674,6 +1262,9 @@ function registerHandlers(): void {
           password: entry.password,
           url: document.location.href,
           ...(kind === "update" ? { uuid: entry.uuid } : {}),
+        }, {
+          groupAlwaysAsk: settings.defaultGroupAlwaysAsk,
+          defaultGroup: settings.defaultGroup,
         });
         return;
       }
@@ -690,6 +1281,9 @@ function registerHandlers(): void {
           password,
           url: document.location.href,
           ...(submitUrl ? { submitUrl } : {}),
+        }, {
+          groupAlwaysAsk: settings.defaultGroupAlwaysAsk,
+          defaultGroup: settings.defaultGroup,
         });
       }
     },
@@ -705,15 +1299,53 @@ function registerHandlers(): void {
     }
   });
 
+  // WP6b raw messages: settings broadcast, inline-menu shortcut and the
+  // generate-password shortcut. The typed content-command map is owned by WP3
+  // and is intentionally not extended here (WP6a owns types.ts); these actions
+  // are fire-and-forget and answered by no one.
+  chrome.runtime.onMessage.addListener((message: unknown) => {
+    if (isSettingsChangedMessage(message)) {
+      applySettings(normaliseSettings(message.args));
+      return false;
+    }
+    if (
+      typeof message === "object" &&
+      message !== null &&
+      (message as Record<string, unknown>)["channel"] === INTERNAL_CHANNEL
+    ) {
+      const action = (message as Record<string, unknown>)["action"];
+      if (action === "content.openInlineMenu") {
+        openMenuForFocusedField();
+      } else if (action === "content.generatePassword") {
+        generateForFocusedField();
+      }
+    }
+    return false;
+  });
+
+  // Legacy WP4 content key changes still apply live (the unified settings
+  // arrive through `settings.changed`).
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || !changes[CONTENT_SETTINGS_KEY]) {
+        return;
+      }
+      void refreshSettings();
+    });
+  } catch {
+    // Storage may be unavailable; initial settings are enough.
+  }
+
   window.addEventListener("pagehide", () => {
     domObserver?.stop();
     navigationObserver?.stop();
-    credentialMenu.close();
-    totpMenu.close();
+    menu.close("programmatic");
   });
 
   // Capture phase so the submission is reported before the page's own click
   // handler starts an XHR/navigation. Never prevented or stopped.
+  document.addEventListener("focusin", onFocusIn, true);
+  document.addEventListener("input", onDocumentInput, true);
   document.addEventListener("click", onSubmitControlClick, true);
   document.addEventListener("keydown", onPasswordKeydown, true);
 }

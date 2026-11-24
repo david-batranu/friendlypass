@@ -15,6 +15,7 @@
 
 import {
   KpxcErrorCode,
+  INTERNAL_CHANNEL,
   NATIVE_HOST_NAME,
   SUPPORTED_PROTOCOL_VERSION,
 } from "../common/types";
@@ -23,12 +24,14 @@ import type {
   BackgroundRequestArgs,
   BackgroundRequestResult,
   ConnectionSnapshot,
+  ExtensionSettings,
   HostPingResponse,
   ProtocolError,
   StatusSummary,
 } from "../common/types";
 import {
   makeProtocolError,
+  newRequestId,
   onBackgroundMessage,
   sendContentCommand,
 } from "../common/messages";
@@ -497,17 +500,188 @@ function fillActiveTabFromCommand(): void {
   })();
 }
 
+// ---------------------------------------------------------------------------
+// WP6b — in-page UI commands and settings broadcast (owned by WP6b)
+// ---------------------------------------------------------------------------
+//
+// These are deliberately self-contained: WP6a owns the settings types and the
+// popup/options, so this block speaks the shared raw internal envelope instead
+// of extending `ContentCommandMap`/`BackgroundEventMap`.
+
+const WP6B_STATE_STORAGE_KEY = "friendlypass.state.v1";
+let lastBroadcastSettings = "";
+
+/** Fire-and-forget raw internal command to every frame of a tab. */
+function sendWp6bContentCommand(tabId: number, action: string): void {
+  const envelope = {
+    channel: INTERNAL_CHANNEL,
+    action,
+    args: undefined,
+    requestId: newRequestId(),
+  };
+  try {
+    chrome.tabs.sendMessage(tabId, envelope, () => {
+      // No content script in this tab (or it navigated): expected.
+      void chrome.runtime.lastError;
+    });
+  } catch {
+    // A missing tab/frame is not worth surfacing.
+  }
+}
+
+async function activeHttpTab(): Promise<{ tabId: number } | null> {
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  if (
+    typeof tab?.id !== "number" ||
+    typeof tab.url !== "string" ||
+    !/^https?:/i.test(tab.url)
+  ) {
+    return null;
+  }
+  return { tabId: tab.id };
+}
+
+/** `Ctrl/Cmd+Shift+K`: open the inline menu for the focused field. */
+function openInlineMenuFromCommand(): void {
+  void (async () => {
+    const target = await activeHttpTab();
+    if (target) {
+      sendWp6bContentCommand(target.tabId, "content.openInlineMenu");
+    }
+  })().catch((cause: unknown) => {
+    debug("command.open-inline-menu", messageOf(cause));
+  });
+}
+
+/** `Ctrl/Cmd+Shift+G`: generate a password into the focused field. */
+function generatePasswordFromCommand(): void {
+  void (async () => {
+    const target = await activeHttpTab();
+    if (target) {
+      sendWp6bContentCommand(target.tabId, "content.generatePassword");
+    }
+  })().catch((cause: unknown) => {
+    debug("command.generate-password", messageOf(cause));
+  });
+}
+
+/**
+ * Send a raw internal event to every frame of every tab. Chrome's
+ * `runtime.sendMessage` reaches extension pages; content scripts are only
+ * reliably reachable per tab, so both paths are used.
+ */
+function broadcastToTabs(action: string, args: unknown): void {
+  const envelope = {
+    channel: INTERNAL_CHANNEL,
+    action,
+    args,
+    requestId: newRequestId(),
+  };
+  void chrome.tabs
+    .query({})
+    .then((tabs) => {
+      for (const tab of tabs) {
+        if (typeof tab.id !== "number") {
+          continue;
+        }
+        try {
+          chrome.tabs.sendMessage(tab.id, envelope, () => {
+            void chrome.runtime.lastError;
+          });
+        } catch {
+          // Tab closed or not scriptable.
+        }
+      }
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * `settings.changed` broadcast (WP6 shared contract). Fires whenever the
+ * persisted settings record changes; content scripts apply the payload live.
+ */
+function broadcastSettingsChanged(next: ExtensionSettings): void {
+  const fingerprint = JSON.stringify(next);
+  if (fingerprint === lastBroadcastSettings) {
+    return;
+  }
+  lastBroadcastSettings = fingerprint;
+  const envelope = {
+    channel: INTERNAL_CHANNEL,
+    action: "settings.changed",
+    args: next,
+    requestId: newRequestId(),
+  };
+  try {
+    const pending = chrome.runtime.sendMessage(envelope) as unknown;
+    if (
+      typeof pending === "object" &&
+      pending !== null &&
+      typeof (pending as Promise<unknown>).catch === "function"
+    ) {
+      (pending as Promise<unknown>).catch(() => undefined);
+    }
+  } catch {
+    // No listener alive: events are best-effort by design.
+  }
+  // `runtime.sendMessage` covers extension pages; content scripts are also
+  // reachable per tab, which is what "broadcast to all tabs" means here.
+  broadcastToTabs("settings.changed", next);
+}
+
+function installSettingsBroadcast(): void {
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local" || !changes[WP6B_STATE_STORAGE_KEY]) {
+        return;
+      }
+      void getStateStore()
+        .getSettings()
+        .then((next) => broadcastSettingsChanged(next))
+        .catch(() => undefined);
+    });
+  } catch (cause) {
+    debug("settings", `broadcast listener not installed: ${messageOf(cause)}`);
+  }
+
+  // Content scripts must see lock/unlock/app-down transitions without a
+  // reload. `sendBackgroundEvent` already covers extension pages; the tab
+  // fan-out covers every content-script frame (WP6b owns this path).
+  try {
+    getStateStore().subscribe((next) => {
+      broadcastToTabs("status.changed", next);
+    });
+  } catch (cause) {
+    debug("status", `tab broadcast not installed: ${messageOf(cause)}`);
+  }
+}
+
 /** Registered synchronously by `bootstrap()`; a command may wake the worker. */
 function installContentCommandListener(): void {
   try {
     chrome.commands.onCommand.addListener((command) => {
       if (command === "fill-login") {
         fillActiveTabFromCommand();
+        return;
+      }
+      // --- WP6b commands -------------------------------------------------
+      if (command === "open-inline-menu") {
+        openInlineMenuFromCommand();
+        return;
+      }
+      if (command === "generate-password") {
+        generatePasswordFromCommand();
       }
     });
   } catch (cause) {
     debug("command", `listener not installed: ${messageOf(cause)}`);
   }
+
+  // --- WP6b: settings.changed fan-out --------------------------------------
+  installSettingsBroadcast();
 }
 
 // ---------------------------------------------------------------------------

@@ -1,41 +1,20 @@
-/** TOTP dropdown (WP4, ported from `content/totp-autocomplete.js`). */
+/**
+ * TOTP-view menu entries (WP6b).
+ *
+ * Only entries that actually carry a one-time secret are listed, matching the
+ * WP4 TOTP dropdown behaviour.
+ */
 
 import type { CredentialEntry } from "../common/types";
-import { AutocompleteMenu } from "./autocomplete";
+import type { MenuEntry } from "./autocomplete";
 import { entryHasTotp } from "./totp-field";
 
-export class TOTPAutocomplete {
-  private readonly menu = new AutocompleteMenu();
-
-  isOpenFor(field: HTMLInputElement): boolean {
-    return this.menu.isOpenFor(field);
-  }
-
-  close(): void {
-    this.menu.close();
-  }
-
-  /** Show only entries that actually carry a TOTP secret. */
-  show(
-    field: HTMLInputElement,
-    entries: CredentialEntry[],
-    onPick: (entry: CredentialEntry) => void,
-  ): void {
-    const withTotp = entries.filter((entry) => entryHasTotp(entry));
-    this.menu.open(
-      field,
-      withTotp.map((entry) => ({
-        uuid: entry.uuid,
-        title: entry.name || entry.login || "friendlypass entry",
-        value: entry.login || "(no username)",
-        group: entry.group,
-      })),
-      ({ item }) => {
-        const entry = withTotp.find((candidate) => candidate.uuid === item.uuid);
-        if (entry) {
-          onPick(entry);
-        }
-      },
-    );
-  }
+export function totpMenuEntries(entries: CredentialEntry[]): MenuEntry[] {
+  return entries.filter((entry) => entryHasTotp(entry)).map((entry) => ({
+    uuid: entry.uuid,
+    title: entry.name || entry.login || "friendlypass entry",
+    username: entry.login || "",
+    ...(entry.group ? { group: entry.group } : {}),
+    totp: true,
+  }));
 }

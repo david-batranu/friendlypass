@@ -28,6 +28,7 @@ await build({
 
 // ---------------------------------------------------------------------------
 // WP4: content script (IIFE — MV3 content scripts are classic scripts)
+// WP6b's icon/menu/card/toast live in the same bundle (open shadow roots).
 // ---------------------------------------------------------------------------
 await build({
   absWorkingDir: root,
@@ -42,6 +43,7 @@ await build({
 });
 
 // Field-detection API for Playwright tests. Pure DOM code, no chrome.* access.
+// WP6b adds the settings/icon/position/menu helper API to the same bundle.
 await build({
   absWorkingDir: root,
   entryPoints: ["src/content/testing.ts"],
