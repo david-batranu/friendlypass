@@ -21,6 +21,7 @@ import { Harness } from "../harness/harness";
 import { sleep } from "../harness/frames.mjs";
 
 const SHOTS = "/Users/david/Work/Projects/friendlypass/briefs/shots/wp6a-popup";
+const SHOTS_WP6C = "/Users/david/Work/Projects/friendlypass/briefs/shots/wp6c-polish";
 
 async function capture(page: Page, name: string): Promise<void> {
   await page.emulateMedia({ colorScheme: "light" });
@@ -29,6 +30,22 @@ async function capture(page: Page, name: string): Promise<void> {
   await page.emulateMedia({ colorScheme: "dark" });
   await sleep(60);
   await page.screenshot({ path: path.join(SHOTS, `${name}-dark.png`), fullPage: true });
+  await page.emulateMedia({ colorScheme: "light" });
+}
+
+/** Screenshot one section, light then dark (WP6c shots). */
+async function captureSection(
+  page: Page,
+  selector: string,
+  name: string,
+): Promise<void> {
+  const section = page.locator(selector);
+  await page.emulateMedia({ colorScheme: "light" });
+  await sleep(60);
+  await section.screenshot({ path: path.join(SHOTS_WP6C, `${name}-light.png`) });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await sleep(60);
+  await section.screenshot({ path: path.join(SHOTS_WP6C, `${name}-dark.png`) });
   await page.emulateMedia({ colorScheme: "light" });
 }
 
@@ -91,6 +108,7 @@ const test = base.extend<{ stack: Stack }>({
 
 test.beforeAll(() => {
   fs.mkdirSync(SHOTS, { recursive: true });
+  fs.mkdirSync(SHOTS_WP6C, { recursive: true });
 });
 
 interface SettingsLike {
@@ -315,6 +333,34 @@ test("site exceptions add, toggle, broadcast and remove", async ({ stack }) => {
   await options.locator("#exception-add").click();
   await expect(options.locator("#exception-error")).toContainText("Enter a site");
 
+  await options.close();
+});
+
+test("shortcut section shows the effective commands and links to Chrome", async ({
+  stack,
+}) => {
+  const { harness } = stack;
+  const options = await openOptions(harness);
+
+  const rows = options.locator("#shortcut-list .shortcut-row");
+  await expect(rows).toHaveCount(4, { timeout: 10_000 });
+  await expect(options.locator("#shortcut-list")).toContainText("Open friendlypass");
+  await expect(options.locator("#shortcut-list")).toContainText("Fill login");
+  await expect(options.locator("#shortcuts-hint")).toHaveText(
+    "chrome://extensions/shortcuts",
+  );
+  await expect(options.locator("#open-shortcuts")).toBeEnabled();
+
+  // The shipped manifest no longer uses Chrome's bookmark-manager shortcut.
+  const manifestKey = await options.evaluate(() => {
+    const manifest = chrome.runtime.getManifest() as {
+      commands?: Record<string, { suggested_key?: { default?: string; mac?: string } }>;
+    };
+    return manifest.commands?.["_execute_action"]?.suggested_key ?? null;
+  });
+  expect(manifestKey).toEqual({ default: "Alt+Shift+F", mac: "Alt+Shift+F" });
+
+  await captureSection(options, "#shortcuts-section", "options-shortcuts");
   await options.close();
 });
 

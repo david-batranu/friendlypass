@@ -132,6 +132,56 @@ body {
   font-size: 12px;
 }
 
+/* --- shortcuts ------------------------------------------------------------ */
+
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 var(--fp-space);
+  padding: 0;
+  list-style: none;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--fp-space);
+  padding: 8px 10px;
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-control);
+  background: var(--fp-surface);
+}
+
+.shortcut-row .shortcut-label {
+  font-weight: 500;
+}
+
+.shortcut-row kbd {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--fp-border);
+  border-radius: 5px;
+  background: var(--fp-bg);
+  color: var(--fp-text);
+  font-family: var(--fp-mono);
+  font-size: 12px;
+}
+
+.shortcut-row .shortcut-unset {
+  color: var(--fp-muted);
+  font-size: 12px;
+}
+
+.shortcut-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--fp-space);
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
 /* --- site exceptions ------------------------------------------------------ */
 
 .exception-form {

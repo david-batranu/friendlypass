@@ -401,6 +401,7 @@ export function buildSetLoginInner(input: {
   group?: string;
   groupUuid?: string;
   downloadFavicon?: "true";
+  title?: string;
 }): SetLoginRequest {
   return {
     action: KpxcAction.SET_LOGIN,
@@ -415,6 +416,7 @@ export function buildSetLoginInner(input: {
     ...(input.downloadFavicon !== undefined
       ? { downloadFavicon: input.downloadFavicon }
       : {}),
+    ...(input.title !== undefined ? { title: input.title } : {}),
   };
 }
 

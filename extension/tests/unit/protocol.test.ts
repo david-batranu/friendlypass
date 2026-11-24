@@ -200,6 +200,7 @@ function buildInnerForFixture(
         group: plaintext["group"] as string | undefined,
         groupUuid: plaintext["groupUuid"] as string | undefined,
         downloadFavicon: plaintext["downloadFavicon"] as "true" | undefined,
+        title: plaintext["title"] as string | undefined,
       });
     case "get-totp":
       return buildGetTotpInner(plaintext["uuid"] as string);
@@ -1188,6 +1189,7 @@ describe("typed actions", () => {
         password: "correct horse battery staple",
         group: "KeePassXC-Browser Passwords",
         groupUuid: "17a19761914f9005f195c781475d37be",
+        title: "My signup title",
       },
     );
     expect(created).toEqual({ success: true, message: "success" });
@@ -1195,6 +1197,7 @@ describe("typed actions", () => {
     expect(inner?.["downloadFavicon"]).toBe("true");
     expect(inner?.["groupUuid"]).toBe("17a19761914f9005f195c781475d37be");
     expect(inner?.["uuid"]).toBeUndefined();
+    expect(inner?.["title"]).toBe("My signup title");
 
     await setLogin(
       { session: harness.session },
@@ -1203,12 +1206,14 @@ describe("typed actions", () => {
         login: "alice@example.com",
         password: "new password",
         uuid: "d5ec68c35705b72fde380bd469aa149f",
+        title: "Renamed",
       },
     );
     inner = harness.lastInner("set-login");
     expect(inner?.["uuid"]).toBe("d5ec68c35705b72fde380bd469aa149f");
     expect(inner?.["downloadFavicon"]).toBeUndefined();
     expect(inner?.["group"]).toBeUndefined();
+    expect(inner?.["title"]).toBe("Renamed");
   });
 
   it("set-login rejects references client-side", async () => {

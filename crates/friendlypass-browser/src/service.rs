@@ -671,6 +671,7 @@ impl ClientSession {
             group_uuid: get_str(inner, "groupUuid").filter(|value| !value.is_empty()),
             uuid,
             download_favicon: get_bool(inner, "downloadFavicon"),
+            title: get_str(inner, "title").filter(|value| !value.is_empty()),
         };
         let bridge = lock_state(state).bridge();
         let accepted = bridge.apply_set_login(&request);

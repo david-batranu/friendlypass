@@ -388,6 +388,12 @@ export interface SetLoginRequest {
   groupUuid?: HexUuid;
   /** String "true" asks the app to download a favicon for a new entry. */
   downloadFavicon?: "true";
+  /**
+   * [friendlypass] Entry title. New entries use it when non-empty; updates
+   * replace the existing title only when it differs. KeePassXC ignores the
+   * unknown field (ACTIONS.md §4.6).
+   */
+  title?: string;
 }
 
 export interface GetTotpRequest {
@@ -684,6 +690,8 @@ export interface SaveLoginArgs {
   submitUrl?: string;
   login: string;
   password: string;
+  /** [friendlypass] Optional entry title from the save card. */
+  title?: string;
   /** Existing entry to update. */
   uuid?: HexUuid;
   group?: string;
@@ -795,6 +803,15 @@ export interface BackgroundRequestMap {
   "submit.clear": { args: void; result: void };
   /** Never offer to save on this origin again. */
   "submit.never": { args: { origin: string }; result: void };
+  /**
+   * WP6c: open the toolbar popup on behalf of a content script. Uses
+   * `chrome.action.openPopup()` when available and falls back to a small popup
+   * window pointing at the caller's tab.
+   */
+  "popup.open": {
+    args: void;
+    result: { opened: boolean; via: "action" | "fallback" };
+  };
 }
 
 export type BackgroundRequestAction = keyof BackgroundRequestMap;

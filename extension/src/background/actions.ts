@@ -176,6 +176,7 @@ export async function setLogin(
         group: update ? undefined : args.group,
         groupUuid: update ? undefined : args.groupUuid,
         downloadFavicon: update ? undefined : "true",
+        title: args.title,
       }),
   });
 

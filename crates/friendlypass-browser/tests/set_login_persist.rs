@@ -14,7 +14,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use keepass::db::fields;
 use keepass::{Database, DatabaseKey};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use friendlypass_browser::crypto::{open, KeyPair};
 use friendlypass_browser::service::ClientSession;
@@ -133,4 +133,129 @@ fn set_login_writes_the_entry_to_the_database_file() {
         entry.get(fields::PASSWORD),
         expected["password"].as_str()
     );
+}
+
+/// Build a real encrypted `set-login` request for the fixture host/client keys.
+fn set_login_frame(protocol: &Value, nonce_byte: u8, inner: Value) -> Value {
+    let nonce = [nonce_byte; 24];
+    let plaintext = serde_json::to_vec(&inner).expect("inner JSON");
+    let message = friendlypass_browser::crypto::seal(
+        &decode(protocol, "/keys/host/publicKey"),
+        &decode(protocol, "/keys/client/secretKey"),
+        &nonce,
+        &plaintext,
+    )
+    .expect("seal set-login request");
+    json!({
+        "action": "set-login",
+        "message": message,
+        "nonce": B64.encode(nonce),
+        "clientID": protocol["clientID"].clone(),
+    })
+}
+
+/// WP6c: the optional `title` field survives the protocol path and the KDBX.
+///
+/// Covers both cases: a create with a title, then updates without a title (keep
+/// the existing title) and with a changed title (rename it). Every step reopens
+/// the file as the CLI would.
+#[test]
+fn set_login_title_is_optional_and_persists_for_create_and_update() {
+    let protocol = load("set-login.json");
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("set-login-title.kdbx");
+    let key = DatabaseKey::new().with_password("testpassword");
+    let database = Database::new();
+    friendlypass::saveutil::save(&path, &database, key.clone()).expect("initial save");
+
+    let database = Arc::new(Mutex::new(database));
+    let mut state = {
+        let guard = database.lock().expect("database");
+        snapshot_from_database(&guard)
+    };
+    let bridge = Arc::new(FileBridge::new(
+        "chrome-work-laptop",
+        Arc::clone(&database),
+        key.clone(),
+        path.clone(),
+    ));
+    state.set_bridge(bridge);
+    state.associations.insert(
+        "chrome-work-laptop".to_owned(),
+        B64.encode(decode(&protocol, "/keys/identity/publicKey")),
+    );
+    let state = Arc::new(Mutex::new(state));
+
+    let mut session = ClientSession::with_keypair(
+        KeyPair::from_secret(&decode(&protocol, "/keys/host/secretKey")).expect("host keypair"),
+    );
+    session.accept_client_key(decode(&protocol, "/keys/client/publicKey"));
+
+    let test_associate = load("test-associate.json");
+    let response = session.handle(&state, &test_associate["vectors"][0]["request"]["frame"]);
+    assert_eq!(response["errorCode"], Value::Null, "test-associate: {response}");
+
+    let url = "https://titled.example.com/login";
+    let create = json!({
+        "action": "set-login",
+        "id": "chrome-work-laptop",
+        "login": "titled@example.com",
+        "password": "first-password",
+        "url": url,
+        "title": "My signup title",
+    });
+    let response = session.handle(&state, &set_login_frame(&protocol, 0x41, create));
+    assert_eq!(response["errorCode"], Value::Null, "set-login create: {response}");
+
+    let reopened = friendlypass::saveutil::open(&path, key.clone()).expect("reopen after create");
+    let entry = reopened
+        .iter_all_entries()
+        .find(|entry| entry.get(fields::URL) == Some(url))
+        .expect("created entry");
+    assert_eq!(entry.get(fields::TITLE), Some("My signup title"));
+    let uuid = entry.id().uuid().simple().to_string();
+    drop(reopened);
+
+    // Update without a title: the existing title is preserved.
+    let update_without = json!({
+        "action": "set-login",
+        "id": "chrome-work-laptop",
+        "login": "titled@example.com",
+        "password": "second-password",
+        "url": url,
+        "uuid": uuid.as_str(),
+    });
+    let response = session.handle(&state, &set_login_frame(&protocol, 0x42, update_without));
+    assert_eq!(response["errorCode"], Value::Null, "set-login update: {response}");
+
+    let reopened =
+        friendlypass::saveutil::open(&path, key.clone()).expect("reopen after untitled update");
+    let entry = reopened
+        .iter_all_entries()
+        .find(|entry| entry.get(fields::URL) == Some(url))
+        .expect("updated entry");
+    assert_eq!(entry.get(fields::TITLE), Some("My signup title"));
+    assert_eq!(entry.get(fields::PASSWORD), Some("second-password"));
+
+    // Update with a changed title: the user's rename is written.
+    let update_with = json!({
+        "action": "set-login",
+        "id": "chrome-work-laptop",
+        "login": "titled@example.com",
+        "password": "third-password",
+        "url": url,
+        "uuid": uuid.as_str(),
+        "title": "Renamed in the banner",
+    });
+    let response = session.handle(&state, &set_login_frame(&protocol, 0x43, update_with));
+    assert_eq!(response["errorCode"], Value::Null, "set-login retitle: {response}");
+
+    let reopened = friendlypass::saveutil::open(&path, key).expect("reopen after retitle");
+    let entry = reopened
+        .iter_all_entries()
+        .find(|entry| entry.get(fields::URL) == Some(url))
+        .expect("retitled entry");
+    assert_eq!(entry.get(fields::TITLE), Some("Renamed in the banner"));
+    assert_eq!(entry.get(fields::PASSWORD), Some("third-password"));
 }
