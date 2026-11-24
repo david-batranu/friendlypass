@@ -1,15 +1,43 @@
 //! `friendlypass-browser-host` — the native-messaging host registered with
 //! Chrome/Firefox as `org.friendlypass.browser`.
 //!
-//! Owned by WP1. It will speak 4-byte-LE length-prefixed JSON on stdin/stdout,
-//! keep itself alive while the app socket is down, answer host-level
-//! `ping`/`hello` locally, and relay everything else to the app socket.
-//! See `protocol/ACTIONS.md`.
+//! It is the drop-in replacement for KeePassXC's `keepassxc-proxy`. Unlike the
+//! proxy, it never exits when the app is down: it keeps the browser port open,
+//! answers host-level `ping`/`hello` locally, and reconnects to the app socket
+//! in the background. See `protocol/ACTIONS.md` for the frozen contract.
 //!
-//! TODO(WP1): implement the host. This scaffold only proves the crate builds
-//! and that the workspace wires it correctly.
+//! stdout carries protocol frames only; all diagnostics go to stderr.
+
+mod app;
+mod dispatch;
+mod errors;
+mod framing;
+mod status;
+mod writer;
+
+use std::sync::Arc;
+
+use app::AppLink;
+use dispatch::Runtime;
+use status::StatusCell;
+use writer::Writer;
 
 fn main() {
-    // stdout is the protocol channel: diagnostics belong on stderr.
-    eprintln!("friendlypass-browser-host: TODO (WP1) — not implemented yet");
+    let socket_path = friendlypass_browser::browser_server_path();
+    eprintln!(
+        "{} {} (protocol {}, pid {}, app socket {})",
+        dispatch::HOST_NAME,
+        dispatch::HOST_VERSION,
+        dispatch::PROTOCOL_VERSION,
+        std::process::id(),
+        socket_path.display()
+    );
+
+    let out = Arc::new(Writer::new());
+    let status = Arc::new(StatusCell::new());
+    let app = AppLink::start(socket_path, Arc::clone(&out), Arc::clone(&status));
+    let runtime = Runtime::new(out, app, status);
+
+    // stdin EOF — the browser closed the port — ends the process cleanly.
+    let _ = dispatch::run(std::io::stdin(), &runtime);
 }
