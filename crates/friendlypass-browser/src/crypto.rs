@@ -28,6 +28,18 @@ impl KeyPair {
         let public = *secret_key.public_key().as_bytes();
         Ok(KeyPair { public, secret: secret.to_vec() })
     }
+
+    /// Rebuild a keypair from 32 secret bytes (fixtures, imports).
+    pub fn from_secret(secret: &[u8]) -> Result<KeyPair> {
+        let Ok(secret_key) = SecretKey::from_slice(secret) else {
+            bail!("bad secret key length");
+        };
+        let public = *secret_key.public_key().as_bytes();
+        Ok(KeyPair {
+            public,
+            secret: secret.to_vec(),
+        })
+    }
 }
 
 /// A fresh random 24-byte nonce.
@@ -67,7 +79,7 @@ pub fn seal(recipient_public: &[u8], sender_secret: &[u8], nonce: &[u8], plainte
     }
     let box_ = SalsaBox::new(&recipient, &sender);
     let ciphertext = box_
-        .encrypt(&crypto_box::Nonce::from_slice(nonce), plaintext)
+        .encrypt(crypto_box::Nonce::from_slice(nonce), plaintext)
         .map_err(|_| anyhow::anyhow!("encryption failed"))?;
     Ok(B64.encode(ciphertext))
 }
@@ -88,7 +100,7 @@ pub fn open(sender_public: &[u8], recipient_secret: &[u8], nonce: &[u8], b64: &s
         .map_err(|e| anyhow::anyhow!("bad base64 message: {e}"))?;
     let box_ = SalsaBox::new(&sender, &recipient);
     let plaintext = box_
-        .decrypt(&crypto_box::Nonce::from_slice(nonce), ciphertext.as_slice())
+        .decrypt(crypto_box::Nonce::from_slice(nonce), ciphertext.as_slice())
         .map_err(|_| anyhow::anyhow!("decryption failed"))?;
     Ok(plaintext.to_vec())
 }

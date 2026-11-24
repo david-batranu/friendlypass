@@ -8,23 +8,25 @@
 //! and verify the complete protocol flow on stdout:
 //!
 //! 1. `change-public-keys` handshake (unencrypted, nonce-increment reply)
-//! 2. `associate` (encrypted) — a new association id is issued
+//! 2. `associate` (encrypted) — an approved association id is issued
 //! 3. `test-associate` (encrypted) — the association verifies
-//! 4. `get-logins` (encrypted) — credentials for the URL are returned
-//!    with base64-encoded login/password, exactly like KeePassXC
+//! 4. `get-databasehash` (encrypted) — the server's own hash, never a client hash
+//! 5. `get-logins` (encrypted) — **plaintext** credentials per ACTIONS.md
+//!
+//! Skipped (passes trivially) where KeePassXC.app is not installed.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
 
 use friendlypass_browser::crypto::{increment_nonce, open, random_nonce, seal, KeyPair};
 use friendlypass_browser::service::{ClientSession, CredentialEntry, ServiceState};
-use friendlypass_browser::{database_hash, protocol as proto};
+use friendlypass_browser::{database_hash, protocol as proto, AutoApproveBridge};
 
 fn keepassxc_proxy() -> Option<PathBuf> {
     let path = PathBuf::from("/Applications/KeePassXC.app/Contents/MacOS/keepassxc-proxy");
@@ -40,31 +42,43 @@ fn write_native(child: &mut Child, value: &Value) {
     stdin.flush().unwrap();
 }
 
-/// Native-messaging framed read with a timeout.
+/// Native-messaging framed read.
 fn read_native(child: &mut Child) -> Option<Value> {
     let stdout = child.stdout.take()?;
     let mut reader = std::io::BufReader::new(stdout);
-    // (Re-insert for future reads.)
     let mut len = [0u8; 4];
-    reader.read_exact(&mut len).ok()?;
-    let len = u32::from_le_bytes(len) as usize;
-    let mut body = vec![0u8; len];
-    reader.read_exact(&mut body).ok()?;
+    let parsed = reader.read_exact(&mut len).ok().and_then(|()| {
+        let len = u32::from_le_bytes(len) as usize;
+        let mut body = vec![0u8; len];
+        reader.read_exact(&mut body).ok()?;
+        serde_json::from_slice(&body).ok()
+    });
     child.stdout = Some(reader.into_inner());
-    serde_json::from_slice(&body).ok()
+    parsed
+}
+
+fn read_response(child: &mut Child, action: &str) -> Value {
+    match read_native(child) {
+        Some(value) => value,
+        None => panic!("no response from the proxy for {action}"),
+    }
 }
 
 fn test_service_state() -> ServiceState {
     let mut state = ServiceState {
-        db_hash: database_hash("2c91d8d5-456a-4f9c-9b76-62947c5b31d4"),
+        db_hash: database_hash("bb710c2f876761bb90748cc271ff8fae"),
         ..Default::default()
     };
+    state.set_bridge(Arc::new(AutoApproveBridge::new("test-browser")));
     state.entries.push(CredentialEntry {
         title: "Example Login".into(),
         username: "user@example.com".into(),
         password: "hunter2!".into(),
         url: "https://example.com/login".into(),
-        uuid: "8e2b1a3f-1111-2222-3333-444455556666".into(),
+        uuid: "d5ec68c35705b72fde380bd469aa149f".into(),
+        group: "KeePassXC-Browser Passwords".into(),
+        group_uuid: "17a19761914f9005f195c781475d37be".into(),
+        ..Default::default()
     });
     state
 }
@@ -72,20 +86,17 @@ fn test_service_state() -> ServiceState {
 #[test]
 fn full_protocol_flow_through_the_real_keepassxc_proxy() {
     let Some(proxy_path) = keepassxc_proxy() else {
-        // The proxy is shipped with KeePassXC.app; skip where absent.
         eprintln!("keepassxc-proxy not found; skipping");
         return;
     };
 
-    let dir = tempfile::tempdir().unwrap();
-    // The exact socket path the shipped proxy connects to.
     let socket = friendlypass_browser::user_temp_dir().join("org.keepassxc.KeePassXC.BrowserServer");
     let _ = std::fs::remove_file(&socket);
 
-    let state: Arc<Mutex<ServiceState>> = Arc::new(Mutex::new(test_service_state()));
+    let state: friendlypass_browser::SharedState =
+        Arc::new(Mutex::new(test_service_state()));
     let server = friendlypass_browser::start(&socket, Arc::clone(&state)).unwrap();
 
-    // The REAL proxy: native messaging on stdin/stdout, socket upstream.
     let mut proxy = Command::new(&proxy_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -96,58 +107,51 @@ fn full_protocol_flow_through_the_real_keepassxc_proxy() {
     // --- 1. change-public-keys handshake (unencrypted) --------------------
     let client = KeyPair::generate().unwrap();
     let client_nonce = random_nonce();
-    let handshake = json!({
-        "action": "change-public-keys",
-        "publicKey": B64.encode(client.public),
-        "nonce": B64.encode(client_nonce),
-        "triggerUnlock": "false",
-    });
-    write_native(&mut proxy, &handshake);
+    write_native(
+        &mut proxy,
+        &json!({
+            "action": "change-public-keys",
+            "publicKey": B64.encode(client.public),
+            "nonce": B64.encode(client_nonce),
+            "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+        }),
+    );
 
-    let response = loop {
-        match read_native(&mut proxy) {
-            Some(v) => break v,
-            None => panic!("no handshake response from the proxy"),
-        }
-    };
+    let response = read_response(&mut proxy, "change-public-keys");
     assert_eq!(response["action"], "change-public-keys");
-    assert_eq!(response["success"], "true", "proxy relayed our server's success");
-    assert_eq!(response["publicKey"].as_str().unwrap().len(), 44, "server public key");
-    // The nonce must be the request nonce incremented by one.
-    let response_nonce = B64
-        .decode(response["nonce"].as_str().unwrap())
-        .unwrap();
+    assert_eq!(response["success"], "true");
+    assert_eq!(response["version"], "2.8.0");
+    assert_eq!(
+        response["publicKey"].as_str().unwrap().len(),
+        44,
+        "server public key"
+    );
+    let response_nonce = B64.decode(response["nonce"].as_str().unwrap()).unwrap();
     assert_eq!(response_nonce, increment_nonce(&client_nonce));
-    let server_public: Vec<u8> = B64
-        .decode(response["publicKey"].as_str().unwrap())
-        .unwrap();
+    let server_public: Vec<u8> = B64.decode(response["publicKey"].as_str().unwrap()).unwrap();
 
-    // --- helper: encrypted request/response through the real proxy -------
-    let db_hash = state.lock().unwrap().db_hash.clone();
-    let mut request_nonce = increment_nonce(&client_nonce);
+    // --- encrypted request/response through the real proxy ---------------
+    let mut request_nonce = increment_nonce(&response_nonce);
 
     let mut roundtrip = |inner: &Value| -> (Value, Option<Value>) {
         let nonce_b64 = B64.encode(request_nonce);
         let plaintext = serde_json::to_vec(inner).unwrap();
         let sealed = seal(&server_public, &client.secret, &request_nonce, &plaintext).unwrap();
-        let frame = json!({
-            "action": inner["action"],
-            "message": sealed,
-            "nonce": nonce_b64,
-        });
-        write_native(&mut proxy, &frame);
-        let response = loop {
-            match read_native(&mut proxy) {
-                Some(v) => break v,
-                None => panic!("no response from the proxy for {}", inner["action"]),
-            }
-        };
-        // Advance the nonce for the next request (error replies carry none).
+        write_native(
+            &mut proxy,
+            &json!({
+                "action": inner["action"],
+                "message": sealed,
+                "nonce": nonce_b64,
+                "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+            }),
+        );
+        let response = read_response(&mut proxy, inner["action"].as_str().unwrap_or("?"));
         if let Some(nonce) = response["nonce"].as_str() {
             let resp_nonce = B64.decode(nonce).unwrap();
             request_nonce = increment_nonce(&resp_nonce);
-            if let Some(msg) = response["message"].as_str() {
-                let decrypted = open(&server_public, &client.secret, &resp_nonce, msg).unwrap();
+            if let Some(message) = response["message"].as_str() {
+                let decrypted = open(&server_public, &client.secret, &resp_nonce, message).unwrap();
                 return (response, Some(serde_json::from_slice(&decrypted).unwrap()));
             }
         }
@@ -155,66 +159,61 @@ fn full_protocol_flow_through_the_real_keepassxc_proxy() {
     };
 
     // --- 2. associate (encrypted) -----------------------------------------
-    let associate_inner = json!({
+    let id_key = B64.encode(KeyPair::generate().unwrap().public);
+    let (raw, reply) = roundtrip(&json!({
         "action": "associate",
-        "hash": db_hash,
         "key": B64.encode(client.public),
-        "idKey": B64.encode(client.public),
-    });
-    let (raw, reply) = roundtrip(&associate_inner);
-    let reply = reply.expect(&format!("encrypted reply: {raw}"));
-    assert_eq!(reply["success"], "true", "association succeeded");
-    let association_id = reply["id"].as_str().unwrap().to_owned();
-    assert!(
-        association_id.starts_with("KeePassXC-Browser_Identifier_"),
-        "association id issued: {association_id}"
-    );
-    assert!(state
-        .lock()
-        .unwrap()
-        .associations
-        .contains_key(&association_id));
+        "idKey": id_key,
+    }));
+    let reply = reply.unwrap_or_else(|| panic!("encrypted associate reply, got {raw}"));
+    assert_eq!(reply["success"], "true");
+    assert_eq!(reply["id"], "test-browser");
+    assert_eq!(reply["hash"], state.lock().unwrap().db_hash);
 
     // --- 3. test-associate (encrypted) ------------------------------------
-    let test_inner = json!({
+    let (_raw, reply) = roundtrip(&json!({
         "action": "test-associate",
-        "hash": db_hash,
-        "id": association_id,
-        "key": B64.encode(client.public),
-    });
-    let (_raw, reply) = roundtrip(&test_inner);
-    let reply = reply.unwrap();
-    assert_eq!(reply["success"], "true", "test-associate verified");
+        "id": "test-browser",
+        "key": id_key,
+    }));
+    let reply = reply.expect("encrypted test-associate reply");
+    assert_eq!(reply["success"], "true");
+    assert_eq!(reply["hash"], state.lock().unwrap().db_hash);
 
-    // --- 4. get-logins (encrypted) ----------------------------------------
-    let get_logins_inner = json!({
+    // --- 4. get-databasehash: the server's own hash, no client `hash` -----
+    let (_raw, reply) = roundtrip(&json!({
+        "action": "get-databasehash",
+        "connectedKeys": [],
+    }));
+    let reply = reply.expect("encrypted get-databasehash reply");
+    assert_eq!(reply["success"], "true");
+    assert_eq!(reply["hash"], state.lock().unwrap().db_hash);
+    assert_eq!(reply["hash"].as_str().unwrap().len(), 64, "64 lowercase hex");
+
+    // --- 5. get-logins: PLAINTEXT credentials -----------------------------
+    let (_raw, reply) = roundtrip(&json!({
         "action": "get-logins",
-        "hash": db_hash,
-        "id": association_id,
+        "id": "test-browser",
         "url": "https://example.com/login",
         "submitUrl": "https://example.com/login",
-    });
-    let (_raw2, reply) = roundtrip(&get_logins_inner);
-    let reply = reply.unwrap();
+        "keys": [{ "id": "test-browser", "key": id_key }],
+    }));
+    let reply = reply.expect("encrypted get-logins reply");
     assert_eq!(reply["success"], "true");
-    assert_eq!(reply["count"], 1, "one matching entry");
+    assert_eq!(reply["count"], 1);
     let entries = reply["entries"].as_array().unwrap();
-    assert_eq!(
-        B64.decode(entries[0]["login"].as_str().unwrap()).unwrap(),
-        b"user@example.com"
-    );
-    assert_eq!(
-        B64.decode(entries[0]["password"].as_str().unwrap()).unwrap(),
-        b"hunter2!"
-    );
+    assert_eq!(entries[0]["login"], "user@example.com");
+    assert_eq!(entries[0]["password"], "hunter2!");
     assert_eq!(entries[0]["name"], "Example Login");
+    assert_eq!(entries[0]["uuid"], "d5ec68c35705b72fde380bd469aa149f");
+    assert_eq!(entries[0]["group"], "KeePassXC-Browser Passwords");
 
-    // --- unknown action gets KeePassXC's error shape -----------------------
-    let bogus = json!({"action": "not-a-real-action"});
-    let (response, decrypted) = roundtrip(&bogus);
+    // --- unknown action gets KeePassXC's error shape ----------------------
+    let (response, decrypted) = roundtrip(&json!({"action": "not-a-real-action"}));
     assert!(decrypted.is_none(), "error replies are unencrypted");
     assert_eq!(response["errorCode"], proto::ERROR_INCORRECT_ACTION.to_string());
     assert_eq!(response["error"], "Incorrect action");
+    assert!(response.get("nonce").is_none());
 
     let _ = proxy.kill();
     let _ = proxy.wait();
@@ -222,76 +221,66 @@ fn full_protocol_flow_through_the_real_keepassxc_proxy() {
     assert!(!socket.exists());
 }
 
-/// The service state machine itself (no proxy): direct JSON-level tests of
-/// the action handling, mirroring the C++ behavior for edge cases.
+/// The service state machine itself (no proxy): JSON-level tests of the
+/// handshake, locked state and error shapes.
 #[test]
 fn service_action_edge_cases() {
-    let mut state = test_service_state();
+    let state: friendlypass_browser::SharedState = Arc::new(Mutex::new(test_service_state()));
     let mut session = ClientSession::new();
 
     // Encrypted action without a handshake -> client public key error.
     let err = session.handle(
-        &mut state,
+        &state,
         &json!({"action": "get-logins", "message": "AAAA", "nonce": "AAAA"}),
     );
-    assert_eq!(err["errorCode"], proto::ERROR_CLIENT_PUBLIC_KEY_NOT_RECEIVED.to_string());
+    assert_eq!(
+        err["errorCode"],
+        proto::ERROR_CLIENT_PUBLIC_KEY_NOT_RECEIVED.to_string()
+    );
 
-    // Handshake with a bad nonce -> error.
+    // Handshake with a bad nonce -> error 3, never a panic.
     let err = session.handle(
-        &mut state,
+        &state,
         &json!({"action": "change-public-keys", "publicKey": "AAAA", "nonce": "AAAA"}),
     );
-    assert_eq!(err["errorCode"], proto::ERROR_CLIENT_PUBLIC_KEY_NOT_RECEIVED.to_string());
+    assert_eq!(
+        err["errorCode"],
+        proto::ERROR_CLIENT_PUBLIC_KEY_NOT_RECEIVED.to_string()
+    );
 
-    // get-logins for an unrelated URL -> NO_LOGINS_FOUND (associated first).
+    // A valid handshake resets the association flag.
     let client = KeyPair::generate().unwrap();
     let nonce = random_nonce();
-    let handshake = json!({
-        "action": "change-public-keys",
-        "publicKey": B64.encode(client.public),
-        "nonce": B64.encode(nonce),
-    });
-    let response = session.handle(&mut state, &handshake);
+    let response = session.handle(
+        &state,
+        &json!({
+            "action": "change-public-keys",
+            "publicKey": B64.encode(client.public),
+            "nonce": B64.encode(nonce),
+        }),
+    );
     assert_eq!(response["success"], "true");
+    assert_eq!(response["version"], "2.8.0");
+    assert!(!session.is_associated());
 
-    let server_public: Vec<u8> = B64
-        .decode(response["publicKey"].as_str().unwrap())
-        .unwrap();
-    let inner = json!({
-        "action": "associate",
-        "hash": state.db_hash.clone(),
-        "key": B64.encode(client.public),
-        "idKey": B64.encode(client.public),
-    });
-    let sealed = seal(&server_public, &client.secret, &nonce, serde_json::to_vec(&inner).unwrap().as_slice()).unwrap();
-    let response = session.handle(
-        &mut state,
-        &json!({"action": "associate", "message": sealed, "nonce": B64.encode(nonce)}),
+    // A locked database answers every credential action with error 1.
+    state.lock().unwrap().locked = true;
+    let err = session.handle(
+        &state,
+        &json!({"action": "get-logins", "message": "AAAA", "nonce": "AAAA"}),
     );
-    eprintln!("DBG associate response: {response}");
-    let resp_nonce = B64.decode(response["nonce"].as_str().unwrap()).unwrap();
-    let decrypted = open(
-        &server_public,
-        &client.secret,
-        &resp_nonce,
-        response["message"].as_str().unwrap(),
-    )
-    .unwrap();
-    let reply: Value = serde_json::from_slice(&decrypted).unwrap();
-    assert_eq!(reply["success"], "true");
-    assert!(reply["id"].as_str().unwrap().starts_with("KeePassXC-Browser_Identifier_"));
+    assert_eq!(
+        err["errorCode"],
+        proto::ERROR_DATABASE_NOT_OPENED.to_string()
+    );
 
-    // Now an unrelated URL.
-    let inner = json!({
-        "action": "get-logins",
-        "hash": state.db_hash.clone(),
-        "id": reply["id"].clone(),
-        "url": "https://nowhere.example.org/",
-    });
-    let sealed = seal(&server_public, &client.secret, &resp_nonce, serde_json::to_vec(&inner).unwrap().as_slice()).unwrap();
-    let response = session.handle(
-        &mut state,
-        &json!({"action": "get-logins", "message": sealed, "nonce": B64.encode(resp_nonce)}),
-    );
-    assert_eq!(response["errorCode"], proto::ERROR_NO_LOGINS_FOUND.to_string());
+    // ping/hello stay available while locked and echo status.
+    let ping = session.handle(&state, &json!({"action": "ping", "nonce": "abc"}));
+    assert_eq!(ping["success"], "true");
+    assert_eq!(ping["locked"], true);
+    assert_eq!(ping["nonce"], "abc");
+    assert!(ping["databaseHash"].is_null());
+    let hello = session.handle(&state, &json!({"action": "hello"}));
+    assert_eq!(hello["appRunning"], true);
+    assert!(hello["sessionId"].as_str().unwrap().contains('-'));
 }

@@ -191,6 +191,8 @@ pub struct App {
     /// The running browser-protocol server (KeePassXC-Browser integration).
     pub browser_handle: Option<friendlypass_browser::ServerHandle>,
     pub browser_state: Option<friendlypass_browser::SharedState>,
+    /// The GUI bridge the browser server calls back into (approval, writes).
+    pub browser_bridge: Option<Arc<crate::browser_bridge::GuiBrowserBridge>>,
 
     // -- persisted preferences ------------------------------------------
     /// Column layout and the recent-databases list.
@@ -265,6 +267,7 @@ impl Default for App {
             ssh_socket: friendlypass_ssh_agent::default_socket_path().display().to_string(),
             browser_handle: None,
             browser_state: None,
+            browser_bridge: None,
             prefs: Preferences::default(),
             config_path: None,
             reset_columns: false,
@@ -295,6 +298,9 @@ impl App {
             app.remember_unlock = true;
             app.try_auto_unlock();
         }
+        // Always listen for the browser extension, even on the unlock screen:
+        // a locked app answers error 1 (rather than looking "not running").
+        crate::browser_bridge::start_background(&mut app);
         app
     }
 
@@ -383,6 +389,7 @@ impl App {
                 self.remember_unlock = true;
                 self.last_activity = std::time::Instant::now();
                 self.status = format!("Unlocked {path} automatically");
+                crate::browser_bridge::start_background(self);
                 true
             }
             Err(e) => {
@@ -515,6 +522,7 @@ impl App {
                 self.record_recent_database(&opened);
                 self.update_saved_secret(&opened);
                 self.password.clear();
+                crate::browser_bridge::start_background(self);
             }
             Err(e) => {
                 self.unlock_error = e.message().to_owned();
@@ -1773,6 +1781,10 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         crate::theme::setup(&ctx, self.prefs.theme);
         let now = std::time::Instant::now();
+
+        // Browser-integration bridge: approvals, set-login writes, pushes and
+        // the served snapshot all run on the GUI thread.
+        crate::browser_bridge::pump(self, &ctx);
 
         // Clipboard auto-clear runs on every screen, so a copied password is
         // removed even after the database was locked.
