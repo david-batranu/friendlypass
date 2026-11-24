@@ -1,0 +1,122 @@
+:root {
+  color-scheme: light dark;
+  --background: #ffffff;
+  --foreground: #1b1b1f;
+  --muted: #5f6368;
+  --surface: #f4f5f7;
+  --surface-hover: #e8eaed;
+  --border: #d7d9dd;
+  --accent: #1a73e8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #202124;
+    --foreground: #e8eaed;
+    --muted: #9aa0a6;
+    --surface: #292a2d;
+    --surface-hover: #35363a;
+    --border: #3c4043;
+    --accent: #8ab4f8;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--background);
+  color: var(--foreground);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.context {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+main {
+  flex: 1;
+  min-height: 80px;
+  overflow-y: auto;
+}
+
+.status {
+  color: var(--muted);
+  margin: 8px 0;
+}
+
+.entry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.entry:hover,
+.entry:focus-visible {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+  outline: none;
+}
+
+.entry .login {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.entry .meta {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+button.secondary {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.secondary:hover,
+button.secondary:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}

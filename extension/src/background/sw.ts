@@ -477,7 +477,7 @@ export function bootstrap(): void {
   installContentCommandListener();
 
   try {
-    installHttpAuthListener();
+    installHttpAuthListener({ logins: getLogins, snapshot: usableSnapshot, context: actionContext });
   } catch (cause) {
     // WP5 lands in parallel; this is expected until then.
     debug("http-auth", `listener not installed yet: ${messageOf(cause)}`);
