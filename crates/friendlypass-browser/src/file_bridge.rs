@@ -15,12 +15,18 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use keepass::config::DatabaseVersion;
 use keepass::{Database, DatabaseKey};
 
 use crate::bridge::{AssociationRequest, BrowserBridge, SetLoginRequest};
 use crate::entry_write::apply_set_login;
+
+/// Test hook: `approve_association` waits this long before approving, so
+/// integration tests can prove `ping` is answered while an approval is
+/// pending (pairing contract §7). Defaults to zero.
+const APPROVAL_DELAY_ENV: &str = "FP_TEST_APPROVAL_DELAY_MS";
 
 /// A bridge that auto-approves one fixed association id and saves every
 /// `set-login` to `path`.
@@ -31,6 +37,7 @@ pub struct FileBridge {
     path: PathBuf,
     changed: AtomicBool,
     last_error: Mutex<Option<String>>,
+    approval_delay: Duration,
 }
 
 impl FileBridge {
@@ -47,6 +54,7 @@ impl FileBridge {
             path: path.into(),
             changed: AtomicBool::new(false),
             last_error: Mutex::new(None),
+            approval_delay: approval_delay_from_env(),
         }
     }
 
@@ -122,6 +130,11 @@ impl FileBridge {
 
 impl BrowserBridge for FileBridge {
     fn approve_association(&self, _request: &AssociationRequest) -> Option<String> {
+        // Test-only delay (FP_TEST_APPROVAL_DELAY_MS): the connection's ping
+        // reader must stay responsive while the worker sits here.
+        if !self.approval_delay.is_zero() {
+            std::thread::sleep(self.approval_delay);
+        }
         Some(self.id.clone())
     }
 
@@ -155,6 +168,15 @@ fn temp_path(path: &Path) -> PathBuf {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "database.kdbx".to_owned());
     path.with_file_name(format!("{name}.friendlypass.tmp"))
+}
+
+/// Read `FP_TEST_APPROVAL_DELAY_MS`; anything unparseable means "no delay".
+fn approval_delay_from_env() -> Duration {
+    std::env::var(APPROVAL_DELAY_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

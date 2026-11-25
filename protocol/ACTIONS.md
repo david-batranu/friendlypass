@@ -142,6 +142,9 @@ Rules:
   app's §5.2-shaped answer. Any answer means "alive"; `appVersion`/`locked`/
   `databaseHash` populate the cached status. Two consecutive unanswered probes
   (1 s timeout each) drop and reconnect the app link.
+- The app MUST answer `ping` immediately even while another request on the same
+  connection is still being processed (for example `associate` waiting for the
+  approval dialog); other requests keep their per-connection order.
 - The host MAY push an unsolicited §5.2-shaped `ping` frame to the extension
   when `appRunning` changes, but only after the client opted in with
   `hello.statusPush: true` (§5.3). KeePassXC clients never receive unsolicited

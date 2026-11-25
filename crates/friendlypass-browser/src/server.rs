@@ -4,21 +4,29 @@
 //! can talk to this server. The socket carries raw compact JSON (one object
 //! per message, coalesced objects handled like the C++ parser).
 //!
-//! Each connection thread owns its socket for writes; unsolicited pushes from
-//! the GUI are delivered through a bounded channel so a slow browser can never
-//! stall the application.
+//! Each connection has one reader loop and one worker thread that share a
+//! single writer, so frames never interleave. The reader answers host-level
+//! `ping` immediately — liveness must never wait for an action the worker is
+//! still processing (pairing contract §1). Every other request is handed to
+//! the worker in arrival order; it owns the connection's [`ClientSession`].
+//! Unsolicited pushes from the GUI arrive through a bounded channel and are
+//! written by the reader, so a slow browser can never stall the application.
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::protocol::{host_error_reply, HOST_ERROR_FRAME_TOO_LARGE, HOST_ERROR_MALFORMED_FRAME};
+use crate::protocol::{
+    get_str, host_error_reply, ACTION_PING, HOST_ERROR_FRAME_TOO_LARGE,
+    HOST_ERROR_MALFORMED_FRAME, PROTOCOL_VERSION,
+};
 use crate::push::PushHub;
 use crate::service::{lock_state, ClientSession, SharedState};
 
@@ -175,11 +183,47 @@ fn handle_connection(
     hub: &Arc<PushHub>,
     stop: &Arc<AtomicBool>,
 ) {
+    let Ok(write_stream) = stream.try_clone() else {
+        return;
+    };
     let _ = stream.set_read_timeout(Some(PUSH_POLL));
     // A peer that stops reading must not wedge a connection thread forever.
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = write_stream.set_write_timeout(Some(Duration::from_secs(5)));
+    // Reader, worker and pushes all write through this one handle. Holding the
+    // mutex for a whole frame keeps objects from interleaving on the wire.
+    let writer = Arc::new(Mutex::new(write_stream));
     let (client_id, pushes) = hub.register();
-    let mut session = ClientSession::new();
+
+    // Requests other than `ping` are processed in order by one worker so the
+    // reader stays free to answer liveness probes and deliver pushes.
+    let (requests, incoming) = mpsc::channel::<Value>();
+    let worker_state = Arc::clone(state);
+    let worker_writer = Arc::clone(&writer);
+    let worker_stop = Arc::clone(stop);
+    let worker = std::thread::Builder::new()
+        .name("friendlypass-browser-worker".into())
+        .spawn(move || {
+            // The per-connection protocol state belongs to the worker: only it
+            // touches `ClientSession`, so reader-side pings cannot race it.
+            let mut session = ClientSession::new();
+            while let Ok(request) = incoming.recv() {
+                if worker_stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let response = session.handle(&worker_state, &request);
+                if write_frame(&worker_writer, &response).is_err() {
+                    break;
+                }
+            }
+        });
+    if worker.is_err() {
+        hub.unregister(client_id);
+        return;
+    }
+    // The handle is deliberately dropped (detached): a worker blocked in an
+    // approval must not keep a closing connection or the process alive. It
+    // exits on the closed channel or the next failed write.
+
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 8192];
 
@@ -190,7 +234,7 @@ fn handle_connection(
         // Deliver queued unsolicited frames between reads. A write failure
         // means the peer is gone; drop the registration and exit.
         while let Some(frame) = pushes.try_recv() {
-            if write_frame(&mut stream, &frame).is_err() {
+            if write_frame(&writer, &frame).is_err() {
                 hub.unregister(client_id);
                 return;
             }
@@ -200,7 +244,7 @@ fn handle_connection(
             Ok(0) => break,
             Ok(n) => {
                 buffer.extend_from_slice(&chunk[..n]);
-                if !drain_frames(&mut stream, state, &mut session, &mut buffer) {
+                if !drain_frames(&writer, state, &requests, &mut buffer) {
                     break;
                 }
             }
@@ -211,34 +255,44 @@ fn handle_connection(
         }
     }
     hub.unregister(client_id);
+    // Dropping `requests` closes the worker's channel; it exits as soon as
+    // any in-flight request returns.
 }
 
 /// Handle every complete frame in `buffer`. Returns false when the connection
 /// should close.
 fn drain_frames(
-    stream: &mut UnixStream,
+    writer: &Arc<Mutex<UnixStream>>,
     state: &SharedState,
-    session: &mut ClientSession,
+    requests: &Sender<Value>,
     buffer: &mut Vec<u8>,
 ) -> bool {
     while let Some(end) = find_json_end(buffer) {
         let raw: Vec<u8> = buffer.drain(..end).collect();
         if raw.len() > MAX_FRAME {
             let reply = host_error_reply("", HOST_ERROR_FRAME_TOO_LARGE, "Message exceeds the 1 MiB frame limit");
-            if write_frame(stream, &reply).is_err() {
+            if write_frame(writer, &reply).is_err() {
                 return false;
             }
             continue;
         }
         let Some(request) = parse_one(&raw) else {
             let reply = host_error_reply("", HOST_ERROR_MALFORMED_FRAME, "Malformed frame");
-            if write_frame(stream, &reply).is_err() {
+            if write_frame(writer, &reply).is_err() {
                 return false;
             }
             continue;
         };
-        let response = session.handle(state, &request);
-        if write_frame(stream, &response).is_err() {
+        // `ping` is answered here, on the reader, so it never queues behind a
+        // slow action. It carries no session state, only the app's status.
+        if get_str(&request, "action").as_deref() == Some(ACTION_PING) {
+            let reply = ping_reply(state, &request);
+            if write_frame(writer, &reply).is_err() {
+                return false;
+            }
+            continue;
+        }
+        if requests.send(request).is_err() {
             return false;
         }
     }
@@ -247,7 +301,7 @@ fn drain_frames(
         // A frame larger than the cap that never closes: answer once and
         // discard what we have rather than growing without bound.
         let reply = host_error_reply("", HOST_ERROR_FRAME_TOO_LARGE, "Message exceeds the 1 MiB frame limit");
-        if write_frame(stream, &reply).is_err() {
+        if write_frame(writer, &reply).is_err() {
             return false;
         }
         buffer.clear();
@@ -255,8 +309,47 @@ fn drain_frames(
     true
 }
 
-fn write_frame(stream: &mut UnixStream, value: &Value) -> std::io::Result<()> {
+/// The §5.2 shape for a host-level `ping`, built without a [`ClientSession`]
+/// so the reader can answer it while the worker is busy. Mirrors
+/// `ClientSession::handle_status`; `ping` needs no per-session fields.
+fn ping_reply(state: &SharedState, request: &Value) -> Value {
+    let (locked, hash, app_version) = {
+        let guard = lock_state(state);
+        (guard.locked, guard.db_hash.clone(), guard.app_version.clone())
+    };
+    let app_version = if app_version.is_empty() {
+        env!("CARGO_PKG_VERSION").to_owned()
+    } else {
+        app_version
+    };
+    let mut response = serde_json::Map::new();
+    response.insert("action".into(), json!(ACTION_PING));
+    response.insert("success".into(), json!("true"));
+    response.insert("protocolVersion".into(), json!(PROTOCOL_VERSION));
+    response.insert("hostVersion".into(), json!(env!("CARGO_PKG_VERSION")));
+    response.insert("appRunning".into(), json!(true));
+    response.insert("appVersion".into(), json!(app_version));
+    response.insert("locked".into(), json!(locked));
+    response.insert(
+        "databaseHash".into(),
+        if locked || hash.is_empty() {
+            Value::Null
+        } else {
+            json!(hash)
+        },
+    );
+    if let Some(nonce) = get_str(request, "nonce") {
+        // Host-level ping echoes the nonce verbatim (not incremented).
+        response.insert("nonce".into(), json!(nonce));
+    }
+    Value::Object(response)
+}
+
+fn write_frame(writer: &Arc<Mutex<UnixStream>>, value: &Value) -> std::io::Result<()> {
     let body = serde_json::to_vec(value).map_err(std::io::Error::other)?;
+    let mut stream = writer
+        .lock()
+        .map_err(|_| std::io::Error::other("browser connection writer poisoned"))?;
     stream.write_all(&body)?;
     stream.flush()
 }
