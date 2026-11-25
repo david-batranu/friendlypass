@@ -20,6 +20,7 @@ friendlypass-browser = { path = "../friendlypass-browser" }
 resvg = { version = "0.47.0", default-features = false }
 rfd = "0.18.0"
 rust-argon2 = "3.0.0"
+unicode-segmentation = "1.13.3"
 ureq = "3.3.0"
 uuid = "1.29.3"
 serde = { version = "1.0.228", features = ["derive"] }
