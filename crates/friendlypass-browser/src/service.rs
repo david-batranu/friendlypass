@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 
 use crate::bridge::{AssociationRequest, BrowserBridge, DenyAllBridge, SetLoginRequest};
 use crate::crypto::{increment_nonce, open, seal, KeyPair};
+use crate::peer::PeerInfo;
 use crate::protocol::*;
 use crate::push::PushHub;
 
@@ -64,6 +65,17 @@ impl GroupNode {
     }
 }
 
+/// What the Browser Integration dialog shows for one association.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssociationInfo {
+    /// Display name of the browser that created the association.
+    pub browser: String,
+    /// The host verified the browser's code signature.
+    pub verified: bool,
+    /// The association was approved without a dialog (§5).
+    pub auto_approved: bool,
+}
+
 /// Shared server state, refreshed by the GUI side.
 #[derive(Default)]
 pub struct ServiceState {
@@ -76,6 +88,10 @@ pub struct ServiceState {
     pub groups: Vec<GroupNode>,
     /// association id -> browser identification public key (Base64).
     pub associations: HashMap<String, String>,
+    /// Per-association display metadata captured while the browser is
+    /// connected. Only the current app run knows this; associations loaded
+    /// from database metadata fall back to their name (see the GUI).
+    pub associations_info: HashMap<String, AssociationInfo>,
     /// Set when the association set changed and the GUI should persist it.
     pub associations_changed: bool,
     /// GUI-provided snapshot fingerprint; the server never interprets it.
@@ -245,26 +261,33 @@ pub struct ClientSession {
     association_id: Option<String>,
     session_id: String,
     client_id: String,
+    /// What the app verified about the socket peer (§3).
+    peer: PeerInfo,
+    /// Browser identity from `host-identify`, only kept for a trusted peer.
+    browser: Option<BrowserIdentity>,
 }
 
 impl ClientSession {
     pub fn new() -> ClientSession {
-        ClientSession {
-            keypair: KeyPair::generate().unwrap_or(KeyPair {
-                public: [0u8; 32],
-                secret: vec![0u8; 32],
-            }),
-            client_public: None,
-            associated: false,
-            association_id: None,
-            session_id: generate_session_id(),
-            client_id: String::new(),
-        }
+        ClientSession::with_keypair_impl(KeyPair::generate().unwrap_or(KeyPair {
+            public: [0u8; 32],
+            secret: vec![0u8; 32],
+        }))
+    }
+
+    /// Attach the peer verification result the server computed on accept.
+    pub fn with_peer(mut self, peer: PeerInfo) -> ClientSession {
+        self.peer = peer;
+        self
     }
 
     /// Build a session around a fixed host keypair (golden-vector tests and
     /// deterministic fixtures). Production always uses [`ClientSession::new`].
     pub fn with_keypair(keypair: KeyPair) -> ClientSession {
+        ClientSession::with_keypair_impl(keypair)
+    }
+
+    fn with_keypair_impl(keypair: KeyPair) -> ClientSession {
         ClientSession {
             keypair,
             client_public: None,
@@ -272,6 +295,8 @@ impl ClientSession {
             association_id: None,
             session_id: generate_session_id(),
             client_id: String::new(),
+            peer: PeerInfo::default(),
+            browser: None,
         }
     }
 
@@ -301,6 +326,7 @@ impl ClientSession {
         match action.as_str() {
             ACTION_CHANGE_PUBLIC_KEYS => return self.handle_change_public_keys(request, &action),
             ACTION_PING | ACTION_HELLO => return self.handle_status(state, request, &action),
+            ACTION_HOST_IDENTIFY => return self.handle_host_identify(request),
             _ => {}
         }
 
@@ -489,6 +515,47 @@ impl ClientSession {
         Value::Object(response)
     }
 
+    /// **[friendlypass]** `host-identify` (§2). Host-level and unencrypted: it
+    /// answers the connection's trust state and, only for a trusted peer,
+    /// stores the browser identity for the association decision.
+    fn handle_host_identify(&mut self, request: &Value) -> Value {
+        if self.peer.trusted {
+            self.browser = browser_identity(request);
+        }
+        host_identify_reply(self.peer.trusted)
+    }
+
+    /// Contract §5: the auto-approve chain needs our host as the socket peer
+    /// and a browser the host itself verified.
+    fn auto_approvable(&self) -> bool {
+        self.peer.trusted && self.browser.as_ref().is_some_and(|browser| browser.verified)
+    }
+
+    /// Remember how this association came about, for the Browser Integration
+    /// dialog ("Chrome · verified" / "Chrome · approved manually").
+    fn remember_association(&self, state: &SharedState, id: &str, auto_name: Option<&str>) {
+        let Some(browser) = self.browser.as_ref() else {
+            return;
+        };
+        let mut state = lock_state(state);
+        let previous = state.associations_info.get(id).map(|info| info.auto_approved);
+        // On a later `test-associate` (auto_name = None) the earlier verdict
+        // stays; for an association loaded from database metadata the name
+        // shape is all that is left.
+        let auto_approved = match auto_name {
+            Some(name) => name == id,
+            None => previous.unwrap_or_else(|| crate::bridge::automatic_association_browser(id).is_some()),
+        };
+        state.associations_info.insert(
+            id.to_owned(),
+            AssociationInfo {
+                browser: browser.display_name().to_owned(),
+                verified: browser.verified,
+                auto_approved,
+            },
+        );
+    }
+
     fn get_database_hash(state: &SharedState) -> Result<Vec<(&'static str, Value)>, i32> {
         let guard = lock_state(state);
         if guard.locked {
@@ -538,6 +605,7 @@ impl ClientSession {
         if let Some(id) = existing_id {
             self.associated = true;
             self.association_id = Some(id.clone());
+            self.remember_association(state, &id, None);
             return Ok(vec![("hash", json!(hash)), ("id", json!(id))]);
         }
 
@@ -546,10 +614,14 @@ impl ClientSession {
         let Some(bridge) = bridge else {
             return Err(ERROR_ACTION_CANCELLED_OR_DENIED);
         };
+        let (auto_approvable, browser) = (self.auto_approvable(), self.browser.clone());
         let request = AssociationRequest {
             client_id,
             suggested_id: default_association_id(&self.session_id),
+            browser,
+            auto_approvable,
         };
+        let auto_name = auto_approvable.then(|| request.auto_approved_name());
         let Some(chosen) = bridge.approve_association(&request) else {
             return Err(ERROR_ACTION_CANCELLED_OR_DENIED);
         };
@@ -576,6 +648,7 @@ impl ClientSession {
 
         self.associated = true;
         self.association_id = Some(chosen.clone());
+        self.remember_association(state, &chosen, auto_name.as_deref());
         Ok(vec![("hash", json!(hash)), ("id", json!(chosen))])
     }
 
@@ -595,6 +668,7 @@ impl ClientSession {
                 drop(guard);
                 self.associated = true;
                 self.association_id = Some(id.clone());
+                self.remember_association(state, &id, None);
                 let hash = lock_state(state).db_hash.clone();
                 Ok(vec![("hash", json!(hash)), ("id", json!(id))])
             }

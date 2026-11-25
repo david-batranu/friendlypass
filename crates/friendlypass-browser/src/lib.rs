@@ -19,6 +19,7 @@ pub mod crypto;
 pub mod entry_write;
 pub mod file_bridge;
 pub mod native_messaging;
+pub mod peer;
 pub mod protocol;
 pub mod push;
 pub mod server;
@@ -26,10 +27,11 @@ pub mod service;
 
 pub use bridge::{AssociationRequest, AutoApproveBridge, BrowserBridge, DenyAllBridge, SetLoginRequest};
 pub use file_bridge::FileBridge;
+pub use peer::{verify_peer, PeerInfo};
 pub use push::PushHub;
-pub use server::{browser_server_path, start, user_temp_dir, ServerHandle};
+pub use server::{browser_server_path, start, start_with_config, user_temp_dir, ServerConfig, ServerHandle};
 pub use service::SharedState;
-pub use service::{CredentialEntry, GroupNode, ServiceState};
+pub use service::{AssociationInfo, CredentialEntry, GroupNode, ServiceState};
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -131,6 +133,7 @@ pub fn snapshot_from_database(db: &Database) -> ServiceState {
         entries,
         groups,
         associations,
+        associations_info: Default::default(),
         associations_changed: false,
         snapshot_signature: snapshot_signature(db),
         bridge: None,
