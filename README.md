@@ -400,3 +400,20 @@ CLI test suites all green).
 | Browser integration (KeepassXC-Browser protocol) | ✅ implemented + verified against the REAL shipped `keepassxc-proxy` binary: X25519 `change-public-keys` handshake, nonce-increment responses, encrypted `associate` / `test-associate` / `get-logins` / `generate-password` / `lock-database` with KeePassXC 2.8.0's exact message shapes and error codes; the full flow (handshake → associate → test-associate → get-logins with base64 credentials → error replies) round-trips through the actual proxy from the KeePassXC.app bundle; the GUI's Browser window starts/stops the server on the socket the proxy connects to |
 | KeeShare (signed share containers) | ✅ full: classic (unsigned) shares **and signed shares**. Signed containers use KeePassXC's exact layout — ZIP with `container.share.kdbx` + `container.share.signature`, RSA PKCS#1 v1.5 SHA-256 over the database bytes hex-prefixed `rsa|`, signature XML carrying the signer name and the `ssh-rsa` public key blob — signed with a local self-signed X.509 identity (CN signer) persisted under the config dir. Verified on import (tampered containers rejected, signer reported). Cross-checked with real tools: `openssl dgst -sha256 -verify` reports Verified OK, `unzip -l` shows the KeePassXC layout, and `keepassxc-cli` reads the database inside our signed container |
 | YubiKey challenge-response keys | ✅ challenge-response composite-key support implemented + tested: the response component is HMAC-SHA1(KDF seed, secret) — the same construction a YubiKey uses — via the keepass `challenge_response` feature (`LocalChallenge`); CLI (`--challenge-response <hex>`) and GUI unlock field; round-trip tests cover password+CR, keyfile+CR, and rejection of missing/wrong secrets. ❌ live USB YubiKey HID transport is not implemented — it needs physical YubiKey hardware |
+
+## Licence
+
+friendlypass is free software under the **GNU General Public License, version
+3 only** (GPL-3.0-only). The full text is in [`LICENSE`](LICENSE); the
+packaged browser-extension zips and the macOS app bundle include it too.
+
+friendlypass is a Rust port of [KeePassXC](https://github.com/keepassxreboot/keepassxc)
+(GPL-2 or GPL-3) and the browser extension is a hard fork of
+[keepassxc-browser](https://github.com/keepassxreboot/keepassxc-browser)
+(GPL-3.0). Upstream copyright notices, the licences and provenance of the
+copied KeePassXC test databases and icon set, and the additional licence texts
+are recorded in [`NOTICE.md`](NOTICE.md) and [`LICENSES/`](LICENSES/).
+
+friendlypass comes with **ABSOLUTELY NO WARRANTY**, to the extent permitted by
+law. It is an independent project, not affiliated with or endorsed by the
+KeePassXC Team.

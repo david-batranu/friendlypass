@@ -6,9 +6,14 @@ the friendlypass browser extension.
 
 ## Licence
 
-GPL-3.0-or-later. The fork keeps the upstream copyright notices and licence
-headers; the full GPL-3.0 text is in the friendlypass repository. Any binary
-distribution must be accompanied by the corresponding source.
+GPL-3.0-only. The full licence text is `LICENSE` in the repository root; it is
+also copied into `dist/`, `dist-firefox/` and therefore into every packaged
+`.zip`, together with `NOTICE.md`. This extension is a hard fork of
+keepassxc-browser (GPL-3.0) and its content scripts are ported from that
+project, so the fork as a whole is GPL-3.0-only. `NOTICE.md` in the repository
+root carries the upstream copyright notices, the licences of third-party
+assets and the warranty disclaimer. Any binary distribution must be
+accompanied by the corresponding source.
 
 ## What is here
 
@@ -18,14 +23,15 @@ distribution must be accompanied by the corresponding source.
 | `src/background/{transport,sw,lifecycle}.ts` | WP2 | Native port, framing, heartbeat, reconnect |
 | `src/background/{session,actions,state}.ts` | WP3 | Handshake, actions, persistence |
 | `src/background/http-auth.ts` | WP5 | `webRequest.onAuthRequired` |
-| `src/content/**` | WP4 | Forked field/fill engine (not yet vendored) |
+| `src/content/**` | WP4 | Ported field/fill engine (derived from upstream content scripts) |
 | `src/popup/**`, `src/options/**` | WP6 | UI |
 | `tests/**`, `playwright.config.ts`, `scripts/e2e.sh` | WP8 | Harness and CI |
 
 The upstream background layer (`client.js`, `keepass.js`, `init.js`,
 `httpauth.js`) is **not** carried over: it is replaced by the typed modules
-above. The upstream content/fill engine is intended to be vendored into
-`src/content/` by WP4, with licence headers intact.
+above. The upstream content/fill engine is ported into `src/content/`; those
+files are derivative works of keepassxc-browser and remain GPL-3.0 (see
+`../NOTICE.md`).
 
 ## Native host
 
