@@ -187,7 +187,7 @@ fn add_entry_via_ui_save_with_upgrade_and_reopen() {
     // The rarely used sections start collapsed.
     assert!(harness.query_by_label("Default sequence:").is_none());
     assert!(harness.query_by_label("Insert reference").is_none());
-    assert!(harness.query_by_label("Icon 12").is_none());
+    assert!(harness.query_by_label("Choose symbol").is_none());
     stabilize(&mut harness);
     harness.snapshot("gui_new_entry_dialog");
 
@@ -603,11 +603,127 @@ fn custom_attributes_and_autotype_edit_and_persist() {
 }
 
 // ---------------------------------------------------------------------------
-// icons: standard picker, custom icons, rendering, persistence
+// icons: avatars, symbols, custom icons, rendering, persistence
 // ---------------------------------------------------------------------------
 
+/// A database that exercises every icon source: an entry with a cached
+/// favicon, an entry whose URL has no favicon, an entry with no URL, an entry
+/// with a `friendlypass.symbol`, a non-default standard icon, and groups
+/// (including a recycle bin). The favicon cache is pre-seeded and network
+/// fetching is disabled, so the images are deterministic.
+fn icon_mix_database(dir: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+    use keepass::db::{CustomDataItem, CustomDataValue};
+
+    let db_path = dir.path().join("icons.kdbx");
+    let cache_dir = dir.path().join("favicons");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::write(
+        cache_dir.join("https___github.com.img"),
+        std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png")).unwrap(),
+    )
+    .unwrap();
+
+    let mut db = keepass::Database::new();
+    let mut root = db.root_mut();
+    {
+        let mut group = root.add_group();
+        group.name = "Web".into();
+    }
+    let bank_id = {
+        let mut group = root.add_group();
+        group.name = "Bank".into();
+        group.id()
+    };
+    let bin_id = {
+        let mut group = root.add_group();
+        group.name = "Recycle Bin".into();
+        group.id()
+    };
+    drop(root);
+    db.meta.recyclebin_uuid = Some(bin_id.uuid());
+
+    let mut root = db.root_mut();
+    {
+        let mut e = root.add_entry();
+        e.set_unprotected("Title", "GitHub");
+        e.set_unprotected("UserName", "octocat");
+        e.set_unprotected("URL", "https://github.com");
+    }
+    {
+        let mut e = root.add_entry();
+        e.set_unprotected("Title", "Personal Email");
+        e.set_unprotected("UserName", "david@example.net");
+        e.set_unprotected("URL", "https://mail.proton.me");
+    }
+    {
+        let mut e = root.add_entry();
+        e.set_unprotected("Title", "Home Wi-Fi");
+        e.set_unprotected("UserName", "home");
+        e.custom_data.insert(
+            "friendlypass.symbol".into(),
+            CustomDataItem {
+                value: Some(CustomDataValue::String("§".into())),
+                last_modification_time: None,
+            },
+        );
+    }
+    drop(root);
+    {
+        let mut parent = db.group_mut(bank_id).unwrap();
+        let mut e = parent.add_entry();
+        e.set_unprotected("Title", "Savings");
+        e.set_unprotected("UserName", "david");
+        e.set_icon_builtin(5);
+    }
+
+    let key = DatabaseKey::new().with_password("testpassword");
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&db_path).unwrap());
+    db.save(&mut out, key).unwrap();
+    drop(out);
+
+    (db_path, cache_dir)
+}
+
 #[test]
-fn icon_picker_standard_and_custom_icons() {
+fn icon_mix_main_window_and_editor_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db_path, cache_dir) = icon_mix_database(&dir);
+    let path_str = db_path.display().to_string();
+    let key = DatabaseKey::new().with_password("testpassword");
+    let mut harness = Harness::new_eframe(move |_cc| {
+        let mut app = friendlypass_gui::App::with_open_database(&path_str, key);
+        app.icon_cache.set_cache_dir(Some(cache_dir));
+        app.icon_cache.network_enabled = false;
+        app
+    });
+    harness.set_size(egui::Vec2::new(1150.0, 1000.0));
+    harness.run();
+    assert!(
+        harness.state().db.is_some(),
+        "database opened: {}",
+        harness.state().unlock_error
+    );
+
+    harness.get_by_label("GitHub");
+    harness.get_by_label("Personal Email");
+    harness.get_by_label("Home Wi-Fi");
+    stabilize(&mut harness);
+    harness.snapshot("gui_icon_mix");
+
+    // Open the entry editor with the icon section expanded: the "before"
+    // image shows the old 69-icon picker, the "after" image the avatar
+    // preview and symbol chooser.
+    harness.get_by_label("Home Wi-Fi").click();
+    harness.run();
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    expand(&mut harness, "Icon");
+    stabilize(&mut harness);
+    harness.snapshot("gui_icon_editor");
+}
+
+#[test]
+fn entry_editor_symbol_and_custom_icons() {
     let dir = tempfile::tempdir().unwrap();
     let path = fresh_sample(&dir);
     let key = DatabaseKey::new().with_password("testpassword");
@@ -617,16 +733,25 @@ fn icon_picker_standard_and_custom_icons() {
     harness.set_size(egui::Vec2::new(1150.0, 1500.0));
     harness.run();
 
-    // The standard icon strip is present in the editor (a sample button).
+    // The 69-icon picker is gone; the editor shows a preview, a symbol chooser
+    // and a "Use letter" reset instead.
     harness.get_by_label("Sample Entry").click();
     harness.run();
     harness.get_by_label("Edit…").click();
     harness.run();
     expand(&mut harness, "Icon");
-    harness.get_by_label("Icon 12");
+    assert!(
+        harness.query_by_label("Icon 12").is_none(),
+        "the standard icon picker is removed"
+    );
+    harness.get_by_label("Choose symbol");
+    harness.get_by_label("Use letter");
 
-    // Pick standard icon 12.
-    harness.get_by_label("Icon 12").click();
+    // Choose a symbol and save; it is stored in the `friendlypass.symbol`
+    // custom-data item.
+    harness.get_by_label("Choose symbol").click();
+    harness.run();
+    harness.get_by_label("§").click();
     harness.run();
     harness.get_by_label("Save").click();
     harness.run();
@@ -639,16 +764,44 @@ fn icon_picker_standard_and_custom_icons() {
         .iter_all_entries()
         .find(|e| e.get("Title") == Some("Sample Entry"))
         .unwrap();
+    let symbol = entry
+        .custom_data
+        .get("friendlypass.symbol")
+        .and_then(|item| item.value.as_ref())
+        .map(|value| match value {
+            keepass::db::CustomDataValue::String(s) => s.clone(),
+            keepass::db::CustomDataValue::Binary(_) => String::new(),
+        });
+    assert_eq!(symbol.as_deref(), Some("§"), "symbol stored in CustomData");
+
+    // Reopen the editor: the symbol is loaded, and "Use letter" clears it.
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    expand(&mut harness, "Icon");
+    // This entry has a URL, so the preview is labelled as a website favicon;
+    // without a fetchable favicon the symbol avatar is what is drawn.
+    harness.get_by_label("Website favicon");
+    stabilize(&mut harness);
+    harness.snapshot("gui_icon_editor_symbol");
+    harness.get_by_label("Use letter").click();
+    harness.run();
+    harness.get_by_label("Save").click();
+    harness.run();
+    let state = harness.state();
+    let entry = state
+        .db
+        .as_ref()
+        .unwrap()
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Sample Entry"))
+        .unwrap();
     assert!(
-        matches!(entry.icon(), Some(keepass::db::Icon::BuiltIn(12))),
-        "standard icon set"
+        !entry.custom_data.contains_key("friendlypass.symbol"),
+        "Use letter removes the symbol custom-data item"
     );
 
-    // Add a custom icon from an image file (one of our rasterized KeePass icons).
-    let icon_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("icons/42.png");
-    // ("Sample Entry" is still selected from the edit above; the details
-    // panel is showing it, so "Sample Entry" now matches two nodes — open
-    // the editor through the details panel instead.)
+    // Add a custom icon from an image file.
+    let icon_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png");
     harness.get_by_label("Edit…").click();
     harness.run();
     expand(&mut harness, "Icon");
@@ -667,7 +820,8 @@ fn icon_picker_standard_and_custom_icons() {
         .unwrap();
     assert!(matches!(entry.icon(), Some(keepass::db::Icon::Custom(_))), "custom icon set");
 
-    // Save (upgrade) and verify both icons persist on disk.
+    // Save (upgrade) and verify both the custom icon and the cleared symbol
+    // persist on disk.
     harness.get_by_label("Save database").click();
     harness.run();
     harness.get_by_label("Upgrade and Save").click();
@@ -687,8 +841,88 @@ fn icon_picker_standard_and_custom_icons() {
         .find(|e| e.get("Title") == Some("Sample Entry"))
         .unwrap();
     assert!(matches!(entry.icon(), Some(keepass::db::Icon::Custom(_))));
+    assert!(
+        !entry.custom_data.contains_key("friendlypass.symbol"),
+        "cleared symbol stays cleared after save"
+    );
     stabilize(&mut harness);
     harness.snapshot("gui_icon_picker");
+}
+
+/// Editing an entry must not rewrite its KDBX `IconID` (or a group's): the
+/// values are read, preserved through save, and visible after reopening.
+#[test]
+fn non_default_icon_ids_survive_edit_and_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("icons.kdbx");
+
+    let mut db = keepass::Database::new();
+    let root_id = db.root().id();
+    let group_id = {
+        let mut root = db.root_mut();
+        let mut group = root.add_group();
+        group.name = "Icons".into();
+        group.set_icon_builtin(17);
+        group.id()
+    };
+    {
+        let mut parent = db.group_mut(root_id).unwrap();
+        let mut entry = parent.add_entry();
+        entry.set_unprotected("Title", "Keep My Icon");
+        entry.set_icon_builtin(5);
+    }
+    let key = DatabaseKey::new().with_password("testpassword");
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&db_path).unwrap());
+    db.save(&mut out, key).unwrap();
+    drop(out);
+
+    let path_str = db_path.display().to_string();
+    let key = DatabaseKey::new().with_password("testpassword");
+    let mut harness =
+        Harness::new_eframe(move |_cc| friendlypass_gui::App::with_open_database(&path_str, key));
+    harness.set_size(egui::Vec2::new(1150.0, 900.0));
+    harness.run();
+
+    // Edit only the title through the real editor.
+    harness.get_by_label("Keep My Icon").click();
+    harness.run();
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    replace_text(&mut harness, "Title:", "Keep My Icon Edited");
+    harness.get_by_label("Save").click();
+    harness.run();
+    harness.get_by_label("Save database").click();
+    harness.run();
+
+    let mut file = std::fs::File::open(&db_path).unwrap();
+    let db2 = keepass::Database::open(
+        &mut file,
+        DatabaseKey::new().with_password("testpassword"),
+    )
+    .unwrap();
+    let entry = db2
+        .iter_all_entries()
+        .find(|e| e.get("Title") == Some("Keep My Icon Edited"))
+        .expect("edited entry reread");
+    assert!(
+        matches!(entry.icon(), Some(keepass::db::Icon::BuiltIn(5))),
+        "entry IconID preserved through edit and save"
+    );
+    let history = entry.history.as_ref().expect("edit recorded a history item");
+    let previous = history.get_entries().first().expect("previous revision");
+    assert!(
+        matches!(previous.icon(), Some(keepass::db::Icon::BuiltIn(5))),
+        "the history revision keeps the entry's IconID"
+    );
+    let group = db2
+        .iter_all_groups()
+        .find(|g| g.name == "Icons")
+        .expect("group reread");
+    assert!(
+        matches!(group.icon(), Some(keepass::db::Icon::BuiltIn(17))),
+        "group IconID preserved through save"
+    );
+    assert_eq!(group.id(), group_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1063,8 +1297,8 @@ fn share_group_dialog_exports_and_persists_reference() {
         let state = harness.state_mut();
         let db = state.db.as_mut().unwrap();
         let web_id = db.iter_all_groups().find(|g| g.name == "Web").unwrap().id();
-        let mut group = db.group_mut(web_id).unwrap();
-        let mut e = group.add_entry();
+        let mut parent = db.group_mut(web_id).unwrap();
+        let mut e = parent.add_entry();
         e.set_unprotected("Title", "Shared Login");
         e.set_unprotected("UserName", "share-user");
         e.set_protected("Password", "share-pass");
@@ -1142,8 +1376,8 @@ fn share_group_signed_container_via_gui() {
         let state = harness.state_mut();
         let db = state.db.as_mut().unwrap();
         let web_id = db.iter_all_groups().find(|g| g.name == "Web").unwrap().id();
-        let mut group = db.group_mut(web_id).unwrap();
-        let mut e = group.add_entry();
+        let mut parent = db.group_mut(web_id).unwrap();
+        let mut e = parent.add_entry();
         e.set_unprotected("Title", "Signed Login");
         e.set_unprotected("UserName", "signed-user");
         e.set_protected("Password", "signed-pass");

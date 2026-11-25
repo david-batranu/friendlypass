@@ -265,8 +265,8 @@ Linux). It mirrors KeePassXC's core GUI workflow:
   Bin…" action
 * **Entry table** — sortable columns (Title / UserName / Password / URL /
   Notes / Tags), password masking with a global reveal toggle,
-  double-click to edit, search across all groups, KeePass standard icons
-  and database custom icons rendered per entry
+  double-click to edit, search across all groups, website favicons, letter
+  avatars and database custom icons rendered per entry
 * **Multi-selection** — Cmd/Ctrl-click rows for batch operations: move to
   group, recycle
 * **Drag & drop** — drag entries onto group rows (including the root and
@@ -294,9 +294,10 @@ Linux). It mirrors KeePassXC's core GUI workflow:
   visited, revealing each entry's group and clearing filters as needed
 * **Collapsible sections** — the GROUPS and TAGS sidebar headings really
   collapse (their chevrons are interactive), which keeps short windows usable
-* **Icons** — all 69 KeePass standard icons (rasterized from the original
-  KeePassXC SVG assets) plus database custom icons; pick per entry, add
-  custom images from files, rendered in the group tree and entry table
+* **Icons** — database custom icons, favicons fetched from each entry's URL,
+  deterministic letter avatars (optional single-glyph symbol via
+  `friendlypass.symbol`), and a generic folder/trash glyph for groups; the
+  KDBX standard `IconID` values are preserved untouched
 * **Import… / Export…** — the same formats as the CLI, through dialogs:
   imports are merged into the open database (root group), exports warn that
   the XML/CSV/HTML file is unencrypted
@@ -366,7 +367,7 @@ CLI test suites all green).
 | Group tree: add / rename / delete         | ✅ tested |
 | Recycle bin (create-on-demand, move-to-bin, permanent delete, empty bin) | ✅ tested + C++ cross-checked |
 | Entry table: sort, search, masked passwords | ✅ tested |
-| Icons: 69 standard icons + custom icon pool + automatic website SVG / favicon fetching with cache | ✅ tested (standard + custom persisted; entries using the default key icon automatically fetch the website's SVG icon or fallback favicon in the background and cache it in memory and on disk so each origin is fetched at most once) |
+| Icons: custom icon pool + automatic website SVG / favicon fetching with cache + letter avatars | ✅ tested (custom icons and KDBX `IconID`s persisted; entries with a URL fetch the site's SVG icon or fallback favicon in the background and cache it in memory and on disk so each origin is fetched at most once; entries without one show a letter/symbol avatar on a deterministic palette colour) |
 | Multi-selection & batch operations (move to group, recycle) | ✅ tested (Cmd/Ctrl-click) |
 | Drag & drop (entries and groups onto groups, incl. root and Recycle Bin, with cycle prevention) | ✅ tested (simulated pointer drags for both) |
 | Import / export (XML, CSV, HTML; Bitwarden, Proton Pass, 1PUX, KeePass 1 KDB AES/Twofish, KDBX) | ✅ tested: XML round-trip, byte-identical CSV export, real `keepassxc-cli` imports our XML (entries + attachments) and our importer reads its XML; KeePassXC's own KDB test databases (AES and Twofish) import with entries/attachments; Bitwarden/Proton Pass/1PUX fixtures tested. **Per-group export** via the group tree's right-click menu (XML/CSV/HTML, subtree only). ❌ 1Password legacy `.opvault` and encrypted third-party JSON |

@@ -231,53 +231,121 @@ pub enum IconChoice {
     NewCustom(Vec<u8>),
 }
 
-impl std::fmt::Display for IconChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IconChoice::None => write!(f, "no icon"),
-            IconChoice::Standard(n) => write!(f, "standard icon {n}"),
-            IconChoice::Custom(id) => write!(f, "custom icon {id}"),
-            IconChoice::NewCustom(_) => write!(f, "new custom icon from file"),
+/// How the entry being edited will look in the list and details panel.
+fn preview_icon_spec(d: &EntryEdit) -> crate::icons::IconSpec {
+    let avatar = crate::icons::avatar_for(&d.title, &d.username, d.symbol.as_deref());
+    match &d.icon {
+        IconChoice::Custom(id) => {
+            if let Some((_, bytes)) = d.custom_icons.iter().find(|(i, _)| i == id) {
+                return crate::icons::custom_icon_spec(format!("custom-{id}"), bytes.clone(), avatar);
+            }
         }
+        IconChoice::NewCustom(bytes) => {
+            return crate::icons::custom_icon_spec(
+                "preview-custom".into(),
+                bytes.clone(),
+                avatar,
+            );
+        }
+        IconChoice::None | IconChoice::Standard(_) => {}
+    }
+    if let Some(origin) = crate::icons::normalize_site_origin(&d.url) {
+        crate::icons::IconSpec::Website { origin, avatar }
+    } else {
+        crate::icons::IconSpec::Avatar(avatar)
     }
 }
 
-/// Reusable icon picker: the 69 KeePass standard icons, the database's custom
-/// icon pool, and loading a new custom image from a file path.
-fn icon_picker(
-    ui: &mut egui::Ui,
-    app: &mut App,
-    choice: &mut IconChoice,
-    custom_pool: &[(CustomIconId, Vec<u8>)],
-    icon_path: &mut String,
-) {
+/// Icon editor: a live preview, the optional symbol picker, and the database's
+/// custom icon pool (including loading a new image from a file).
+fn icon_picker(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
     let ctx = ui.ctx().clone();
-    ui.label(format!("Current icon: {choice}"));
-    ui.horizontal_wrapped(|ui| {
-        for (n, _) in crate::icons::STANDARD_ICONS {
-            if let Some(tex) = app.icon_cache.standard(&ctx, *n) {
-                let selected = matches!(choice, IconChoice::Standard(k) if *k == *n);
-                let btn = egui::Button::image((tex.id(), egui::Vec2::splat(18.0))).selected(selected);
-                if ui.add(btn).on_hover_text(format!("Icon {n}")).clicked() {
-                    *choice = IconChoice::Standard(*n);
-                }
-            }
+    let spec = preview_icon_spec(d);
+    ui.horizontal(|ui| {
+        egui::Frame::new()
+            .fill(crate::theme::p().bg)
+            .corner_radius(12)
+            .inner_margin(egui::Margin::same(6))
+            .show(ui, |ui| {
+                crate::icons::draw_icon_sized(ui, &mut app.icon_cache, Some(&spec), 52.0);
+            });
+        let (label, hint) = match &spec {
+            crate::icons::IconSpec::Custom { .. } => (
+                "Custom icon",
+                "A database custom icon takes precedence over favicons and avatars.",
+            ),
+            crate::icons::IconSpec::Website { .. } => (
+                "Website favicon",
+                "Fetched from the URL; the letter avatar shows while it loads or when the site has no favicon.",
+            ),
+            crate::icons::IconSpec::Avatar(_) if d.symbol.is_some() => (
+                "Symbol avatar",
+                "The chosen symbol replaces the title's first letter.",
+            ),
+            _ => (
+                "Letter avatar",
+                "The title's first letter (or your username) on a colour derived from the title.",
+            ),
+        };
+        ui.vertical(|ui| {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(label).strong());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(hint).size(12.0).color(crate::theme::p().muted),
+                )
+                .wrap(),
+            );
+        });
+    });
+
+    ui.horizontal(|ui| {
+        ui.menu_button("Choose symbol", |ui| {
+            ui.set_min_width(260.0);
+            egui::Grid::new("entry-symbol-grid")
+                .spacing(egui::vec2(2.0, 2.0))
+                .show(ui, |ui| {
+                    for (i, symbol) in crate::icons::SYMBOLS.iter().enumerate() {
+                        let selected = d.symbol.as_deref() == Some(*symbol);
+                        let button = egui::Button::new(
+                            egui::RichText::new(*symbol).size(18.0),
+                        )
+                        .selected(selected)
+                        .min_size(egui::vec2(28.0, 28.0));
+                        if ui
+                            .add(button)
+                            .on_hover_text(format!("Symbol {symbol}"))
+                            .clicked()
+                        {
+                            d.symbol = Some((*symbol).to_owned());
+                            ui.close();
+                        }
+                        if (i + 1) % 8 == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+        if ui
+            .button("Use letter")
+            .on_hover_text("Clear the symbol and show the first letter again")
+            .clicked()
+        {
+            d.symbol = None;
         }
     });
-    if ui.button("No icon").clicked() {
-        *choice = IconChoice::None;
-    }
-    if !custom_pool.is_empty() {
+
+    if !d.custom_icons.is_empty() {
         ui.separator();
         ui.label("Database custom icons:");
         ui.horizontal_wrapped(|ui| {
-            for (id, bytes) in custom_pool {
+            for (id, bytes) in &d.custom_icons {
                 if let Some(tex) = app.icon_cache.texture(&ctx, &format!("custom-{id}"), bytes) {
-                    let selected = matches!(choice, IconChoice::Custom(c) if *c == *id);
+                    let selected = matches!(d.icon, IconChoice::Custom(c) if c == *id);
                     let btn =
                         egui::Button::image((tex.id(), egui::Vec2::splat(18.0))).selected(selected);
                     if ui.add(btn).on_hover_text(format!("Custom icon {id}")).clicked() {
-                        *choice = IconChoice::Custom(*id);
+                        d.icon = IconChoice::Custom(*id);
                     }
                 }
             }
@@ -285,11 +353,11 @@ fn icon_picker(
     }
     ui.separator();
     let l = ui.label("Custom icon image path:");
-    let r = ui.add(egui::TextEdit::singleline(icon_path).hint_text("/path/to/icon.png"));
+    let r = ui.add(egui::TextEdit::singleline(&mut d.icon_path).hint_text("/path/to/icon.png"));
     r.labelled_by(l.id);
     if ui.button("Use image…").clicked() {
-        match std::fs::read(icon_path.trim()) {
-            Ok(bytes) => *choice = IconChoice::NewCustom(bytes),
+        match std::fs::read(d.icon_path.trim()) {
+            Ok(bytes) => d.icon = IconChoice::NewCustom(bytes),
             Err(e) => app.status = format!("unable to read icon file: {e}"),
         }
     }
@@ -298,7 +366,7 @@ fn icon_picker(
             .add_filter("Image", &["png", "jpg", "jpeg"])
             .pick_file()
         {
-            *icon_path = p.display().to_string();
+            d.icon_path = p.display().to_string();
         }
     }
 }
@@ -324,7 +392,23 @@ fn form_row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui
 }
 
 /// Apply an icon choice to an entry (works for both new and existing entries).
+///
+/// The KDBX `IconID` is left exactly as it was unless the user actually chose
+/// a different icon: editing a title must never rewrite or reset the icon.
 fn apply_entry_icon(entry: &mut keepass::db::EntryMut<'_>, choice: &IconChoice) {
+    let unchanged = match (entry.icon(), choice) {
+        (Some(keepass::db::Icon::BuiltIn(current)), IconChoice::Standard(chosen)) => {
+            *current == *chosen
+        }
+        (Some(keepass::db::Icon::Custom(current)), IconChoice::Custom(chosen)) => {
+            *current == *chosen
+        }
+        (None, IconChoice::None) => true,
+        _ => false,
+    };
+    if unchanged {
+        return;
+    }
     match choice {
         IconChoice::None => entry.set_icon_none(),
         IconChoice::Standard(n) => entry.set_icon_builtin(*n),
@@ -333,6 +417,35 @@ fn apply_entry_icon(entry: &mut keepass::db::EntryMut<'_>, choice: &IconChoice) 
         }
         IconChoice::NewCustom(bytes) => {
             entry.set_icon_custom_new(bytes.clone());
+        }
+    }
+}
+
+/// Store (or clear) the optional `friendlypass.symbol` on an entry.
+fn apply_entry_symbol(
+    custom_data: &mut std::collections::HashMap<String, keepass::db::CustomDataItem>,
+    symbol: Option<&str>,
+) {
+    use keepass::db::{CustomDataItem, CustomDataValue};
+    let key = crate::icons::SYMBOL_CUSTOM_DATA_KEY;
+    match symbol.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(symbol) => {
+            let unchanged = matches!(
+                custom_data.get(key).and_then(|item| item.value.as_ref()),
+                Some(CustomDataValue::String(current)) if current == symbol
+            );
+            if !unchanged {
+                custom_data.insert(
+                    key.to_owned(),
+                    CustomDataItem {
+                        value: Some(CustomDataValue::String(symbol.to_owned())),
+                        last_modification_time: Some(chrono::Utc::now().naive_utc()),
+                    },
+                );
+            }
+        }
+        None => {
+            custom_data.remove(key);
         }
     }
 }
@@ -373,8 +486,10 @@ pub struct EntryEdit {
     pub at_default_sequence: String,
     pub at_obfuscate: bool,
     pub at_associations: Vec<AssociationRow>,
-    /// Icon selection.
+    /// Icon selection (custom icons); standard icon IDs are preserved as-is.
     pub icon: IconChoice,
+    /// Optional single-glyph avatar symbol (`friendlypass.symbol`).
+    pub symbol: Option<String>,
     pub icon_path: String,
     /// Custom icon pool snapshot (for the picker strip).
     pub custom_icons: Vec<(CustomIconId, Vec<u8>)>,
@@ -415,7 +530,8 @@ impl EntryEdit {
             at_default_sequence: String::new(),
             at_obfuscate: false,
             at_associations: Vec::new(),
-            icon: IconChoice::Standard(crate::icons::DEFAULT_ENTRY_ICON),
+            icon: IconChoice::Standard(0),
+            symbol: None,
             icon_path: String::new(),
             custom_icons,
             ref_targets,
@@ -490,6 +606,7 @@ impl EntryEdit {
                 })
                 .unwrap_or_default(),
             icon,
+            symbol: crate::icons::entry_symbol(entry),
             icon_path: String::new(),
             custom_icons,
             ref_targets,
@@ -566,10 +683,12 @@ impl EntryEdit {
             Some(id) => {
                 // Tracked edit of fields (records a history item on drop)…
                 if let Some(mut entry) = db.entry_mut(id) {
+                    let symbol = self.symbol.clone();
                     entry.track_changes().edit(|e| {
                         e.fields = new_fields;
                         e.autotype = Some(autotype);
                         e.tags = tags;
+                        apply_entry_symbol(&mut e.custom_data, symbol.as_deref());
                     });
                 }
                 // …then the icon (history already captured the old icon).
@@ -589,6 +708,7 @@ impl EntryEdit {
                         e.tags = tags;
                     }
                     apply_entry_icon(&mut entry, &self.icon);
+                    apply_entry_symbol(&mut entry.custom_data, self.symbol.as_deref());
                     let id = entry.id();
                     app.dirty = true;
                     app.status = format!("Added entry '{}'", self.title);
@@ -834,7 +954,7 @@ pub fn entry_edit_body(ui: &mut egui::Ui, app: &mut App, d: &mut EntryEdit) {
                     // --- icon picker ---------------------------------------------
                     crate::theme::disclosure(ui, "edit-icon", "Icon", &mut d.show_icon);
                     if d.show_icon {
-                        icon_picker(ui, app, &mut d.icon, &d.custom_icons, &mut d.icon_path);
+                        icon_picker(ui, app, d);
                     }
 
 }

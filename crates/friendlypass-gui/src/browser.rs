@@ -72,7 +72,7 @@ fn flatten_groups(db: &Database) -> Vec<GroupRow> {
                     depth,
                     name: c.name.clone(),
                     entries: c.entries().count(),
-                    icon: crate::icons::icon_spec(db, c.icon(), crate::icons::DEFAULT_GROUP_ICON),
+                    icon: crate::icons::group_icon_spec(db, c.id()),
                 })
                 .collect();
             children.sort_by(|a, b| a.name.cmp(&b.name));
@@ -155,7 +155,13 @@ fn entry_row(db: &Database, id: EntryId, with_group: bool) -> EntryRow {
     EntryRow {
         id,
         group,
-        icon: crate::icons::entry_icon_spec(db, entry.icon(), &resolved_url),
+        icon: crate::icons::entry_icon_spec(
+            db,
+            &entry,
+            entry.get(fields::TITLE).unwrap_or_default(),
+            entry.get(fields::USERNAME).unwrap_or_default(),
+            &resolved_url,
+        ),
         title: entry.get(fields::TITLE).unwrap_or_default().to_owned(),
         username: entry.get(fields::USERNAME).unwrap_or_default().to_owned(),
         password: entry.get(fields::PASSWORD).unwrap_or_default().to_owned(),
@@ -325,10 +331,8 @@ pub fn group_tree(ui: &mut egui::Ui, app: &mut App) {
     let root_icon = app
         .db
         .as_ref()
-        .map(|db| {
-            crate::icons::icon_spec(db, db.root().icon(), crate::icons::DEFAULT_GROUP_ICON)
-        })
-        .unwrap_or(crate::icons::IconSpec::Standard(crate::icons::DEFAULT_GROUP_ICON));
+        .map(|db| crate::icons::group_icon_spec(db, db.root().id()))
+        .unwrap_or(crate::icons::IconSpec::Folder);
 
     // Library header: icon + database name.
     ui.horizontal(|ui| {
@@ -1665,7 +1669,13 @@ pub fn entry_details(ui: &mut egui::Ui, app: &mut App, selected: Option<EntryId>
             icon: {
                 let resolved_url =
                     crate::refs::resolve_references(db, e.get(fields::URL).unwrap_or_default());
-                crate::icons::entry_icon_spec(db, e.icon(), &resolved_url)
+                crate::icons::entry_icon_spec(
+                    db,
+                    &e,
+                    &crate::refs::resolve_references(db, e.get(fields::TITLE).unwrap_or_default()),
+                    &crate::refs::resolve_references(db, e.get(fields::USERNAME).unwrap_or_default()),
+                    &resolved_url,
+                )
             },
             last_modified: e.times.last_modification,
             attributes: sorted_attributes(e
