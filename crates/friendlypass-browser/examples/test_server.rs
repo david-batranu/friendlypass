@@ -19,6 +19,11 @@
 //! associated without re-approval.
 //!
 //! Diagnostics (never credentials) go to stderr and the optional JSONL log.
+//!
+//! `FP_TEST_APPROVAL_DELAY_MS` (default 0) makes `associate` wait that long
+//! before the auto-approval returns, so integration tests can verify the host
+//! keeps its connection (and the app keeps answering `ping`) while an approval
+//! is pending. It is a test hook only; production bridges never read it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
