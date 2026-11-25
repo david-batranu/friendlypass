@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">friendlypass test app</string>
+    <string name="web_login_title">friendlypass web login</string>
+    <string name="login_heading">Sign in</string>
+    <string name="login_explainer">A native login form used to exercise friendlypass autofill.</string>
+    <string name="username_hint">Username or email</string>
+    <string name="password_hint">Password</string>
+    <string name="sign_in">Sign in</string>
+    <string name="open_web_login">Open web login</string>
+</resources>

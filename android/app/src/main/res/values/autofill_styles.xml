@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Full-screen unlock screen hosted by the autofill auth activity. -->
+    <style name="AutofillScreen" parent="@style/Theme.Friendlypass">
+        <item name="android:windowSoftInputMode">adjustResize</item>
+    </style>
+
+    <!-- Translucent sheet/search surface used by the picker and save activities. -->
+    <style name="AutofillDialog" parent="@style/Theme.Friendlypass">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.45</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowSoftInputMode">adjustResize</item>
+    </style>
+</resources>
