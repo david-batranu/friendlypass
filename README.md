@@ -132,6 +132,9 @@ verify.sh             end-to-end Rust <=> KeePassXC cross-verification
 ../keepassxc/         the original C++ (reference clone)
 ```
 
+Working on the code? See [`AGENTS.md`](AGENTS.md) for the crate map, test
+commands and known gotchas.
+
 ## Fixture passwords
 
 | file                 | password        | created by                    |
