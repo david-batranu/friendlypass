@@ -180,6 +180,9 @@ pub struct App {
     pub copied_fields: std::collections::HashMap<String, std::time::Instant>,
     /// Transient toast notifications shown bottom-right.
     pub toasts: Vec<Toast>,
+    /// Non-blocking browser connection notice ("Chrome connected to
+    /// friendlypass") with a Revoke action, shown until dismissed.
+    pub browser_notice: Option<crate::browser_bridge::BrowserNotice>,
     pub dialog: Dialog,
     /// Lazily-uploaded icon textures (standard + custom icons).
     pub icon_cache: IconCache,
@@ -268,6 +271,7 @@ impl Default for App {
             status: String::new(),
             copied_fields: std::collections::HashMap::new(),
             toasts: Vec::new(),
+            browser_notice: None,
             dialog: Dialog::None,
             icon_cache: IconCache::default(),
             ssh_handle: None,
@@ -868,6 +872,69 @@ impl App {
             });
         self.toasts = toasts;
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
+    }
+
+    /// Draw the non-blocking browser-connection notice (top center) and apply
+    /// its Revoke action. Unlike toasts it stays until the user acts: it is
+    /// the only place that undoes an automatic approval.
+    fn render_browser_notice(&mut self, ctx: &egui::Context) {
+        let Some(notice) = self.browser_notice.clone() else {
+            return;
+        };
+        let mut revoke = false;
+        let mut dismiss = false;
+        egui::Area::new(egui::Id::new("friendlypass-browser-notice"))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 64.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(crate::theme::p().panel)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::p().border))
+                    .corner_radius(10)
+                    .inner_margin(egui::Margin::symmetric(14, 8))
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 2],
+                        blur: 12,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(60),
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} connected to friendlypass",
+                                    notice.browser
+                                ))
+                                .size(13.5)
+                                .color(crate::theme::p().text),
+                            );
+                            if ui.small_button("Revoke").clicked() {
+                                revoke = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("\u{00d7}")
+                                            .size(14.0)
+                                            .color(crate::theme::p().muted),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Dismiss")
+                                .clicked()
+                            {
+                                dismiss = true;
+                            }
+                        });
+                    });
+            });
+        if revoke {
+            crate::browser_bridge::revoke_association(self, &notice.association_id);
+            self.status = format!("{} disconnected", notice.browser);
+            self.browser_notice = None;
+        } else if dismiss {
+            self.browser_notice = None;
+        }
     }
 
     /// Copy a field of the selected entry (keyboard shortcuts).
@@ -2564,5 +2631,7 @@ impl App {
 
         // Transient copy-confirmation toasts (bottom-right overlay).
         self.render_toasts(&ctx);
+        // Automatic browser approvals are announced without blocking.
+        self.render_browser_notice(&ctx);
     }
 }

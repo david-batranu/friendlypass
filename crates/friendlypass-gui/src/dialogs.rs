@@ -1796,6 +1796,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         "Writes a small manifest in each selected browser's own \
                          native-messaging folder. Other hosts' manifests are never touched.",
                     );
+                    if ui
+                        .checkbox(
+                            &mut app.prefs.require_approval_for_new_browsers,
+                            "Require approval for new browsers",
+                        )
+                        .on_hover_text(
+                            "Ask before a browser connects. Off (the default), a browser \
+                             launched through the friendlypass host is approved automatically \
+                             and a non-blocking notice offers to revoke it.",
+                        )
+                        .changed()
+                    {
+                        prefs_changed = true;
+                    }
                     let browsers_enabled = app.prefs.browser_integration;
                     ui.horizontal_wrapped(|ui| {
                         for browser in friendlypass_browser::native_messaging::Browser::ALL {
@@ -1876,26 +1890,29 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         ui.separator();
                     }
 
-                    let associations = crate::browser_bridge::association_names(app);
+                    let associations = crate::browser_bridge::association_rows(app);
                     if app.browser_handle.is_some() {
                         ui.label(format!(
                             "Serving on: {}",
                             friendlypass_browser::browser_server_path().display()
                         ));
+                    }
+                    if app.browser_state.is_some() {
                         ui.weak(format!(
                             "{} associated browser client(s)",
                             associations.len()
                         ));
                         if !associations.is_empty() {
                             ui.add_space(4.0);
-                            for id in &associations {
+                            for row in &associations {
                                 ui.horizontal(|ui| {
-                                    ui.label(id);
+                                    ui.label(&row.id);
+                                    ui.weak(format!("{} \u{00b7} {}", row.browser, row.how));
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             if ui.small_button("Remove").clicked() {
-                                                revoke = Some(id.clone());
+                                                revoke = Some(row.id.clone());
                                             }
                                         },
                                     );
@@ -1903,8 +1920,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             }
                         }
                         ui.add_space(6.0);
-                        if ui.button("Stop serving").clicked() {
-                            stop_clicked = true;
+                        if app.browser_handle.is_some() {
+                            if ui.button("Stop serving").clicked() {
+                                stop_clicked = true;
+                            }
+                        } else if ui.button("Start serving").clicked() {
+                            start_clicked = true;
                         }
                     } else {
                         ui.label("Browser integration is not running.");

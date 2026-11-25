@@ -15,6 +15,7 @@
 //! The server is started automatically once a database is unlocked. It keeps
 //! answering `ping`/`hello` and returns error 1 while the database is locked.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -22,10 +23,11 @@ use eframe::egui;
 use keepass::db::{CustomDataItem, CustomDataValue};
 
 use friendlypass_browser::bridge::{AssociationRequest, BrowserBridge, SetLoginRequest};
+use friendlypass_browser::protocol::BrowserIdentity;
 use friendlypass_browser::service::lock_state;
 use friendlypass_browser::{
     associations_from_database, browser_server_path, database_hash, snapshot_from_database,
-    snapshot_signature, ServiceState, SharedState,
+    snapshot_signature, ServerConfig, ServiceState, SharedState,
 };
 
 use crate::app::App;
@@ -57,17 +59,33 @@ struct BridgeState {
     lock_requested: bool,
 }
 
+/// A non-blocking "Chrome connected to friendlypass" notice with a Revoke
+/// action (contract §5). Shown by the main window, not by a dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserNotice {
+    /// Display name of the browser, e.g. `"Chrome"`.
+    pub browser: String,
+    /// The association the automatic approval created.
+    pub association_id: String,
+}
+
 /// The concrete [`BrowserBridge`] used by the GUI.
 pub struct GuiBrowserBridge {
     state: Mutex<BridgeState>,
     cv: Condvar,
+    /// "Require approval for new browsers"; mirrors the preference so the
+    /// connection thread can decide without touching the GUI.
+    require_approval: AtomicBool,
+    notices: Mutex<Vec<BrowserNotice>>,
 }
 
 impl GuiBrowserBridge {
-    fn new() -> GuiBrowserBridge {
+    fn new(require_approval: bool) -> GuiBrowserBridge {
         GuiBrowserBridge {
             state: Mutex::new(BridgeState::default()),
             cv: Condvar::new(),
+            require_approval: AtomicBool::new(require_approval),
+            notices: Mutex::new(Vec::new()),
         }
     }
 
@@ -78,6 +96,21 @@ impl GuiBrowserBridge {
     fn has_work(&self) -> bool {
         let state = self.lock();
         state.approval.is_some() || state.login.is_some() || state.unlock_requested || state.lock_requested
+    }
+
+    /// Follow the "Require approval for new browsers" preference.
+    pub fn set_require_approval(&self, require: bool) {
+        self.require_approval.store(require, Ordering::Relaxed);
+    }
+
+    /// Completed automatic approvals the main window has not shown yet.
+    pub fn take_notices(&self) -> Vec<BrowserNotice> {
+        std::mem::take(
+            &mut *self
+                .notices
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     /// The association currently waiting for the user, if any.
@@ -126,6 +159,29 @@ impl GuiBrowserBridge {
 
 impl BrowserBridge for GuiBrowserBridge {
     fn approve_association(&self, request: &AssociationRequest) -> Option<String> {
+        // Contract §5: a trusted peer with a host-verified browser is approved
+        // immediately unless the user asked for a prompt.
+        if let Some(name) = friendlypass_browser::bridge::auto_approve_name(
+            request,
+            self.require_approval.load(Ordering::Relaxed),
+        ) {
+            let browser = request
+                .browser
+                .as_ref()
+                .map(BrowserIdentity::display_name)
+                .unwrap_or("Browser")
+                .to_owned();
+            self.notices
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(BrowserNotice {
+                    browser,
+                    association_id: name.clone(),
+                });
+            self.cv.notify_all();
+            return Some(name);
+        }
+
         {
             let mut state = self.lock();
             if state.approval.is_some() {
@@ -231,10 +287,14 @@ fn start_inner(app: &mut App, announce: bool) {
     if app.browser_handle.is_some() {
         return;
     }
+    let require_approval = app.prefs.require_approval_for_new_browsers;
     let bridge = app
         .browser_bridge
-        .get_or_insert_with(|| Arc::new(GuiBrowserBridge::new()))
+        .get_or_insert_with(|| Arc::new(GuiBrowserBridge::new(require_approval)))
         .clone();
+    // Contract §3: the only socket peer that may be auto-approved is our own
+    // native host binary.
+    let trusted_host_path = native_host_path(app);
     let mut state = match app.db.as_ref() {
         Some(db) => snapshot_from_database(db),
         None => ServiceState {
@@ -246,7 +306,8 @@ fn start_inner(app: &mut App, announce: bool) {
     state.set_bridge(bridge);
     let state: SharedState = Arc::new(Mutex::new(state));
     let path = browser_server_path();
-    match friendlypass_browser::start(&path, state.clone()) {
+    let config = ServerConfig { trusted_host_path };
+    match friendlypass_browser::start_with_config(&path, config, state.clone()) {
         Ok(handle) => {
             app.browser_handle = Some(handle);
             app.browser_state = Some(state);
@@ -466,6 +527,11 @@ pub fn pump(app: &mut App, ctx: &egui::Context) {
     let Some(bridge) = app.browser_bridge.clone() else {
         return;
     };
+    bridge.set_require_approval(app.prefs.require_approval_for_new_browsers);
+    // Automatic approvals completed on a connection thread become notices.
+    for notice in bridge.take_notices() {
+        app.browser_notice = Some(notice);
+    }
 
     // Interactive requests first: the server thread is waiting for them.
     if bridge.pending_approval().is_some() {
@@ -706,12 +772,58 @@ fn sanitise_association_id(id: &str) -> String {
 
 /// Current association names, sorted for display.
 pub fn association_names(app: &App) -> Vec<String> {
+    association_rows(app).into_iter().map(|row| row.id).collect()
+}
+
+/// One line of the Browser Integration dialog's association list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssociationRow {
+    pub id: String,
+    /// Browser kind ("Chrome", "Firefox", …) or "Unknown browser".
+    pub browser: String,
+    /// `"verified"` for automatic/verified approvals, otherwise
+    /// `"approved manually"` (contract §5).
+    pub how: &'static str,
+}
+
+/// The association list with its browser kind and approval provenance.
+pub fn association_rows(app: &App) -> Vec<AssociationRow> {
     let Some(state) = app.browser_state.as_ref() else {
         return Vec::new();
     };
-    let mut names: Vec<String> = lock_state(state).associations.keys().cloned().collect();
-    names.sort();
-    names
+    let state = lock_state(state);
+    let mut rows: Vec<AssociationRow> = state
+        .associations
+        .keys()
+        .map(|id| match state.associations_info.get(id) {
+            Some(info) => AssociationRow {
+                id: id.clone(),
+                browser: info.browser.clone(),
+                how: if info.verified && info.auto_approved {
+                    "verified"
+                } else {
+                    "approved manually"
+                },
+            },
+            None => {
+                // Associations loaded from database metadata only carry their
+                // name; the automatic `"<Browser> · <4 hex>"` shape still
+                // tells us the browser and that it was verified.
+                let browser = friendlypass_browser::bridge::automatic_association_browser(id);
+                AssociationRow {
+                    id: id.clone(),
+                    browser: browser.unwrap_or("Unknown browser").to_owned(),
+                    how: if browser.is_some() {
+                        "verified"
+                    } else {
+                        "approved manually"
+                    },
+                }
+            }
+        })
+        .collect();
+    rows.sort_by(|left, right| left.id.cmp(&right.id));
+    rows
 }
 
 /// Revoke one association; the change is persisted on the next pump.
@@ -723,6 +835,7 @@ pub fn revoke_association(app: &App, id: &str) {
     if state.associations.remove(id).is_some() {
         state.associations_changed = true;
     }
+    state.associations_info.remove(id);
 }
 
 /// The pending approval, if the Browser dialog should render the prompt.
@@ -757,13 +870,14 @@ mod tests {
 
     #[test]
     fn association_approval_round_trip() {
-        let bridge = Arc::new(GuiBrowserBridge::new());
+        let bridge = Arc::new(GuiBrowserBridge::new(false));
         let worker = {
             let bridge = Arc::clone(&bridge);
             std::thread::spawn(move || {
                 bridge.approve_association(&AssociationRequest {
                     client_id: "client".into(),
                     suggested_id: "chrome-browser".into(),
+                    ..Default::default()
                 })
             })
         };
@@ -783,13 +897,14 @@ mod tests {
 
     #[test]
     fn association_denial_returns_none() {
-        let bridge = Arc::new(GuiBrowserBridge::new());
+        let bridge = Arc::new(GuiBrowserBridge::new(false));
         let worker = {
             let bridge = Arc::clone(&bridge);
             std::thread::spawn(move || {
                 bridge.approve_association(&AssociationRequest {
                     client_id: "client".into(),
                     suggested_id: "chrome-browser".into(),
+                    ..Default::default()
                 })
             })
         };
@@ -803,6 +918,118 @@ mod tests {
         assert_eq!(worker.join().unwrap(), None);
     }
 
+    fn trusted_chrome_request() -> AssociationRequest {
+        AssociationRequest {
+            client_id: "Y2xpZW50".into(),
+            suggested_id: "chrome-browser".into(),
+            browser: Some(BrowserIdentity {
+                kind: "chrome".into(),
+                verified: true,
+                ..Default::default()
+            }),
+            auto_approvable: true,
+        }
+    }
+
+    #[test]
+    fn auto_approve_skips_the_dialog_and_queues_a_notice() {
+        let bridge = GuiBrowserBridge::new(false);
+        let name = bridge
+            .approve_association(&trusted_chrome_request())
+            .expect("approved");
+        assert!(name.starts_with("Chrome · "), "{name}");
+        assert_eq!(name.split(" · ").nth(1).map(str::len), Some(4));
+        assert!(
+            bridge.pending_approval().is_none(),
+            "no dialog is opened for an automatic approval"
+        );
+        let notices = bridge.take_notices();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].browser, "Chrome");
+        assert_eq!(notices[0].association_id, name);
+        assert!(bridge.take_notices().is_empty(), "notices are delivered once");
+    }
+
+    #[test]
+    fn require_approval_setting_opens_the_dialog() {
+        let bridge = Arc::new(GuiBrowserBridge::new(true));
+        let worker = {
+            let bridge = Arc::clone(&bridge);
+            std::thread::spawn(move || bridge.approve_association(&trusted_chrome_request()))
+        };
+        for _ in 0..100 {
+            if bridge.pending_approval().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            bridge.pending_approval().is_some(),
+            "the setting forces the existing approval dialog"
+        );
+        assert!(bridge.take_notices().is_empty());
+        bridge.answer_approval(Some("chrome-work".into()));
+        assert_eq!(worker.join().unwrap().as_deref(), Some("chrome-work"));
+    }
+
+    #[test]
+    fn untrusted_requests_always_take_the_dialog() {
+        let bridge = Arc::new(GuiBrowserBridge::new(false));
+        let mut request = trusted_chrome_request();
+        request.auto_approvable = false;
+        let worker = {
+            let bridge = Arc::clone(&bridge);
+            std::thread::spawn(move || bridge.approve_association(&request))
+        };
+        for _ in 0..100 {
+            if bridge.pending_approval().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(bridge.pending_approval().is_some());
+        bridge.answer_approval(None);
+        assert_eq!(worker.join().unwrap(), None);
+    }
+
+    #[test]
+    fn association_rows_label_browser_and_provenance() {
+        let mut state = ServiceState {
+            associations: [
+                ("Chrome · 3f9a".to_owned(), "key-a".to_owned()),
+                ("chrome-work-laptop".to_owned(), "key-b".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        state.associations_info.insert(
+            "chrome-work-laptop".to_owned(),
+            friendlypass_browser::AssociationInfo {
+                browser: "Chrome".into(),
+                verified: true,
+                auto_approved: false,
+            },
+        );
+        let mut app = App::default();
+        app.browser_state = Some(Arc::new(Mutex::new(state)));
+        let rows = association_rows(&app);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "Chrome · 3f9a");
+        assert_eq!(rows[0].browser, "Chrome");
+        assert_eq!(rows[0].how, "verified", "automatic names are recognised");
+        assert_eq!(rows[1].browser, "Chrome");
+        assert_eq!(rows[1].how, "approved manually");
+        assert_eq!(
+            friendlypass_browser::bridge::automatic_association_browser("Brave · 0a1B"),
+            Some("Brave")
+        );
+        assert_eq!(
+            friendlypass_browser::bridge::automatic_association_browser("chrome-work"),
+            None
+        );
+    }
+
     #[test]
     fn association_names_are_sanitised() {
         assert_eq!(sanitise_association_id("  work\nlaptop  "), "worklaptop");
@@ -811,7 +1038,7 @@ mod tests {
 
     #[test]
     fn set_login_bridge_round_trip() {
-        let bridge = Arc::new(GuiBrowserBridge::new());
+        let bridge = Arc::new(GuiBrowserBridge::new(false));
         let worker = {
             let bridge = Arc::clone(&bridge);
             std::thread::spawn(move || {

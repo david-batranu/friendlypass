@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use friendlypass_browser::service::lock_state;
-use friendlypass_browser::{snapshot_from_database, start, FileBridge};
+use friendlypass_browser::{snapshot_from_database, FileBridge};
 use keepass::{Database, DatabaseKey};
 
 const DEFAULT_DB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/sample4.kdbx");
@@ -101,7 +101,16 @@ fn main() -> anyhow::Result<()> {
     let state = Arc::new(Mutex::new(state));
 
     let socket = friendlypass_browser::browser_server_path();
-    let handle = start(&socket, Arc::clone(&state))?;
+    // Contract §3: the harness may point the server at the native host binary
+    // whose socket peer may be auto-approved. Unset = never trust a peer.
+    let trusted_host_path = std::env::var_os("FP_TRUSTED_HOST_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let handle = friendlypass_browser::start_with_config(
+        &socket,
+        friendlypass_browser::ServerConfig { trusted_host_path },
+        Arc::clone(&state),
+    )?;
     log(
         "listening",
         &format!("\"socket\":{}", json_string(&socket.display().to_string())),

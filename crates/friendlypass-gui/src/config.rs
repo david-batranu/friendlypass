@@ -110,6 +110,9 @@ pub struct Preferences {
     pub auto_lock_minutes: u32,
     /// Register the native-messaging host with the browsers below.
     pub browser_integration: bool,
+    /// Always show the approval dialog for a new browser association, even
+    /// when the peer/host/browser trust chain verified (§5). Off by default.
+    pub require_approval_for_new_browsers: bool,
     /// Per-browser native-messaging manifests (Chrome-family + Firefox).
     pub browser_chrome: bool,
     pub browser_chromium: bool,
@@ -141,6 +144,7 @@ impl Default for Preferences {
             // Off by default, like KeePassXC: nothing is written into the
             // browser configuration until the user opts in.
             browser_integration: false,
+            require_approval_for_new_browsers: false,
             browser_chrome: true,
             browser_chromium: true,
             browser_brave: true,

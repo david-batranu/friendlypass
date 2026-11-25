@@ -9,6 +9,8 @@
 
 use serde_json::{json, Map, Value};
 
+use std::path::PathBuf;
+
 /// The feature-gating protocol version reported inside every encrypted
 /// response. friendlypass's real version is exposed through `hello.appVersion`.
 pub const PROTOCOL_ACTION_VERSION: &str = "2.8.0";
@@ -31,6 +33,8 @@ pub const ACTION_LOCK_DATABASE: &str = "lock-database";
 /// friendlypass host-level actions / pushes.
 pub const ACTION_PING: &str = "ping";
 pub const ACTION_HELLO: &str = "hello";
+/// Host → app identity frame sent as the first frame of every connection (§2).
+pub const ACTION_HOST_IDENTIFY: &str = "host-identify";
 pub const ACTION_DATABASE_LOCKED: &str = "database-locked";
 pub const ACTION_DATABASE_UNLOCKED: &str = "database-unlocked";
 pub const ACTION_DATABASE_CHANGED: &str = "database-changed";
@@ -178,6 +182,86 @@ pub fn has_reference(value: &str) -> bool {
     value.to_ascii_uppercase().contains("{REF:")
 }
 
+/// The browser identity reported by the native host in `host-identify` (§2).
+///
+/// The app only ever stores one of these when the socket peer is trusted; an
+/// untrusted peer's claims are ignored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BrowserIdentity {
+    /// `chrome` | `chromium` | `brave` | `edge` | `firefox` | `unknown`.
+    pub kind: String,
+    /// The host verified the browser's code signature.
+    pub verified: bool,
+    /// Browser executable, when the host could resolve it.
+    pub executable: Option<PathBuf>,
+    /// macOS team id; `None` on Linux, unsigned builds or Firefox ESR cases.
+    pub team_id: Option<String>,
+}
+
+impl BrowserIdentity {
+    /// The human-readable name used in association names and notices.
+    pub fn display_name(&self) -> &'static str {
+        Self::display_name_for_kind(&self.kind).unwrap_or("Browser")
+    }
+
+    /// Whether a display name is one of the known browser kinds (used to
+    /// recognise auto-approved association names after a restart).
+    pub fn display_name_for_kind(kind: &str) -> Option<&'static str> {
+        match kind.to_ascii_lowercase().as_str() {
+            "chrome" => Some("Chrome"),
+            "chromium" => Some("Chromium"),
+            "brave" => Some("Brave"),
+            "edge" => Some("Edge"),
+            "firefox" => Some("Firefox"),
+            _ => None,
+        }
+    }
+}
+
+/// Parse the optional `browser` object of a `host-identify` frame. Unknown
+/// kinds and unknown fields are tolerated; a missing/invalid object is `None`.
+pub fn browser_identity(value: &Value) -> Option<BrowserIdentity> {
+    let browser = value.get("browser")?.as_object()?;
+    let kind = browser
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
+    let kind = if BrowserIdentity::display_name_for_kind(&kind).is_some() {
+        kind
+    } else {
+        "unknown".to_owned()
+    };
+    Some(BrowserIdentity {
+        kind,
+        verified: browser.get("verified").is_some_and(|flag| match flag {
+            Value::Bool(flag) => *flag,
+            Value::String(text) => text.eq_ignore_ascii_case("true"),
+            _ => false,
+        }),
+        executable: browser
+            .get("executable")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+        team_id: browser
+            .get("teamId")
+            .and_then(Value::as_str)
+            .filter(|team| !team.is_empty())
+            .map(str::to_owned),
+    })
+}
+
+/// The `host-identify` reply (§2): `success` is the string `"true"` and
+/// `trusted` reports this connection's peer verification (§3).
+pub fn host_identify_reply(trusted: bool) -> Value {
+    json!({
+        "action": ACTION_HOST_IDENTIFY,
+        "success": "true",
+        "trusted": trusted,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +288,43 @@ mod tests {
         );
         assert_eq!(normalize_uuid("not-a-uuid"), None);
         assert_eq!(normalize_uuid("bb710c2f876761bb90748cc271ff8fa"), None);
+    }
+
+    #[test]
+    fn host_identify_reply_reports_trust() {
+        let reply = host_identify_reply(false);
+        assert_eq!(reply["action"], "host-identify");
+        assert_eq!(reply["success"], "true");
+        assert_eq!(reply["trusted"], false);
+        assert_eq!(host_identify_reply(true)["trusted"], true);
+    }
+
+    #[test]
+    fn browser_identity_tolerates_unknown_fields_and_kinds() {
+        let identity = browser_identity(&json!({
+            "action": "host-identify",
+            "browser": {
+                "kind": "brave",
+                "verified": true,
+                "executable": "/usr/bin/brave",
+                "teamId": null,
+                "futureField": 42,
+            },
+            "unknownTopLevel": true,
+        }))
+        .expect("identity");
+        assert_eq!(identity.kind, "brave");
+        assert_eq!(identity.display_name(), "Brave");
+        assert!(identity.verified);
+        assert_eq!(identity.executable.as_deref(), Some(std::path::Path::new("/usr/bin/brave")));
+        assert_eq!(identity.team_id, None);
+
+        let unknown = browser_identity(&json!({"browser": {"kind": "opera"}})).expect("identity");
+        assert_eq!(unknown.kind, "unknown");
+        assert_eq!(unknown.display_name(), "Browser");
+        assert!(!unknown.verified);
+
+        assert_eq!(browser_identity(&json!({"action": "host-identify"})), None);
+        assert_eq!(browser_identity(&json!({"browser": "chrome"})), None);
     }
 }

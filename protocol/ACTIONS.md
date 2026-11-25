@@ -1135,6 +1135,67 @@ Reserved name for a future user-initiated "start friendlypass" action. Not in
 protocol 1. The host MUST NOT auto-launch the app without an explicit user
 gesture from the extension.
 
+### 5.8 `host-identify` — connection identity **[friendlypass]**
+
+Sent by the native host as the **first frame** on every new app-socket
+connection, before forwarding anything. It is host-level, unencrypted, and has
+no nonce. The official KeePassXC extension never sends or sees it.
+
+```json
+{
+  "action": "host-identify",
+  "hostVersion": "0.1.0",
+  "browser": {
+    "kind": "chrome",
+    "verified": true,
+    "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "teamId": "EQHXZ8M8AV"
+  }
+}
+```
+
+- `browser.kind` is one of `chrome`, `chromium`, `brave`, `edge`, `firefox`,
+  `unknown`.
+- `browser.verified` is the host's own code-signature verdict for the browser
+  process (contract §4). `teamId` is `null` on Linux, for unsigned builds and
+  when not applicable. Unknown fields are ignored.
+- The app answers:
+
+```json
+{ "action": "host-identify", "success": "true", "trusted": true }
+```
+
+`trusted` is the app's own verdict that the socket peer is our
+`friendlypass-browser-host` binary (macOS `LOCAL_PEERPID` + executable path +
+cdhash equality; Linux `SO_PEERCRED` + `/proc/<pid>/exe`). `success` is the
+string `"true"`.
+
+- The app MUST ignore `browser` claims unless `trusted` is true. A frame from
+  an untrusted peer is answered with `trusted: false` and its browser identity
+  is discarded.
+- An app that does not implement this action answers with a host error frame
+  (§3.6); the host MUST ignore that and carry on.
+
+### 5.9 Automatic association approval **[friendlypass]**
+
+`associate` is approved immediately, with no user dialog, iff **all** of:
+
+1. the socket peer is the trusted native host (§3),
+2. the most recent `host-identify` reported `browser.verified: true`, and
+3. the app setting **"Require approval for new browsers"** is off (the
+   default).
+
+The automatic name is `"<Browser> · <4 hex>"`, e.g. `Chrome · 3f9a`. The four
+hex digits are derived from the connection identity. The GUI then shows a
+non-blocking notice "Chrome connected to friendlypass" with a **Revoke**
+action; the notice never blocks the browser request.
+
+In every other case — untrusted peer, unverified/absent browser identity, or
+the setting on — the existing approval dialog runs and the association is
+labelled "approved manually". The KeePassXC-compatible path (official extension
+via `keepassxc-proxy`) is never auto-approved because its socket peer is not our
+host.
+
 ---
 
 ## 6. Extension connection state machine

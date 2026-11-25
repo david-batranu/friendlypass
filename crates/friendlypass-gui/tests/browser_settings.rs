@@ -317,3 +317,98 @@ fn startup_refresh_rewrites_a_stale_host_path() {
     // A refresh does not replace the status message of a normal startup.
     assert_eq!(app.status, "Opened vault");
 }
+
+/// The §5 setting: off by default, toggling it persists in the preferences.
+#[test]
+fn require_approval_checkbox_defaults_off_and_persists() {
+    let fixture = Fixture::new();
+    let home = fixture.home.clone();
+    let host = fixture.host.clone();
+    let mut app = friendlypass_gui::App::default();
+    app.browser_install_home = home;
+    app.browser_install_platform = Some(Platform::Linux);
+    app.browser_install_host = Some(host);
+    app.dialog = friendlypass_gui::dialogs::Dialog::Browser;
+
+    let mut harness = Harness::new_eframe(move |_cc| app);
+    harness.set_size(egui::Vec2::new(1150.0, 900.0));
+    harness.run();
+
+    let checkbox = harness.get_by_label("Require approval for new browsers");
+    assert_eq!(
+        checkbox.accesskit_node().toggled(),
+        Some(Toggled::False),
+        "automatic approval is the default"
+    );
+    assert!(!harness.state().prefs.require_approval_for_new_browsers);
+
+    checkbox.click();
+    harness.run();
+    assert!(
+        harness.state().prefs.require_approval_for_new_browsers,
+        "the checkbox drives the stored preference"
+    );
+    assert_eq!(
+        harness
+            .get_by_label("Require approval for new browsers")
+            .accesskit_node()
+            .toggled(),
+        Some(Toggled::True)
+    );
+
+    harness
+        .get_by_label("Require approval for new browsers")
+        .click();
+    harness.run();
+    assert!(!harness.state().prefs.require_approval_for_new_browsers);
+}
+
+/// The association list shows the browser kind and whether it was verified or
+/// approved manually, next to Remove (§5).
+#[test]
+fn association_list_shows_browser_and_provenance() {
+    use std::sync::{Arc, Mutex};
+
+    let fixture = Fixture::new();
+    let mut state = friendlypass_browser::ServiceState {
+        associations: [
+            ("Chrome \u{00b7} 3f9a".to_owned(), "key-a".to_owned()),
+            ("chrome-work-laptop".to_owned(), "key-b".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    state.associations_info.insert(
+        "chrome-work-laptop".to_owned(),
+        friendlypass_browser::AssociationInfo {
+            browser: "Chrome".into(),
+            verified: true,
+            auto_approved: false,
+        },
+    );
+
+    let home = fixture.home.clone();
+    let host = fixture.host.clone();
+    let mut app = friendlypass_gui::App::default();
+    app.browser_install_home = home;
+    app.browser_install_platform = Some(Platform::Linux);
+    app.browser_install_host = Some(host);
+    app.browser_state = Some(Arc::new(Mutex::new(state)));
+    app.dialog = friendlypass_gui::dialogs::Dialog::Browser;
+
+    let mut harness = Harness::new_eframe(move |_cc| app);
+    harness.set_size(egui::Vec2::new(1150.0, 900.0));
+    harness.run();
+
+    // Both association names, with their provenance labels.
+    harness.get_by_label("Chrome \u{00b7} 3f9a");
+    harness.get_by_label("chrome-work-laptop");
+    harness.get_by_label("Chrome \u{00b7} verified");
+    harness.get_by_label("Chrome \u{00b7} approved manually");
+    assert_eq!(
+        harness.get_all_by_label("Remove").count(),
+        2,
+        "one Remove action per association"
+    );
+}

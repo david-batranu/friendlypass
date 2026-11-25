@@ -182,10 +182,38 @@ fn approval_delay_from_env() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::BrowserIdentity;
 
     #[test]
     fn temp_path_keeps_the_file_in_the_same_directory() {
         let path = temp_path(Path::new("/tmp/example.kdbx"));
         assert_eq!(path, Path::new("/tmp/example.kdbx.friendlypass.tmp"));
+    }
+
+    /// Contract §5: existing bridges keep their behaviour; FileBridge still
+    /// approves under its one configured id even when the request could have
+    /// been auto-approved by the GUI.
+    #[test]
+    fn fixed_association_name_is_unchanged() {
+        let bridge = FileBridge::new(
+            "chrome-work-laptop",
+            Arc::new(Mutex::new(Database::new())),
+            DatabaseKey::new().with_password("test"),
+            "/tmp/does-not-need-to-exist.kdbx",
+        );
+        let request = AssociationRequest {
+            client_id: "client".into(),
+            suggested_id: "chrome-browser".into(),
+            browser: Some(BrowserIdentity {
+                kind: "chrome".into(),
+                verified: true,
+                ..Default::default()
+            }),
+            auto_approvable: true,
+        };
+        assert_eq!(
+            bridge.approve_association(&request).as_deref(),
+            Some("chrome-work-laptop")
+        );
     }
 }
