@@ -24,3 +24,4 @@ rootProject.name = "friendlypass-android"
 include(":app")
 include(":testapp")
 
+include(":credtest")
