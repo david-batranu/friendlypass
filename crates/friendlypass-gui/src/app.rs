@@ -180,6 +180,9 @@ pub struct App {
     pub copied_fields: std::collections::HashMap<String, std::time::Instant>,
     /// Transient toast notifications shown bottom-right.
     pub toasts: Vec<Toast>,
+    /// Non-blocking browser connection notice ("Chrome connected to
+    /// friendlypass") with a Revoke action, shown until dismissed.
+    pub browser_notice: Option<crate::browser_bridge::BrowserNotice>,
     pub dialog: Dialog,
     /// Lazily-uploaded icon textures (standard + custom icons).
     pub icon_cache: IconCache,
@@ -191,6 +194,16 @@ pub struct App {
     /// The running browser-protocol server (KeePassXC-Browser integration).
     pub browser_handle: Option<friendlypass_browser::ServerHandle>,
     pub browser_state: Option<friendlypass_browser::SharedState>,
+    /// The GUI bridge the browser server calls back into (approval, writes).
+    pub browser_bridge: Option<Arc<crate::browser_bridge::GuiBrowserBridge>>,
+    /// `$HOME` used when writing native-messaging manifests (tests point this
+    /// at a temporary directory).
+    pub browser_install_home: PathBuf,
+    /// Platform override for manifest paths; `None` detects at write time.
+    pub browser_install_platform: Option<friendlypass_browser::native_messaging::Platform>,
+    /// Host binary registered with the browsers; `None` resolves the sibling
+    /// of the running executable (the app bundle in a packaged build).
+    pub browser_install_host: Option<PathBuf>,
 
     // -- persisted preferences ------------------------------------------
     /// Column layout and the recent-databases list.
@@ -258,6 +271,7 @@ impl Default for App {
             status: String::new(),
             copied_fields: std::collections::HashMap::new(),
             toasts: Vec::new(),
+            browser_notice: None,
             dialog: Dialog::None,
             icon_cache: IconCache::default(),
             ssh_handle: None,
@@ -265,6 +279,12 @@ impl Default for App {
             ssh_socket: friendlypass_ssh_agent::default_socket_path().display().to_string(),
             browser_handle: None,
             browser_state: None,
+            browser_bridge: None,
+            browser_install_home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            browser_install_platform: None,
+            browser_install_host: None,
             prefs: Preferences::default(),
             config_path: None,
             reset_columns: false,
@@ -295,6 +315,12 @@ impl App {
             app.remember_unlock = true;
             app.try_auto_unlock();
         }
+        // Always listen for the browser extension, even on the unlock screen:
+        // a locked app answers error 1 (rather than looking "not running").
+        // Re-register the native host first: if the app moved or was updated,
+        // the manifests still point at the previous location.
+        crate::browser_bridge::refresh_native_messaging(&mut app);
+        crate::browser_bridge::start_background(&mut app);
         app
     }
 
@@ -383,6 +409,7 @@ impl App {
                 self.remember_unlock = true;
                 self.last_activity = std::time::Instant::now();
                 self.status = format!("Unlocked {path} automatically");
+                crate::browser_bridge::start_background(self);
                 true
             }
             Err(e) => {
@@ -515,6 +542,7 @@ impl App {
                 self.record_recent_database(&opened);
                 self.update_saved_secret(&opened);
                 self.password.clear();
+                crate::browser_bridge::start_background(self);
             }
             Err(e) => {
                 self.unlock_error = e.message().to_owned();
@@ -844,6 +872,69 @@ impl App {
             });
         self.toasts = toasts;
         ctx.request_repaint_after(std::time::Duration::from_millis(80));
+    }
+
+    /// Draw the non-blocking browser-connection notice (top center) and apply
+    /// its Revoke action. Unlike toasts it stays until the user acts: it is
+    /// the only place that undoes an automatic approval.
+    fn render_browser_notice(&mut self, ctx: &egui::Context) {
+        let Some(notice) = self.browser_notice.clone() else {
+            return;
+        };
+        let mut revoke = false;
+        let mut dismiss = false;
+        egui::Area::new(egui::Id::new("friendlypass-browser-notice"))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 64.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(crate::theme::p().panel)
+                    .stroke(egui::Stroke::new(1.0, crate::theme::p().border))
+                    .corner_radius(10)
+                    .inner_margin(egui::Margin::symmetric(14, 8))
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 2],
+                        blur: 12,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(60),
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} connected to friendlypass",
+                                    notice.browser
+                                ))
+                                .size(13.5)
+                                .color(crate::theme::p().text),
+                            );
+                            if ui.small_button("Revoke").clicked() {
+                                revoke = true;
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("\u{00d7}")
+                                            .size(14.0)
+                                            .color(crate::theme::p().muted),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Dismiss")
+                                .clicked()
+                            {
+                                dismiss = true;
+                            }
+                        });
+                    });
+            });
+        if revoke {
+            crate::browser_bridge::revoke_association(self, &notice.association_id);
+            self.status = format!("{} disconnected", notice.browser);
+            self.browser_notice = None;
+        } else if dismiss {
+            self.browser_notice = None;
+        }
     }
 
     /// Copy a field of the selected entry (keyboard shortcuts).
@@ -1774,6 +1865,10 @@ impl eframe::App for App {
         crate::theme::setup(&ctx, self.prefs.theme);
         let now = std::time::Instant::now();
 
+        // Browser-integration bridge: approvals, set-login writes, pushes and
+        // the served snapshot all run on the GUI thread.
+        crate::browser_bridge::pump(self, &ctx);
+
         // Clipboard auto-clear runs on every screen, so a copied password is
         // removed even after the database was locked.
         self.tick_clipboard(now);
@@ -1926,22 +2021,16 @@ impl App {
                 .show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(44.0);
-                let key_icon =
-                    crate::icons::IconSpec::Standard(crate::icons::DEFAULT_ENTRY_ICON);
-                egui::Frame::new()
-                    .fill(pal.panel)
-                    .corner_radius(16)
-                    .inner_margin(egui::Margin::same(10))
-                    .stroke(egui::Stroke::new(1.0, pal.border))
-                    .show(ui, |ui| {
-                        ui.set_width(44.0);
-                        crate::icons::draw_icon_sized(
-                            ui,
-                            &mut self.icon_cache,
-                            Some(&key_icon),
-                            42.0,
-                        );
-                    });
+                // Brand mark: the same squircle as the app/window icon.
+                if let Some(icon) =
+                    self.icon_cache
+                        .texture(&ctx, "brand-icon", crate::brand::ICON_PNG)
+                {
+                    ui.add(
+                        egui::Image::from_texture(&icon)
+                            .fit_to_exact_size(egui::vec2(64.0, 64.0)),
+                    );
+                }
                 ui.add_space(10.0);
                 ui.label(
                     egui::RichText::new(crate::brand::NAME)
@@ -2536,5 +2625,7 @@ impl App {
 
         // Transient copy-confirmation toasts (bottom-right overlay).
         self.render_toasts(&ctx);
+        // Automatic browser approvals are announced without blocking.
+        self.render_browser_notice(&ctx);
     }
 }

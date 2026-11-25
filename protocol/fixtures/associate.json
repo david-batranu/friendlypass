@@ -1,0 +1,112 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "Association approval. `key` MUST equal the session public key used for the connection; `idKey` is the permanent identification public key. The app asks the user to name the connection; `id` is that user-visible name.",
+  "vectors": [
+    {
+      "name": "associate/new-association",
+      "action": "associate",
+      "nonceRelation": "increment",
+      "notes": "Success stores the identification key in database metadata. A denial is error 6 (see errors.json).",
+      "request": {
+        "nonce": "fYSLkpmgp661vMPK0djf5u30+wIJEBce",
+        "plaintextJson": "{\"action\":\"associate\",\"key\":\"Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=\",\"idKey\":\"gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=\"}",
+        "plaintext": {
+          "action": "associate",
+          "key": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+          "idKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8="
+        },
+        "frame": {
+          "action": "associate",
+          "message": "NTzkKkwIRwFpu7fa84XYVZ4O59zEJGC2pZ9tIlid7Gin5kwDXlphWzo5c0qpJ9yABi317ylMrg2uYRwrCoMRFoV9FYFLuOFOnENFrmVmMGHvadaMcXKuIdTfSBj/cogzpdAWKf++tMdc2wROuesXlnLfYXlJ/k/6v/L2HdFdGkGQ5C/BmqqtVZ5M+iIYTBwRIpc=",
+          "nonce": "fYSLkpmgp661vMPK0djf5u30+wIJEBce",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+          "triggerUnlock": "true"
+        }
+      },
+      "response": {
+        "nonce": "foSLkpmgp661vMPK0djf5u30+wIJEBce",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"foSLkpmgp661vMPK0djf5u30+wIJEBce\",\"hash\":\"4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb\",\"id\":\"chrome-work-laptop\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "foSLkpmgp661vMPK0djf5u30+wIJEBce",
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+          "id": "chrome-work-laptop"
+        },
+        "frame": {
+          "action": "associate",
+          "message": "yfiedZMOEyhlKVElAUL7baezQSifSW8GaQTT9RaNsPWsSgq0UzOGzMO0ah9wG6OUq5Dulb5sLn6elQPetLBNc6H/RGRFJBc5KFlq0z22H6Espez2C6apMr2HUNIewlQDuUM4b4YJvqktjSPSLPNAH43ipqDVGXn/q4nf9+eXa9Ge3fAxzxpShZDM+KKoaXwAElUnfGzo2yXH3+eux3ejF1HGIiYfmGnliqcRL+jgAWKPAg/8Y3Qjf+lDmYzc2LpfhVuM",
+          "nonce": "foSLkpmgp661vMPK0djf5u30+wIJEBce"
+        }
+      }
+    },
+    {
+      "name": "associate/legacy-without-idKey",
+      "action": "associate",
+      "nonceRelation": "increment",
+      "notes": "Backwards compatibility: when `idKey` is absent the app stores the session public key as the identification key.",
+      "request": {
+        "nonce": "nKOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9",
+        "plaintextJson": "{\"action\":\"associate\",\"key\":\"Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=\"}",
+        "plaintext": {
+          "action": "associate",
+          "key": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY="
+        },
+        "frame": {
+          "action": "associate",
+          "message": "ZwIR3DgomEnuX164KOrk5I3eHBa5sjLk8u/P6of/xxnQHf8/f5oUrCEtbkndDguyoyB+6e4o7lQGoGy1psl6CfkgGkLylZcTwJv8xqn2UgEMXx/4hHT1dm6nYA==",
+          "nonce": "nKOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+          "triggerUnlock": "true"
+        }
+      },
+      "response": {
+        "nonce": "naOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"naOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9\",\"hash\":\"4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb\",\"id\":\"legacy-client\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "naOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9",
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+          "id": "legacy-client"
+        },
+        "frame": {
+          "action": "associate",
+          "message": "O8nfZSfraeaXyUaMPaBzKZOh/G4vEC/Avf7sV9tBG3+W6nD7zLAhMfdvXSQyRorLwQV1LN3aHW3cGDmRM5iWCpAYlhb56R2s/tKon33djDBRsG6qnC34DgTefeL9jJ/fs4EViAiMlkDdvOb3+MEpeXbQaWgJvPw9QZdXolKmh+mtRVInsxRa4TpAiA1crbMTy5fKWIQV0T/D3jEL/8dRccfwx6hSy/JNz6nMN1dU5RaoqjrW5AQOmA4gbThbaQ==",
+          "nonce": "naOqsbi/xs3U2+Lp8Pf+BQwTGiEoLzY9"
+        }
+      }
+    }
+  ]
+}

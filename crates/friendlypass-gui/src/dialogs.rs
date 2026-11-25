@@ -1766,42 +1766,166 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::Browser => {
-            let open: bool;
             let mut close_clicked = false;
             let mut start_clicked = false;
             let mut stop_clicked = false;
-            open = modal_window(ctx, "browser-integration", "Browser Integration", 520.0, |ui| {
+            let mut prefs_changed = false;
+            let mut answer: Option<Option<String>> = None;
+            let mut revoke: Option<String> = None;
+            // Browsers whose per-user config root does not exist are shown
+            // disabled and never default to ticked; no manifest (and no junk
+            // directory) is written for them.
+            let installed_browsers = crate::browser_bridge::installed_browsers(app);
+            let open = modal_window(ctx, "browser-integration", "Browser Integration", 560.0, |ui| {
+                    ui.label(egui::RichText::new("Native messaging").strong());
+                    if ui
+                        .checkbox(
+                            &mut app.prefs.browser_integration,
+                            "Enable browser integration",
+                        )
+                        .on_hover_text(
+                            "Registers this app as the org.friendlypass.browser native \
+                             host, so the friendlypass extension can reach it. The \
+                             extension itself still has to be installed in each browser.",
+                        )
+                        .changed()
+                    {
+                        prefs_changed = true;
+                    }
+                    ui.weak(
+                        "Writes a small manifest in each selected browser's own \
+                         native-messaging folder. Other hosts' manifests are never touched.",
+                    );
+                    if ui
+                        .checkbox(
+                            &mut app.prefs.require_approval_for_new_browsers,
+                            "Require approval for new browsers",
+                        )
+                        .on_hover_text(
+                            "Ask before a browser connects. Off (the default), a browser \
+                             launched through the friendlypass host is approved automatically \
+                             and a non-blocking notice offers to revoke it.",
+                        )
+                        .changed()
+                    {
+                        prefs_changed = true;
+                    }
+                    let browsers_enabled = app.prefs.browser_integration;
+                    ui.horizontal_wrapped(|ui| {
+                        for browser in friendlypass_browser::native_messaging::Browser::ALL {
+                            let installed = installed_browsers.contains(&browser);
+                            let mut on = installed && app.prefs.browser_enabled(browser);
+                            let label = if installed {
+                                browser.label().to_owned()
+                            } else {
+                                format!("{} (not installed)", browser.label())
+                            };
+                            let response = ui.add_enabled(
+                                browsers_enabled && installed,
+                                egui::Checkbox::new(&mut on, label),
+                            );
+                            let response = if installed {
+                                response
+                            } else {
+                                response.on_hover_text(
+                                    "This browser has no per-user configuration directory yet. \
+                                     Start it once, then reopen this dialog.",
+                                )
+                            };
+                            if response.changed() {
+                                app.prefs.set_browser_enabled(browser, on);
+                                prefs_changed = true;
+                            }
+                        }
+                    });
+                    if browsers_enabled {
+                        match crate::browser_bridge::native_host_path(app) {
+                            Some(path) => {
+                                ui.weak(format!("Native host: {}", path.display()));
+                            }
+                            None => {
+                                ui.weak("Native host binary not found; reinstall the app.");
+                            }
+                        }
+                    }
+                    ui.separator();
                     ui.label(
                         "Serve the KeePassXC-Browser protocol on the same socket the shipped \
-                         keepassxc-proxy connects to, so the real browser extension can fill \
-                         credentials from this database.",
+                         keepassxc-proxy connects to, so the official extension and the \
+                         friendlypass extension can fill credentials from this database.",
                     );
                     ui.separator();
-                    let associations = app
-                        .browser_state
-                        .as_ref()
-                        .and_then(|s| s.lock().ok().map(|s| s.associations.len()))
-                        .unwrap_or(0);
+
+                    if let Some((name, client_id)) = crate::browser_bridge::pending_approval(app) {
+                        ui.label(
+                            egui::RichText::new("A browser wants to connect")
+                                .strong()
+                                .size(15.0),
+                        );
+                        ui.label(
+                            "Approve this browser once: it will be remembered in the database \
+                             until you remove the association below.",
+                        );
+                        ui.weak(format!("Client id: {client_id}"));
+                        let mut chosen = name;
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut chosen)
+                                    .hint_text("Association name"),
+                            )
+                            .changed()
+                        {
+                            crate::browser_bridge::set_approval_name(app, chosen);
+                        }
+                        ui.horizontal(|ui| {
+                            if ui.button("Approve").clicked() {
+                                answer = Some(Some(
+                                    crate::browser_bridge::approval_name(app),
+                                ));
+                            }
+                            if ui.button("Deny").clicked() {
+                                answer = Some(None);
+                            }
+                        });
+                        ui.separator();
+                    }
+
+                    let associations = crate::browser_bridge::association_rows(app);
                     if app.browser_handle.is_some() {
                         ui.label(format!(
                             "Serving on: {}",
                             friendlypass_browser::browser_server_path().display()
                         ));
-                        ui.weak(format!("{associations} associated browser client(s)"));
-                        // Refresh the served snapshot from the live database.
-                        if let Some(state) = app.browser_state.clone() {
-                            if let Some(db) = app.db.as_ref() {
-                                let snapshot = friendlypass_browser::snapshot_from_database(db);
-                                let _ = state.lock().map(|mut s| {
-                                    s.entries = snapshot.entries;
-                                    if !snapshot.db_hash.is_empty() {
-                                        s.db_hash = snapshot.db_hash;
-                                    }
+                    }
+                    if app.browser_state.is_some() {
+                        ui.weak(format!(
+                            "{} associated browser client(s)",
+                            associations.len()
+                        ));
+                        if !associations.is_empty() {
+                            ui.add_space(4.0);
+                            for row in &associations {
+                                ui.horizontal(|ui| {
+                                    ui.label(&row.id);
+                                    ui.weak(format!("{} \u{00b7} {}", row.browser, row.how));
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("Remove").clicked() {
+                                                revoke = Some(row.id.clone());
+                                            }
+                                        },
+                                    );
                                 });
                             }
                         }
-                        if ui.button("Stop serving").clicked() {
-                            stop_clicked = true;
+                        ui.add_space(6.0);
+                        if app.browser_handle.is_some() {
+                            if ui.button("Stop serving").clicked() {
+                                stop_clicked = true;
+                            }
+                        } else if ui.button("Start serving").clicked() {
+                            start_clicked = true;
                         }
                     } else {
                         ui.label("Browser integration is not running.");
@@ -1815,30 +1939,28 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                 });
 
+            if prefs_changed {
+                app.save_preferences();
+                crate::browser_bridge::sync_native_messaging(app);
+            }
+            if let Some(revoke) = revoke {
+                crate::browser_bridge::revoke_association(app, &revoke);
+            }
+            if let Some(decision) = answer {
+                crate::browser_bridge::answer_approval(app, decision);
+            }
             if start_clicked {
-                let state: friendlypass_browser::SharedState = std::sync::Arc::new(std::sync::Mutex::new(
-                    app.db
-                        .as_ref()
-                        .map(friendlypass_browser::snapshot_from_database)
-                        .unwrap_or_default(),
-                ));
-                let path = friendlypass_browser::browser_server_path();
-                match friendlypass_browser::start(&path, state.clone()) {
-                    Ok(handle) => {
-                        app.browser_handle = Some(handle);
-                        app.browser_state = Some(state);
-                        app.status =
-                            format!("Browser protocol serving on {}", path.display());
-                    }
-                    Err(e) => app.status = format!("cannot start browser server: {e:#}"),
-                }
+                crate::browser_bridge::start(app);
             }
             if stop_clicked {
-                if let Some(handle) = app.browser_handle.take() {
-                    handle.stop();
-                    app.browser_state = None;
-                    app.status = "Browser integration stopped".into();
-                }
+                crate::browser_bridge::stop(app);
+            }
+            if close_clicked && app.browser_bridge.is_some()
+                && crate::browser_bridge::pending_approval(app).is_some()
+            {
+                // Closing the dialog denies the waiting connection instead of
+                // leaving it until the bridge deadline.
+                crate::browser_bridge::answer_approval(app, None);
             }
             if !close_clicked && open {
                 app.dialog = Dialog::Browser;

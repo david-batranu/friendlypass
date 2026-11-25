@@ -1,0 +1,88 @@
+{
+  "manifest_version": 3,
+  "name": "friendlypass",
+  "version": "0.1.0",
+  "description": "friendlypass password manager browser integration",
+  "minimum_chrome_version": "124",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background/sw.js",
+    "type": "module"
+  },
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "alarms",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "webRequest",
+    "webRequestAuthProvider"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "commands": {
+    "fill-login": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Fill the best matching login with friendlypass"
+    },
+    "open-inline-menu": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Open the friendlypass menu for the focused field"
+    },
+    "generate-password": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+G",
+        "mac": "Command+Shift+G"
+      },
+      "description": "Generate a password into the focused field"
+    },
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+F",
+        "mac": "Alt+Shift+F"
+      },
+      "description": "Open friendlypass"
+    }
+  },
+  "action": {
+    "default_title": "friendlypass",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuVF1PcaUbSKIWSPW49LkA0x5K+P8jzUPsEEPH8YacAqXNSqERYqZkjNBFI8vdoicth3gaxjZFBcw/geob0+6cDqFb3FsoI98RABW5jSq3D0PB+uiuzRSWtOS8j6IMDkEmHTKAExsTopEmaFK6/XmS7FYQRzdMS01NHUAa0t4xzhAOOCo21E9U7DQQ4PzzAUuzGxFRF3N2IQ3KeoSragWeRFQx38IL7nZEOFyquYhpWfbIDgN9KKz1QsY0xNm9zD8nGvCl3o2GaBe+j15LdhgZ0MHLYP4CyG1RuV9aXNmvgr1+Zpi+8ijPwvoz4LRLih2KVXU7K0PznH5CuQiQyjTJQIDAQAB",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "friendlypass@friendlypass.org"
+    }
+  }
+}

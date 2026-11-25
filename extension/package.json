@@ -1,0 +1,34 @@
+{
+  "name": "friendlypass-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "friendlypass browser extension (MV3): native-messaging transport, protocol client, content fill engine",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:firefox": "node scripts/build.mjs firefox",
+    "build:all": "node scripts/build.mjs all",
+    "package": "node scripts/package.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.tests.json",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "e2e:firefox": "node tests/firefox/run.mjs"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@puppeteer/browsers": "^3.2.7",
+    "@types/chrome": "^0.1.0",
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.25.0",
+    "puppeteer-core": "^25.18.1",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0",
+    "web-ext": "^10.8.0"
+  }
+}

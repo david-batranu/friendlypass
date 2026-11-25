@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-firefox/
+artifacts/
+.cache/
+test-results/
+playwright-report/
+blob-report/
+*.tsbuildinfo

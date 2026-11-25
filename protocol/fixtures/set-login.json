@@ -1,0 +1,125 @@
+{
+  "$comment": "GENERATED FILE — edit protocol/gen-fixtures.mjs and re-run it.",
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "generatedBy": "protocol/gen-fixtures.mjs",
+  "generatedWith": "tweetnacl (nacl.box = crypto_box_easy, XSalsa20-Poly1305)",
+  "keys": {
+    "note": "FIXED TEST KEYS — deterministic, public, never use outside fixtures.",
+    "client": {
+      "publicKey": "Z0wuYBn1AC+vA6rEOeUJEzG7Dtp07a5ZLRzgqlxAbyY=",
+      "secretKey": "IUpncyv0DE4pMiuCOsOkjugMARuShQw3pBlt5uWD7JI=",
+      "role": "extension session keypair (X25519, regenerated per handshake)"
+    },
+    "host": {
+      "publicKey": "kdXTzQk5wy03DYMrsZRull3ZBjsIB7xR1oStaAr5cDY=",
+      "secretKey": "16+hHs52qpL+OgpmyWo+Q7jGwYfdUaeOsqqT81JG1Z4=",
+      "role": "app/host session keypair (X25519, regenerated per handshake)"
+    },
+    "identity": {
+      "publicKey": "gRWZJSuEpNvhWkga9OS2bvCCPx79VTxWMy9u6UAlnh8=",
+      "secretKey": "WKPDg2IMrWeIz423aLhS7DAEJA9Ohw55XnK4jFY9Iyk=",
+      "role": "extension PERMANENT identification keypair (public half sent as `idKey`)"
+    }
+  },
+  "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0",
+  "database": {
+    "note": "Fake database values used by the vectors.",
+    "rootGroupUuid": "bb710c2f876761bb90748cc271ff8fae",
+    "databaseHash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb",
+    "legacyDatabaseHash": "456e174cf3ff8b58c126ebc0c110fa95c8bf6da24044ea8f31bfba9f9a358ed4"
+  },
+  "nonceRule": "Requests use one 24-byte nonce; the response uses the same nonce incremented little-endian by 1 (libsodium sodium_increment). Error replies carry no nonce and are correlated by action.",
+  "frameRule": "Native messaging frame = 4-byte little-endian payload length + UTF-8 JSON payload, max 1 MiB. `plaintextJson` is the exact UTF-8 string sealed into `frame.message`; it is null for unencrypted frames.",
+  "description": "Create or update a credential. Without `uuid` a new entry is created (optionally in `group`/`groupUuid`, optionally downloading a favicon); with `uuid` that entry is updated. The result is in the inner `error` field (\"success\"/\"error\"), not in `success` (which is always \"true\" on a protocol success).",
+  "vectors": [
+    {
+      "name": "set-login/create",
+      "action": "set-login",
+      "nonceRelation": "increment",
+      "notes": "Credentials are plaintext inside the encrypted message. References are rejected (error 34).",
+      "request": {
+        "nonce": "Nz5FTFNaYWhvdn2Ei5KZoKeutbzDytHY",
+        "plaintextJson": "{\"action\":\"set-login\",\"id\":\"chrome-work-laptop\",\"login\":\"alice@example.com\",\"password\":\"correct horse battery staple\",\"url\":\"https://accounts.example.com/login\",\"submitUrl\":\"https://accounts.example.com/login\",\"group\":\"KeePassXC-Browser Passwords\",\"groupUuid\":\"17a19761914f9005f195c781475d37be\",\"downloadFavicon\":\"true\"}",
+        "plaintext": {
+          "action": "set-login",
+          "id": "chrome-work-laptop",
+          "login": "alice@example.com",
+          "password": "correct horse battery staple",
+          "url": "https://accounts.example.com/login",
+          "submitUrl": "https://accounts.example.com/login",
+          "group": "KeePassXC-Browser Passwords",
+          "groupUuid": "17a19761914f9005f195c781475d37be",
+          "downloadFavicon": "true"
+        },
+        "frame": {
+          "action": "set-login",
+          "message": "5ZcMZAb1ER0KIXzG3ZR8BBgC4OTZfiEtGXXZSnRacz2EclDjleIPOXhF9Nyy+8OpUIVMKRuQq8aY5FXtE3P5uza/JHk24RFtEE4BWh9Hvlhg6tD24i0TrsvO2Zai7r6a8OIgeM02sagTsmVlIswxu94+0T2tgJPtK1rmaE9f0u+IkwIK5capfyNm8IS9rpDnWymrImCl3gn2lOOp84j+UhAska29dnRe9nMugz/wGVYoOUClJ1blDjFi40MI4Z3Vi2+2OJY+v8uxWRUP3sOdPISfpy/caCA6dB7qz68yUVuL9lDi/XQESyyucENuh7OCcY1P0qi4EwrNO/TIpq0WQcz8BH/tVIwA+kBKUuVEGMFGLttsMkgxdpDCe7nf8o0NecjnOtUc3ofgieLZbr4c+xb/XDSYW+CDyrMmwvsZfIVjjjSjrgaiXy6qEHpizF1h",
+          "nonce": "Nz5FTFNaYWhvdn2Ei5KZoKeutbzDytHY",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "OD5FTFNaYWhvdn2Ei5KZoKeutbzDytHY",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"OD5FTFNaYWhvdn2Ei5KZoKeutbzDytHY\",\"count\":null,\"entries\":null,\"error\":\"success\",\"hash\":\"4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "OD5FTFNaYWhvdn2Ei5KZoKeutbzDytHY",
+          "count": null,
+          "entries": null,
+          "error": "success",
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb"
+        },
+        "frame": {
+          "action": "set-login",
+          "message": "Fogki1ntTczag1VT6VqpJUZsH1KtnENbNrnJdlQjQRs3g7rltyPMap2prhGP2cRLhrk7wJP75L1nEVSTRmMzb9GJ+2nceUZddy8UBj3j2JhpshR1dhl3GDfNVDx3sLuOOQrsCvj7mHG3KbwwgM9yxaQkKqwPjuBy9DJYEZ2DfH3jrxRy5eBEVhOC4J9R2ibugWc4qv1Rjksb99mdM0zO9wcRHYxTat9S7zIWUb+DS61ep/DwX7ymqlpWQqhJXrZFEY2nxj0W7EZ/OUaJcinUKSKKIccSKcc=",
+          "nonce": "OD5FTFNaYWhvdn2Ei5KZoKeutbzDytHY"
+        }
+      }
+    },
+    {
+      "name": "set-login/update-existing",
+      "action": "set-login",
+      "nonceRelation": "increment",
+      "notes": "`uuid` must be a valid dashless RFC 4122 UUID (error 18 otherwise). `downloadFavicon` is ignored on updates.",
+      "request": {
+        "nonce": "Vl1ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3",
+        "plaintextJson": "{\"action\":\"set-login\",\"id\":\"chrome-work-laptop\",\"login\":\"alice@example.com\",\"password\":\"new password\",\"url\":\"https://accounts.example.com/login\",\"submitUrl\":\"https://accounts.example.com/login\",\"uuid\":\"d5ec68c35705b72fde380bd469aa149f\"}",
+        "plaintext": {
+          "action": "set-login",
+          "id": "chrome-work-laptop",
+          "login": "alice@example.com",
+          "password": "new password",
+          "url": "https://accounts.example.com/login",
+          "submitUrl": "https://accounts.example.com/login",
+          "uuid": "d5ec68c35705b72fde380bd469aa149f"
+        },
+        "frame": {
+          "action": "set-login",
+          "message": "3dZRGOkUgpBGtl38nPfa6XLdt/msTaj/0hN7SSi7zOudl3kLC4ERZkkBO3FnCbGYNXRv02Ds6/o9tIFjT6BMCNORHg2R596SvyVT1XXur1aNvPcQKNPXmK/E/FtLRS9LaysGYMLBj/8c+9b9NuS1uV5eB92l172EtdjEeMLAMI7x/SdsKqD3W/f3foZQmHqZiXnyIQCprbObRvkV3l4mxDm0/6JfPx0bTu8q4aIVl3qmHBM/AYaAEAmF0bcTaW/eiO3puy2dNsoFpp3LEACJoRlVb1950Ln+6lac30OlbJp4Pbv3C/L9ezE3Mlvwn4vLyfQAKekPej0fMC9r",
+          "nonce": "Vl1ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3",
+          "clientID": "TJwIfytHTekEUQHdQVIZ1XZEanwCbYl0"
+        }
+      },
+      "response": {
+        "nonce": "V11ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3",
+        "plaintextJson": "{\"version\":\"2.8.0\",\"success\":\"true\",\"nonce\":\"V11ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3\",\"count\":null,\"entries\":null,\"error\":\"success\",\"hash\":\"4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb\"}",
+        "plaintext": {
+          "version": "2.8.0",
+          "success": "true",
+          "nonce": "V11ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3",
+          "count": null,
+          "entries": null,
+          "error": "success",
+          "hash": "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb"
+        },
+        "frame": {
+          "action": "set-login",
+          "message": "IwNBDdIeFTDubHeZzzM9oEe9eocyUtf4sb4Wu3Lyc4pOuO1OjFLVfjm7Kr2397ff8aOy5XSR5QJldbDYZbMxbkVXd+1XLDSY8+xBo9N7AsmslZsUBLflguxH4UkMpchB38F6S+obdhc90P+3dPSswoyq/lqZtQg+kjqAR2Ut9L8FMtBwpUs0PjNOfBDjVLnnqrnDoLpzHYcc0J08DjcnF2Xua65OijBRzWBRzHnqYCLaTncnWxKXdAATD1404tDXhndQPp/SHq1OqXJEBpssD3ffcsygA5E=",
+          "nonce": "V11ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3"
+        }
+      }
+    }
+  ]
+}

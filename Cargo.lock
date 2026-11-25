@@ -2181,13 +2181,27 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "core-foundation 0.10.1",
  "crypto_box",
+ "friendlypass",
  "getrandom 0.4.3",
  "keepass",
  "libc",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "friendlypass-browser-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "core-foundation 0.10.1",
+ "friendlypass-browser",
+ "libc",
+ "serde_json",
 ]
 
 [[package]]
