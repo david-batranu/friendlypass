@@ -124,6 +124,14 @@ tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn(cargoNdkBuild, uniffiBindgen)
 }
 
+// The instrumented tests drive two companion apps (:testapp for autofill, :credtest for the
+// Credential Manager). Install them on the same device first so a fresh emulator works with one
+// command. Without ANDROID_SERIAL Gradle's install tasks target every connected device, exactly
+// like connectedDebugAndroidTest itself.
+tasks.matching { it.name == "connectedDebugAndroidTest" }.configureEach {
+    dependsOn(":testapp:installDebug", ":credtest:installDebug")
+}
+
 android {
     namespace = "org.friendlypass.android"
     compileSdk = 36
@@ -145,7 +153,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: the release build is the only place the shrinker + UniFFI/JNA keep rules are exercised.
+            isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

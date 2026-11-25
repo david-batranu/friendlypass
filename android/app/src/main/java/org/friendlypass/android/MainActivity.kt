@@ -58,6 +58,19 @@ class MainActivity : FragmentActivity() {
             app.store.remember(FakeVaultRepository.DEMO_DATABASE)
             app.vault.selectDatabase(FakeVaultRepository.DEMO_DATABASE)
         }
+        // Debug-only: open a file:// database copied into app-private storage (instrumented tests and
+        // manual emulator checks; the storage gateway only accepts file:// in debug builds).
+        if (BuildConfig.DEBUG) {
+            intent.getStringExtra(EXTRA_DEBUG_DATABASE_FILE)?.takeIf { it.isNotBlank() }?.let { path ->
+                val file = java.io.File(path)
+                val ref = org.friendlypass.android.vault.model.DatabaseRef(
+                    android.net.Uri.fromFile(file).toString(),
+                    file.name,
+                )
+                app.store.remember(ref)
+                app.vault.selectDatabase(ref)
+            }
+        }
 
         setContent {
             FriendlypassTheme {
@@ -86,6 +99,9 @@ class MainActivity : FragmentActivity() {
 
         /** Debug-only: open the built-in sample database instead of showing the file picker. */
         const val EXTRA_DEMO_DATABASE = "org.friendlypass.android.DEMO_DATABASE"
+
+        /** Debug-only: open a KDBX file path (used with a fixture copied into app-private storage). */
+        const val EXTRA_DEBUG_DATABASE_FILE = "org.friendlypass.android.DEBUG_DATABASE_FILE"
     }
 }
 
