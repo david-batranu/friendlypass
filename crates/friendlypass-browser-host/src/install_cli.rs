@@ -39,11 +39,17 @@ Options:
                                   manifest key (pfdmagadklmhbghfipamhfbphcljdkbi).
   --firefox-extension-id ID       Firefox add-on id. Default:
                                   friendlypass@friendlypass.org.
+  --force                         Register a selected browser even when its
+                                  per-user config root does not exist.
+                                  Without this, missing browsers are skipped
+                                  and no directories are created.
   --dry-run                       Print what would change, write nothing.
   -h, --help                      This help.
 
 The manifests live in each browser's per-user NativeMessagingHosts directory.
-Only org.friendlypass.browser.json is ever touched.
+A browser is only registered when its per-user config root already exists
+(for example ~/.config/google-chrome on Linux); missing browsers are skipped
+unless --force is given. Only org.friendlypass.browser.json is ever touched.
 ";
 
 /// If the arguments request install mode, run it and return the exit code.
@@ -84,7 +90,8 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         .filter(|path| !path.as_os_str().is_empty())
         .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --home DIR"))?;
 
-    let mut options = InstallOptions::new(home, platform, parsed.host_path.unwrap_or_default());
+    let mut options =
+        InstallOptions::new(home.clone(), platform, parsed.host_path.unwrap_or_default());
     options.chrome_extension_id = parsed
         .chrome_extension_id
         .unwrap_or_else(|| DEFAULT_CHROME_EXTENSION_ID.to_owned());
@@ -96,6 +103,7 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     } else {
         parsed.browsers
     };
+    options.force = parsed.force;
     options.dry_run = parsed.dry_run;
 
     if mode == Mode::Install && options.host_path.as_os_str().is_empty() {
@@ -116,12 +124,30 @@ fn run(args: &[String]) -> anyhow::Result<()> {
             for path in &report.unchanged {
                 println!("unchanged {}", path.display());
             }
+            for &browser in &report.skipped {
+                println!(
+                    "skipped {}: not installed ({} does not exist; use --force to register anyway)",
+                    browser.label(),
+                    home.join(platform.config_root(browser)).display()
+                );
+            }
+            let installed: Vec<Browser> = options
+                .browsers
+                .iter()
+                .copied()
+                .filter(|browser| !report.skipped.contains(browser))
+                .collect();
             if options.dry_run {
                 println!("dry run: nothing written");
+            } else if installed.is_empty() {
+                println!(
+                    "friendlypass native host not installed: no selected browser is installed ({})",
+                    platform.id()
+                );
             } else {
                 println!(
                     "friendlypass native host installed for: {} ({})",
-                    ids(&options.browsers),
+                    ids(&installed),
                     platform.id()
                 );
             }
@@ -160,6 +186,7 @@ enum Mode {
 #[derive(Debug, Default)]
 struct Parsed {
     mode: Option<Mode>,
+    force: bool,
     dry_run: bool,
     home: Option<PathBuf>,
     platform: Option<Platform>,
@@ -201,6 +228,7 @@ impl Parsed {
                     }
                     parsed.mode = Some(Mode::Uninstall);
                 }
+                "--force" => parsed.force = true,
                 "--dry-run" => parsed.dry_run = true,
                 "--home" => parsed.home = Some(PathBuf::from(take_value("--home")?)),
                 "--platform" => {
@@ -283,6 +311,7 @@ mod tests {
             "--host-path",
             "/tmp/host",
             "--extension-id=abcdefghijklmnopabcdefghijklmnop",
+            "--force",
             "--dry-run",
         ])
         .unwrap();
@@ -291,6 +320,7 @@ mod tests {
         assert_eq!(parsed.home, Some(PathBuf::from("/tmp/home")));
         assert_eq!(parsed.platform, Some(Platform::Linux));
         assert_eq!(parsed.host_path, Some(PathBuf::from("/tmp/host")));
+        assert!(parsed.force);
         assert!(parsed.dry_run);
     }
 

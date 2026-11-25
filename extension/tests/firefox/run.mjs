@@ -33,6 +33,65 @@ import { FirefoxHarness, LOGIN_ICON, LOGIN_ICON_MATCHES, BANNER, waitFor } from 
 import { startPages } from "./pages.mjs";
 
 // ---------------------------------------------------------------------------
+// Shadow DOM helpers (the inline menu lives in an open shadow root)
+// ---------------------------------------------------------------------------
+
+/** Click an element inside (possibly nested) open shadow roots. */
+async function clickInShadows(page, selector) {
+  const clicked = await page.evaluate((innerSelector) => {
+    const find = (root) => {
+      const direct = root.querySelector(innerSelector);
+      if (direct) return direct;
+      for (const element of root.querySelectorAll("*")) {
+        if (element.shadowRoot) {
+          const found = find(element.shadowRoot);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    const node = find(document);
+    if (!node) return false;
+    node.click();
+    return true;
+  }, selector);
+  assert.equal(clicked, true, `could not click ${selector}`);
+}
+
+/** Like `waitFor`, but returns the first truthy predicate value. */
+async function waitForValue(predicate, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await predicate();
+    if (value) return value;
+    await sleep(50);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+/** Wait for the toolbar popup's fallback window and return its page. */
+async function waitForPopupPage(harness, timeoutMs = 15_000) {
+  return await waitForValue(
+    async () => {
+      for (const page of await harness.browser.pages()) {
+        // `connect()` keeps a plain popup page open for its internal
+        // requests; the fallback window is a new page with `?tab=`.
+        if (page === harness.extensionPage) continue;
+        try {
+          const href = await page.evaluate(() => location.href);
+          if (href.includes("/popup/popup.html")) return page;
+        } catch {
+          // A context may disappear while a window closes.
+        }
+      }
+      return null;
+    },
+    timeoutMs,
+    "popup window",
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Prerequisites
 // ---------------------------------------------------------------------------
 
@@ -159,6 +218,89 @@ async function scenarioFillLoginForm() {
 
         assert.equal(await page.$eval("#username", (el) => el.value), "fill@example.com");
         assert.equal(await page.$eval("#password", (el) => el.value), password);
+        await page.close();
+      },
+    );
+  } finally {
+    await pages.close().catch(() => undefined);
+  }
+}
+
+async function scenarioOpenFriendlypassPopup() {
+  const pages = await startPages();
+  try {
+    await withHarness(
+      () => [
+        {
+          title: "Elsewhere",
+          username: "other@example.com",
+          password: "other-password",
+          url: "https://example.invalid/elsewhere",
+        },
+      ],
+      async (harness) => {
+        const page = await harness.newPage();
+        await harness.open(page, `${pages.baseUrl}/login`);
+        // No login matches /login, so the inline icon is shown in the empty
+        // state and its menu offers "Open friendlypass".
+        await page.waitForSelector(LOGIN_ICON, { timeout: 30_000 });
+        await page.waitForFunction(
+          (selector) =>
+            document
+              .querySelector(selector)
+              ?.getAttribute("data-friendlypass-state") === "empty",
+          { timeout: 30_000 },
+          LOGIN_ICON,
+        );
+        await page.click(LOGIN_ICON);
+        await waitFor(
+          () =>
+            page.evaluate(() => {
+              const find = (root) => {
+                const direct = root.querySelector(
+                  '[data-friendlypass="menu-action"][data-action="open-friendlypass"]',
+                );
+                if (direct) return true;
+                for (const element of root.querySelectorAll("*")) {
+                  if (element.shadowRoot && find(element.shadowRoot)) return true;
+                }
+                return false;
+              };
+              return find(document);
+            }),
+          15_000,
+          "Open friendlypass menu item",
+        );
+        await clickInShadows(
+          page,
+          '[data-friendlypass="menu-action"][data-action="open-friendlypass"]',
+        );
+
+        // The fallback window must actually render the popup page, not an
+        // empty moz-extension window.
+        const popup = await waitForPopupPage(harness);
+        const rendered = await waitForValue(
+          async () => {
+            try {
+              const info = await popup.evaluate(() => ({
+                href: location.href,
+                text: document.body?.innerText ?? "",
+                ready: document.readyState,
+              }));
+              return info.ready === "complete" && info.text.trim().length > 0
+                ? info
+                : null;
+            } catch {
+              return null;
+            }
+          },
+          15_000,
+          "popup content",
+        );
+        // The caller's tab is carried into the popup window.
+        assert.match(rendered.href, /\/popup\/popup\.html\?tab=\d+$/);
+        assert.match(rendered.text, /Generate password/i);
+        assert.match(rendered.text, /Settings/i);
         await page.close();
       },
     );
@@ -356,6 +498,7 @@ async function scenarioAppRestarts() {
 const scenarios = [
   ["connect + get-logins", scenarioConnectAndGetLogins],
   ["fill a classic login form", scenarioFillLoginForm],
+  ["Open friendlypass renders the popup", scenarioOpenFriendlypassPopup],
   ["save banner writes the KDBX entry", scenarioSaveBannerReachesKdbx],
   ["HTTP Basic auto-fill", scenarioHttpBasic],
   ["app kill/restart x5 recovers", scenarioAppRestarts],

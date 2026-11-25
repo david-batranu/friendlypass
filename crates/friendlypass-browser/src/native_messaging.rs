@@ -13,7 +13,10 @@
 //!
 //! Only this host's own manifest is ever written or removed. A browser's
 //! `NativeMessagingHosts` directory may contain manifests for other hosts;
-//! those are left untouched.
+//! those are left untouched. A browser is only registered when its per-user
+//! configuration root already exists (for example `~/.config/google-chrome`),
+//! so selecting a browser that was never started cannot create junk
+//! directories; `--force` is the explicit override.
 
 use std::path::{Path, PathBuf};
 
@@ -120,6 +123,41 @@ impl Platform {
         }
     }
 
+    /// `$HOME`-relative root of the browser's per-user configuration.
+    ///
+    /// A browser counts as installed only when this directory already exists.
+    /// We never create it: a browser that was never started has no profile,
+    /// and writing into a guessed path would leave junk directories behind.
+    pub fn config_root(self, browser: Browser) -> &'static str {
+        match (self, browser) {
+            (Platform::MacOs, Browser::Chrome) => "Library/Application Support/Google/Chrome",
+            (Platform::MacOs, Browser::Chromium) => "Library/Application Support/Chromium",
+            (Platform::MacOs, Browser::Brave) => {
+                "Library/Application Support/BraveSoftware/Brave-Browser"
+            }
+            (Platform::MacOs, Browser::Edge) => "Library/Application Support/Microsoft Edge",
+            (Platform::MacOs, Browser::Firefox) => "Library/Application Support/Mozilla",
+            (Platform::Linux, Browser::Chrome) => ".config/google-chrome",
+            (Platform::Linux, Browser::Chromium) => ".config/chromium",
+            (Platform::Linux, Browser::Brave) => ".config/BraveSoftware/Brave-Browser",
+            (Platform::Linux, Browser::Edge) => ".config/microsoft-edge",
+            (Platform::Linux, Browser::Firefox) => ".mozilla",
+        }
+    }
+
+    /// True when `browser` has a per-user configuration root under `home`.
+    pub fn is_browser_installed(self, home: &Path, browser: Browser) -> bool {
+        home.join(self.config_root(browser)).is_dir()
+    }
+
+    /// Every browser with an existing configuration root under `home`.
+    pub fn installed_browsers(self, home: &Path) -> Vec<Browser> {
+        Browser::ALL
+            .into_iter()
+            .filter(|&browser| self.is_browser_installed(home, browser))
+            .collect()
+    }
+
     /// `$HOME`-relative directory holding `<host>.json` for `browser`.
     pub fn manifest_dir(self, browser: Browser) -> &'static str {
         match (self, browser) {
@@ -161,6 +199,10 @@ pub struct InstallOptions {
     pub chrome_extension_id: String,
     pub firefox_extension_id: String,
     pub browsers: Vec<Browser>,
+    /// Register a missing browser anyway (creates its configuration root).
+    /// Without this, only browsers whose per-user config root already exists
+    /// are touched.
+    pub force: bool,
     /// Report what would change without touching the filesystem.
     pub dry_run: bool,
 }
@@ -179,6 +221,7 @@ impl InstallOptions {
             chrome_extension_id: DEFAULT_CHROME_EXTENSION_ID.to_owned(),
             firefox_extension_id: DEFAULT_FIREFOX_EXTENSION_ID.to_owned(),
             browsers: Browser::ALL.to_vec(),
+            force: false,
             dry_run: false,
         }
     }
@@ -202,6 +245,9 @@ pub struct InstallReport {
     pub removed: Vec<PathBuf>,
     /// Manifests that were already absent.
     pub absent: Vec<PathBuf>,
+    /// Browsers with no per-user configuration root. Without `force`, no
+    /// manifest is written for them (and no directory is created).
+    pub skipped: Vec<Browser>,
 }
 
 impl InstallReport {
@@ -301,8 +347,11 @@ fn prepare(opts: &InstallOptions, need_host: bool) -> Result<Option<PathBuf>> {
 
 /// Write (or refresh) the manifests in `opts.browsers`.
 ///
-/// Idempotent: a manifest whose bytes already match is left alone. All
-/// directories are created as needed, but nothing else in them is touched.
+/// A browser is installed when its per-user configuration root exists (for
+/// example `~/.config/google-chrome`); missing roots are reported in
+/// [`InstallReport::skipped`] and never created unless `force` is set.
+/// Idempotent: a manifest whose bytes already match is left alone. Only the
+/// `NativeMessagingHosts` directory below an existing root is created.
 pub fn install(opts: &InstallOptions) -> Result<InstallReport> {
     if opts.browsers.is_empty() {
         bail!("no browsers selected");
@@ -313,6 +362,11 @@ pub fn install(opts: &InstallOptions) -> Result<InstallReport> {
 
     let mut report = InstallReport::default();
     for &browser in &opts.browsers {
+        let root = opts.home.join(opts.platform.config_root(browser));
+        if !opts.force && !root.is_dir() {
+            report.skipped.push(browser);
+            continue;
+        }
         let path = opts.manifest_path(browser);
         let contents = manifest_json(
             browser,
@@ -427,6 +481,18 @@ mod tests {
         assert_eq!(
             Platform::Linux.manifest_dir(Browser::Firefox),
             ".mozilla/native-messaging-hosts"
+        );
+        assert_eq!(
+            Platform::MacOs.config_root(Browser::Brave),
+            "Library/Application Support/BraveSoftware/Brave-Browser"
+        );
+        assert_eq!(Platform::Linux.config_root(Browser::Firefox), ".mozilla");
+        assert_eq!(
+            Platform::Linux.manifest_dir(Browser::Chrome),
+            format!(
+                "{}/NativeMessagingHosts",
+                Platform::Linux.config_root(Browser::Chrome)
+            )
         );
     }
 

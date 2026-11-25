@@ -9,8 +9,9 @@
 // point at the temporary home/host.
 #![allow(clippy::field_reassign_with_default)]
 
+use accesskit::Toggled;
 use eframe::egui;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
 use friendlypass_browser::native_messaging::{Browser, Platform, HOST_NAME};
 use keepass::DatabaseKey;
@@ -48,6 +49,14 @@ impl Fixture {
         self.home
             .join(Platform::Linux.manifest_dir(browser))
             .join(format!("{HOST_NAME}.json"))
+    }
+
+    /// Create the per-user configuration roots for `browsers`; the installer
+    /// only registers browsers whose root already exists.
+    fn install_browsers(&self, browsers: &[Browser]) {
+        for &browser in browsers {
+            std::fs::create_dir_all(self.home.join(Platform::Linux.config_root(browser))).unwrap();
+        }
     }
 }
 
@@ -89,7 +98,8 @@ fn browser_settings_toggles_write_and_remove_manifests() {
         "nothing is written before the user opts in"
     );
 
-    // Enable integration: every selected browser gets a manifest.
+    // The browser roots exist; every installed browser gets a manifest.
+    fixture.install_browsers(&Browser::ALL);
     harness.get_by_label("Enable browser integration").click();
     harness.run();
     assert!(harness.state().prefs.browser_integration);
@@ -142,6 +152,85 @@ fn browser_settings_toggles_write_and_remove_manifests() {
 }
 
 #[test]
+fn missing_browser_roots_are_disabled_and_never_written() {
+    let fixture = Fixture::new();
+    fixture.install_browsers(&[Browser::Chrome, Browser::Firefox]);
+    let db_path = fixture.dir.path().join("sample4.kdbx");
+    std::fs::copy(sample_path("sample4.kdbx"), &db_path).unwrap();
+
+    let home = fixture.home.clone();
+    let host = fixture.host.clone();
+    let path_str = db_path.display().to_string();
+    let mut harness = Harness::new_eframe(move |_cc| {
+        let key = DatabaseKey::new().with_password("testpassword");
+        let mut app = friendlypass_gui::App::with_open_database(&path_str, key);
+        app.browser_install_home = home.clone();
+        app.browser_install_platform = Some(Platform::Linux);
+        app.browser_install_host = Some(host.clone());
+        app
+    });
+    harness.set_size(egui::Vec2::new(1150.0, 900.0));
+    harness.run();
+
+    harness.get_by_label("Settings and tools").click();
+    harness.run();
+    harness.get_by_label("Browser…").click();
+    harness.run();
+    harness.get_by_label("Enable browser integration").click();
+    harness.run();
+
+    // Only Chrome and Firefox have configuration roots: only they are
+    // registered, and the missing browsers' roots are not created.
+    for browser in [Browser::Chrome, Browser::Firefox] {
+        assert!(
+            fixture.manifest(browser).exists(),
+            "{} manifest written",
+            browser.label()
+        );
+    }
+    for browser in [Browser::Chromium, Browser::Brave, Browser::Edge] {
+        assert!(
+            !fixture.manifest(browser).exists(),
+            "{} manifest must not be written",
+            browser.label()
+        );
+        assert!(
+            !fixture
+                .home
+                .join(Platform::Linux.config_root(browser))
+                .exists(),
+            "{} config root must not be created",
+            browser.label()
+        );
+    }
+    assert!(harness.state().status.contains("manifest(s) written"));
+    assert!(
+        harness.state().prefs.browser_brave,
+        "the stored preference is untouched; only the UI hides it"
+    );
+
+    // The settings UI disables not-installed browsers and shows them
+    // unchecked with an explicit label; installed ones remain usable.
+    let brave = harness.get_by_label("Brave (not installed)");
+    assert!(
+        brave.accesskit_node().is_disabled(),
+        "Brave is disabled while it has no config root"
+    );
+    assert_eq!(
+        brave.accesskit_node().toggled(),
+        Some(Toggled::False),
+        "Brave is shown unticked"
+    );
+    let chrome = harness.get_by_label("Chrome");
+    assert!(!chrome.accesskit_node().is_disabled(), "Chrome is enabled");
+    assert_eq!(
+        chrome.accesskit_node().toggled(),
+        Some(Toggled::True),
+        "Chrome is ticked by default"
+    );
+}
+
+#[test]
 fn unticking_every_browser_removes_the_manifests() {
     let fixture = Fixture::new();
     let mut app = friendlypass_gui::App::default();
@@ -149,6 +238,7 @@ fn unticking_every_browser_removes_the_manifests() {
     app.browser_install_platform = Some(Platform::Linux);
     app.browser_install_host = Some(fixture.host.clone());
     app.prefs.browser_integration = true;
+    fixture.install_browsers(&Browser::ALL);
 
     friendlypass_gui::browser_bridge::sync_native_messaging(&mut app);
     for browser in Browser::ALL {
@@ -188,6 +278,7 @@ fn startup_refresh_rewrites_a_stale_host_path() {
     app.browser_install_home = fixture.home.clone();
     app.browser_install_platform = Some(Platform::Linux);
     app.browser_install_host = Some(fixture.host.clone());
+    fixture.install_browsers(&[Browser::Chrome]);
 
     friendlypass_gui::browser_bridge::refresh_native_messaging(&mut app);
     let chrome = fixture.manifest(Browser::Chrome);

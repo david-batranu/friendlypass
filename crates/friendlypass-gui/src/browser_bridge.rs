@@ -289,8 +289,20 @@ struct NativeMessagingOutcome {
     enabled: bool,
     installed: usize,
     removed: usize,
+    /// Selected browsers whose per-user config root does not exist.
+    skipped: usize,
     /// Integration is on but every per-browser box is off.
     no_browsers: bool,
+}
+
+/// Browsers with a per-user configuration root under the install home.
+///
+/// The settings UI uses this to disable browsers that are not installed.
+pub fn installed_browsers(app: &App) -> Vec<friendlypass_browser::native_messaging::Browser> {
+    let Ok(platform) = manifest_platform(app) else {
+        return Vec::new();
+    };
+    platform.installed_browsers(&app.browser_install_home)
 }
 
 /// Where the host binary that registrations point at lives.
@@ -349,6 +361,7 @@ fn apply_native_messaging(app: &App) -> anyhow::Result<NativeMessagingOutcome> {
             enabled: false,
             installed: 0,
             removed: report.removed.len(),
+            skipped: 0,
             no_browsers: false,
         });
     }
@@ -361,6 +374,7 @@ fn apply_native_messaging(app: &App) -> anyhow::Result<NativeMessagingOutcome> {
             enabled: true,
             installed: 0,
             removed: report.removed.len(),
+            skipped: 0,
             no_browsers: true,
         });
     }
@@ -385,6 +399,7 @@ fn apply_native_messaging(app: &App) -> anyhow::Result<NativeMessagingOutcome> {
         enabled: true,
         installed: report.changed.len(),
         removed,
+        skipped: report.skipped.len(),
         no_browsers: false,
     })
 }
@@ -398,13 +413,15 @@ pub fn sync_native_messaging(app: &mut App) {
                 .into();
         }
         Ok(outcome) if outcome.enabled => {
-            app.status = if outcome.installed == 0 {
-                "Browser integration manifests are up to date".into()
-            } else {
+            app.status = if outcome.installed > 0 {
                 format!(
                     "Browser integration enabled: {} manifest(s) written",
                     outcome.installed
                 )
+            } else if outcome.skipped > 0 {
+                "Browser integration is on, but no selected browser is installed; no manifests were written".into()
+            } else {
+                "Browser integration manifests are up to date".into()
             };
         }
         Ok(outcome) => {

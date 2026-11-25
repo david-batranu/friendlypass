@@ -30,10 +30,11 @@ a second pinned binary and a WebDriver session to maintain for no gain.
 Firefox has no `--load-extension` flag, so runtime installation is mandatory;
 `browser.installExtension()` is the supported way to do it.
 
-The browser is pinned in `config.mjs` (`stable_140.0`, Firefox 140 ESR lineage)
-and downloaded on first use into `extension/.cache/firefox/` (git-ignored) with
-`@puppeteer/browsers` from Mozilla's official release archive. Override with
-`FP_FIREFOX_VERSION`.
+The browser is pinned in `config.mjs` (`stable_161.0`) and downloaded on first
+use into `extension/.cache/firefox/` (git-ignored) with `@puppeteer/browsers`
+from Mozilla's official release archive. Override with `FP_FIREFOX_VERSION`.
+(Firefox 140 ESR cannot start its WebDriver BiDi remote agent on current macOS,
+so the suite could not connect there; 161 is the pinned current stable.)
 
 ## Firefox quirks the harness works around
 
@@ -42,7 +43,11 @@ and downloaded on first use into `extension/.cache/firefox/` (git-ignored) with
   `location.href` is the extension page. `openExtensionPage()` navigates
   best-effort and then waits for `location.href` inside the page.
 - `action.openPopup()` requires a user gesture in Firefox and rejects when called
-  from a content-script message; the extension already falls back to a window.
+  from a content-script message; the extension falls back to a window. Firefox
+  creates that window first and then loads `popup/popup.html` into its tab with
+  `tabs.update`, because a brand-new popup window can show an empty document if
+  it is handed a `moz-extension:` URL directly. The popup scenario asserts the
+  rendered page, not just that a window exists.
 - Firefox MV3 event pages load `background.scripts`, not a service worker, and
   enforce a 1-minute `alarms` minimum period.
 - `chrome.storage` is callback-only in Firefox's `chrome` namespace; the shared
@@ -62,9 +67,11 @@ assertion afterwards goes through the in-page UI or the real KDBX.
 
 1. Connect + `get-logins`: the login icon reports a matching entry.
 2. Fill a classic login form from the inline icon.
-3. Save banner → click Save → the entry is read back from the KDBX with the CLI.
-4. HTTP Basic auto-fill through the Firefox `["blocking"]` adapter.
-5. App killed and restarted five times: the read-only `status.get` snapshot must
+3. Inline menu → **Open friendlypass** → the fallback window renders
+   `popup/popup.html` (not an empty `moz-extension:` window).
+4. Save banner → click Save → the entry is read back from the KDBX with the CLI.
+5. HTTP Basic auto-fill through the Firefox `["blocking"]` adapter.
+6. App killed and restarted five times: the read-only `status.get` snapshot must
    flip back to running/associated on its own, and the next page load must show
    the matching icon, without a manual reconnect.
 
@@ -72,7 +79,7 @@ assertion afterwards goes through the in-page UI or the real KDBX.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `FP_FIREFOX_VERSION` | `stable_140.0` | pinned `@puppeteer/browsers` build id |
+| `FP_FIREFOX_VERSION` | `stable_161.0` | pinned `@puppeteer/browsers` build id |
 | `FP_FIREFOX_HEADED` | unset | `1` runs a real window |
 | `FP_FIREFOX_DUMPIO` | unset | `1` forwards the browser process output |
 | `FP_KEEP_TEMP` | unset | `1` keeps the temp HOME/profile/logs |

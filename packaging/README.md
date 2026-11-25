@@ -20,6 +20,11 @@ same directory.
    Firefox add-ons, or a development build). The extension then talks to the
    running app.
 
+Only browsers that have been started at least once are listed as available:
+the app checks for the browser's per-user configuration root and shows missing
+browsers disabled as “(not installed)”. Nothing is written for them, so
+enabling integration never leaves empty Brave/Edge directories in `$HOME`.
+
 Turning a browser off (or integration itself off) removes only that
 `org.friendlypass.browser.json`; other native hosts are never touched. On
 every start the app re-writes an outdated manifest, so moving or updating the

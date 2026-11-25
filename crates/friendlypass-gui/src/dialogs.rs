@@ -1772,6 +1772,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let mut prefs_changed = false;
             let mut answer: Option<Option<String>> = None;
             let mut revoke: Option<String> = None;
+            // Browsers whose per-user config root does not exist are shown
+            // disabled and never default to ticked; no manifest (and no junk
+            // directory) is written for them.
+            let installed_browsers = crate::browser_bridge::installed_browsers(app);
             let open = modal_window(ctx, "browser-integration", "Browser Integration", 560.0, |ui| {
                     ui.label(egui::RichText::new("Native messaging").strong());
                     if ui
@@ -1795,14 +1799,26 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     let browsers_enabled = app.prefs.browser_integration;
                     ui.horizontal_wrapped(|ui| {
                         for browser in friendlypass_browser::native_messaging::Browser::ALL {
-                            let mut on = app.prefs.browser_enabled(browser);
-                            if ui
-                                .add_enabled(
-                                    browsers_enabled,
-                                    egui::Checkbox::new(&mut on, browser.label()),
+                            let installed = installed_browsers.contains(&browser);
+                            let mut on = installed && app.prefs.browser_enabled(browser);
+                            let label = if installed {
+                                browser.label().to_owned()
+                            } else {
+                                format!("{} (not installed)", browser.label())
+                            };
+                            let response = ui.add_enabled(
+                                browsers_enabled && installed,
+                                egui::Checkbox::new(&mut on, label),
+                            );
+                            let response = if installed {
+                                response
+                            } else {
+                                response.on_hover_text(
+                                    "This browser has no per-user configuration directory yet. \
+                                     Start it once, then reopen this dialog.",
                                 )
-                                .changed()
-                            {
+                            };
+                            if response.changed() {
                                 app.prefs.set_browser_enabled(browser, on);
                                 prefs_changed = true;
                             }
