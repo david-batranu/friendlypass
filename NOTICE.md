@@ -67,8 +67,9 @@ friendlypass is a modified version of the two projects above, not a verbatim
 copy. The modifications are: the C++ KeePassXC core and GUI were reimplemented
 in Rust; the browser extension was rebranded and its background/session layer
 rewritten, while its content scripts were ported to TypeScript; the KeePassXC
-database icons were rasterized to 32×32 PNGs; and the application artwork was
-replaced with friendlypass branding. The upstream snapshots used are
+database icon set is not used (entries show website favicons or letter
+avatars instead); and the application artwork was replaced with friendlypass
+branding. The upstream snapshots used are
 KeePassXC 2.8.0 (checkout `cd42236`, 2026-11-17) and keepassxc-browser
 v1.10.4.1 (`9d27471`, 2026-11-19). This notice is dated 2026-11-25; the
 detailed modification history is recorded in this repository's commits.
@@ -77,7 +78,6 @@ detailed modification history is recorded in this repository's commits.
 
 | Location | Upstream source | Licence | Copyright / evidence |
 |---|---|---|---|
-| `crates/friendlypass-gui/icons/0.png` … `68.png` (69 PNGs, 32×32) | `keepassxc/share/icons/database/C00_Password.svg` … `C68_BlackBerry.svg` | mixed, see the icon table below | Rasterized from the KeePassXC database icon set (`crates/friendlypass-gui/build.rs` says so). 62 of the 69 PNGs are pixel-identical to a fresh `rsvg-convert -w 32 -h 32` render of the matching upstream SVG; the remaining 7 (13, 17, 18, 19, 26, 63, 65) appear to be the same upstream icons rasterized with a different crop/scale. |
 | `fixtures/Compressed.kdbx`, `Format400.kdbx`, `NonAscii.kdbx`, `ProtectedStrings.kdbx` | `keepassxc/tests/data/` (same names) | GPL-2 or GPL-3 | Byte-identical (`cmp`, identical MD5) to the upstream test databases. |
 | `fixtures/keepass1.kdb` | `keepassxc/tests/data/basic.kdb` | GPL-2 or GPL-3 | Byte-identical (MD5 `72abd1f353ca233f2f02278d36a05a17`); renamed for its KDB/AES content. |
 | `fixtures/keepass1-twofish.kdb` | `keepassxc/tests/data/Twofish.kdb` | GPL-2 or GPL-3 | Byte-identical (MD5 `c11b93fe3510dea2d6c3193531c974d2`); renamed for its KDB/Twofish content. |
@@ -94,21 +94,6 @@ dependencies are listed in `Cargo.lock` and `extension/package-lock.json` and
 carry their own licences; only the dual-licensed `challenge-response` crate is
 vendored in-tree.
 
-### Licence of the copied database icons
-
-The KeePassXC `COPYING` file assigns the database icon set to four groups. The
-local PNG numbers map directly to the upstream `C0N` file names:
-
-| Local icons | Upstream files | Licence | Copyright |
-|---|---|---|---|
-| 0–6, 8–16, 19–25, 28–34, 36, 39–43, 47–50, 55–58, 59, 60, 62, 63, 65, 67, 68 | `C00`–`C06`, `C08`–`C16`, `C19`–`C25`, `C28`–`C34`, `C36`, `C39`–`C43`, `C47`–`C50`, `C55`–`C58_KGPG`, `C59`, `C60`, `C62`, `C63`, `C65`, `C67`, `C68` | MIT | No copyright line recorded upstream; taken from <https://github.com/icons8/flat-color-icons> |
-| 7, 17, 18, 26, 27, 35, 38, 44, 51, 52, 54, 66 | `C07`, `C17`, `C18`, `C26`, `C27`, `C35`, `C38`, `C44`, `C51`, `C52`, `C54`, `C66` | CC0-1.0 | No copyright line recorded upstream; taken from <https://github.com/paomedia/small-n-flat> |
-| 37, 45, 46, 53, 61 | `C37_KPercentage`, `C45_Cancel`, `C46_Help`, `C53_Apply`, `C61_Services` | MIT | Copyright 2022 KeePassXC Team <team@keepassxc.org> |
-| 64 | `C64_Apple` | GPL-2.0-or-later | `Copyright: GPL-2+` as recorded upstream (the copyright field in KeePassXC's `COPYING`); taken from the Simple Icons repo (<https://github.com/simple-icons/simple-icons/>) |
-
-`C58_KPGP.svg` is a duplicate of `C58_KGPG.svg`; both are rendered by the
-local icon 58 and are covered by the MIT row above.
-
 ## Licence texts
 
 The texts that must accompany the copied assets are in `LICENSES/`:
@@ -116,9 +101,8 @@ The texts that must accompany the copied assets are in `LICENSES/`:
 | File | Applies to |
 |---|---|
 | [`LICENSE`](LICENSE) (GPL-3.0-only) | friendlypass as a whole |
-| [`LICENSES/MIT.txt`](LICENSES/MIT.txt) | icons 0–6, 8–16, 19–25, 28–34, 36, 37, 39–43, 45–50, 53, 55–60, 61–63, 65, 67, 68; vendored `challenge-response` (MIT option) |
-| [`LICENSES/CC0-1.0.txt`](LICENSES/CC0-1.0.txt) | icons 7, 17, 18, 26, 27, 35, 38, 44, 51, 52, 54, 66 |
-| [`LICENSES/GPL-2.0-or-later.txt`](LICENSES/GPL-2.0-or-later.txt) | icon 64 (`C64_Apple`, GPL-2+) and the KeePassXC test databases, which are GPL-2 or GPL-3 |
+| [`LICENSES/MIT.txt`](LICENSES/MIT.txt) | vendored `challenge-response` (MIT option) |
+| [`LICENSES/GPL-2.0-or-later.txt`](LICENSES/GPL-2.0-or-later.txt) | the KeePassXC test databases, which are GPL-2 or GPL-3 |
 | GPL-3.0 → `LICENSE` | keepassxc-browser content-script ports and all KeePassXC-derived code |
 
 For the KeePassXC project as a whole the upstream `COPYING` records
