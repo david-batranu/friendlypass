@@ -2021,22 +2021,16 @@ impl App {
                 .show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(44.0);
-                let key_icon =
-                    crate::icons::IconSpec::Standard(crate::icons::DEFAULT_ENTRY_ICON);
-                egui::Frame::new()
-                    .fill(pal.panel)
-                    .corner_radius(16)
-                    .inner_margin(egui::Margin::same(10))
-                    .stroke(egui::Stroke::new(1.0, pal.border))
-                    .show(ui, |ui| {
-                        ui.set_width(44.0);
-                        crate::icons::draw_icon_sized(
-                            ui,
-                            &mut self.icon_cache,
-                            Some(&key_icon),
-                            42.0,
-                        );
-                    });
+                // Brand mark: the same squircle as the app/window icon.
+                if let Some(icon) =
+                    self.icon_cache
+                        .texture(&ctx, "brand-icon", crate::brand::ICON_PNG)
+                {
+                    ui.add(
+                        egui::Image::from_texture(&icon)
+                            .fit_to_exact_size(egui::vec2(64.0, 64.0)),
+                    );
+                }
                 ui.add_space(10.0);
                 ui.label(
                     egui::RichText::new(crate::brand::NAME)

@@ -44,6 +44,23 @@ function version() {
   return manifest.version;
 }
 
+/** Fail if a manifest references an icon that the build did not copy. */
+function assertManifestIcons(distName) {
+  const dist = path.join(root, distName);
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(dist, "manifest.json"), "utf8"),
+  );
+  const referenced = new Set([
+    ...Object.values(manifest.icons ?? {}),
+    ...Object.values(manifest.action?.default_icon ?? {}),
+  ]);
+  for (const icon of referenced) {
+    if (!fs.existsSync(path.join(dist, icon))) {
+      throw new Error(`${distName}/manifest.json references missing icon: ${icon}`);
+    }
+  }
+}
+
 function zip(distName, fileName) {
   const dist = path.join(root, distName);
   const archive = path.join(artifacts, fileName);
@@ -58,6 +75,8 @@ const packageVersion = version();
 
 run(process.execPath, ["scripts/build.mjs", "chrome"]);
 run(process.execPath, ["scripts/build.mjs", "firefox"]);
+assertManifestIcons("dist");
+assertManifestIcons("dist-firefox");
 
 const webExt = path.join(root, "node_modules", ".bin", "web-ext");
 if (!fs.existsSync(webExt)) {
