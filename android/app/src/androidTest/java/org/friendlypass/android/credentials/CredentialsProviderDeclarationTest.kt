@@ -58,6 +58,17 @@ class CredentialsProviderDeclarationTest {
     }
 
     @Test
+    fun providerStatusMatchesThePlatformAndTheDeclaredService() {
+        val supported = Build.VERSION.SDK_INT >= 34
+        assertEquals(supported, CredentialProviderStatus.isSupported())
+        assertEquals("provider availability must follow the declared service", supported, CredentialProviderStatus.isEnabled(context))
+        if (!supported) {
+            assertFalse(CredentialProviderStatus.isSelected(context))
+        }
+        assertNotNull(CredentialProviderStatus.statusText(context))
+    }
+
+    @Test
     fun credentialActivitiesAreNotExported() {
         for (activity in listOf(CredentialsGetActivity::class.java, CredentialsCreateActivity::class.java)) {
             val info = packageManager.getActivityInfo(ComponentName(context, activity), 0)

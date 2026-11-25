@@ -7,6 +7,7 @@ import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.friendlypass.android.BuildConfig
 import org.friendlypass.android.vault.model.DatabaseRef
 import org.friendlypass.android.vault.model.VaultException
 import java.io.File
@@ -99,7 +100,22 @@ class SafDatabaseStore(
 /** Android implementation of [DocumentGateway] over `ContentResolver` and the app's private files directory. */
 class AndroidDocumentGateway(private val context: Context) : DocumentGateway {
 
+    /**
+     * Debug builds also accept `file://` refs so instrumented tests can copy a real KDBX fixture into
+     * app-private storage and exercise the Rust vault without a SAF picker. Release builds never do.
+     */
+    private fun debugFile(uri: String): File? {
+        if (!BuildConfig.DEBUG) return null
+        val parsed = Uri.parse(uri)
+        if (parsed.scheme != "file") return null
+        val path = parsed.path ?: return null
+        return File(path)
+    }
+
     override fun metadata(uri: String): DocumentMetadata? {
+        debugFile(uri)?.let { file ->
+            return if (file.isFile) DocumentMetadata(file.lastModified(), file.length()) else null
+        }
         val parsed = Uri.parse(uri)
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_LAST_MODIFIED,
@@ -121,6 +137,7 @@ class AndroidDocumentGateway(private val context: Context) : DocumentGateway {
     }
 
     override fun displayName(uri: String): String? {
+        debugFile(uri)?.let { return it.name }
         val parsed = Uri.parse(uri)
         context.contentResolver.query(parsed, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (!it.moveToFirst()) return null
@@ -132,12 +149,18 @@ class AndroidDocumentGateway(private val context: Context) : DocumentGateway {
     }
 
     override fun read(uri: String): ByteArray {
+        debugFile(uri)?.let { file -> return file.readBytes() }
         val parsed = Uri.parse(uri)
         return context.contentResolver.openInputStream(parsed)?.use { it.readBytes() }
             ?: throw java.io.IOException("provider returned no stream")
     }
 
     override fun write(uri: String, bytes: ByteArray) {
+        debugFile(uri)?.let { file ->
+            file.parentFile?.mkdirs()
+            file.writeBytes(bytes)
+            return
+        }
         val parsed = Uri.parse(uri)
         context.contentResolver.openOutputStream(parsed, "wt")?.use { stream ->
             stream.write(bytes)

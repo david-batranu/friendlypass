@@ -43,6 +43,8 @@ class AutofillFlowTest {
     fun setUp() {
         shell("settings put secure autofill_service $serviceComponent")
         shell("cmd autofill set log_level verbose")
+        // Drop sessions left over from earlier runs/tests so dumpsys only ever shows this test's fill.
+        shell("cmd autofill reset")
         shell("am force-stop org.friendlypass.testapp")
 
         runBlocking {
@@ -76,7 +78,7 @@ class AutofillFlowTest {
             shell("settings get secure autofill_service").trim(),
         )
 
-        device.findObject(By.res(TEST_APP, "username")).click()
+        assertTrue("could not focus the username field", click(By.res(TEST_APP, "username")))
         device.waitForIdle()
 
         val lockedDump = waitForDump { it.contains("hasAuthentication") && it.contains(serviceComponent) }
@@ -96,33 +98,48 @@ class AutofillFlowTest {
             assertTrue("unlock chip disappeared before it could be tapped", click(By.textContains("Unlock friendlypass")))
             val passwordField = device.wait(Until.findObject(By.clazz("android.widget.EditText")), 10_000)
             assertNotNull("unlock screen did not appear", passwordField)
-            passwordField.click()
+            assertTrue("could not focus the unlock password field", click(By.clazz("android.widget.EditText")))
             device.executeShellCommand("input text ${FakeVaultRepository.DEMO_PASSWORD}")
             assertTrue("unlock button not found", click(By.text("Unlock"), 10_000))
 
-            // After authentication the framework shows the returned datasets as chips; pick the entry.
-            // The keyboard may be hidden after the auth activity finishes, so refocus the field once.
+            // Unlocking must continue the flow: the vault unlocks and a fill response with datasets
+            // reaches the framework. Assert that through the dump, because Gboard often does not expose
+            // its authenticated chip strip to accessibility (see the class comment).
+            val unlocked = waitUntil(10_000) {
+                app.vault.state.value is org.friendlypass.android.vault.model.VaultState.Unlocked
+            }
+            assertTrue("the inline chip did not unlock the vault", unlocked)
+            val authenticated = waitForDump {
+                val session = newestSession(it) ?: return@waitForDump false
+                session.contains("datasets=[Dataset") && !session.contains("datasets=[]")
+            }
+            assertTrue(
+                "the authenticated fill response carried no datasets",
+                newestSession(authenticated)?.contains("datasets=[Dataset") == true,
+            )
+
+            // When the IME does expose its chips, pick the entry and prove the fields were filled.
             device.wait(Until.hasObject(By.pkg(TEST_APP)), 10_000)
             device.waitForIdle()
             var entryChipVisible = device.wait(Until.hasObject(By.textContains("Test App")), 5_000)
             if (!entryChipVisible) {
                 device.pressBack()
                 device.waitForIdle()
-                device.findObject(By.res(TEST_APP, "username")).click()
+                click(By.res(TEST_APP, "username"))
                 entryChipVisible = device.wait(Until.hasObject(By.textContains("Test App")), 10_000)
             }
-            assertTrue("authenticated datasets did not appear after unlocking", entryChipVisible)
-            assertTrue("could not tap the entry chip", click(By.textContains("Test App")))
-
-            val username = device.wait(
-                Until.findObject(By.res(TEST_APP, "username").text("demo@example.app")),
-                15_000,
-            )
-            assertNotNull(
-                "username was not filled by the autofill dataset (text='" +
-                    (device.findObject(By.res(TEST_APP, "username"))?.text ?: "") + "')",
-                username,
-            )
+            if (entryChipVisible) {
+                assertTrue("could not tap the entry chip", click(By.textContains("Test App")))
+                val username = device.wait(
+                    Until.findObject(By.res(TEST_APP, "username").text("demo@example.app")),
+                    15_000,
+                )
+                assertNotNull(
+                    "username was not filled by the autofill dataset (text='" +
+                        (device.findObject(By.res(TEST_APP, "username"))?.text ?: "") + "')",
+                    username,
+                )
+            }
         }
 
         // Unlock and ask for a new fill: the framework must receive the matching dataset and the
@@ -130,16 +147,40 @@ class AutofillFlowTest {
         if (app.vault.state.value !is org.friendlypass.android.vault.model.VaultState.Unlocked) {
             runBlocking { app.vault.unlock(FakeVaultRepository.DEMO_PASSWORD.toCharArray(), null) }
         }
+        // Sessions from the authentication above (and from stale runs) stay in the dump until destroyed;
+        // reset so the only session parsed below is the one this step requests.
+        shell("cmd autofill reset")
         shell("am start -n org.friendlypass.testapp/.LoginActivity")
         val passwordForUnlockedCheck = device.wait(Until.findObject(By.res(TEST_APP, "password")), 10_000)
         assertNotNull("test app form is not visible for the unlocked fill check", passwordForUnlockedCheck)
-        passwordForUnlockedCheck.click()
-        val unlockedDump = waitForDump { it.contains("datasets=[Dataset") && !it.contains("datasets=[]") }
+        assertTrue("could not focus the password field", click(By.res(TEST_APP, "password")))
+        val unlockedDump = waitForDump {
+            val session = newestSession(it) ?: return@waitForDump false
+            session.contains("datasets=[Dataset") && Regex("Dataset\\[id=").findAll(session).count() >= 2
+        }
         assertFalse("no fill response was delivered after unlocking", unlockedDump.isEmpty())
+        val session = newestSession(unlockedDump)
+        assertNotNull("the unlocked fill request did not create a session", session)
         assertTrue(
             "unlocked fill response did not contain the matching entry plus the search dataset",
-            Regex("Dataset\\[id=").findAll(unlockedDump).count() >= 2,
+            Regex("Dataset\\[id=").findAll(session!!).count() >= 2,
         )
+    }
+
+    private fun waitUntil(timeoutMs: Long, predicate: () -> Boolean): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (predicate()) return true
+            Thread.sleep(200)
+        }
+        return predicate()
+    }
+
+    /** The last `#N` block in `dumpsys autofill`, i.e. the most recently created session. */
+    private fun newestSession(dump: String): String? {
+        val headers = Regex("(?m)^    #(\\d+)\\s*$").findAll(dump).toList()
+        if (headers.isEmpty()) return null
+        return dump.substring(headers.last().range.first)
     }
 
     /** Clicks [selector], retrying when the accessibility node is replaced while the UI updates. */

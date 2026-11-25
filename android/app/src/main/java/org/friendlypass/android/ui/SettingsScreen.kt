@@ -40,6 +40,8 @@ import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.friendlypass.android.FriendlypassApp
+import org.friendlypass.android.autofill.AutofillStatus
+import org.friendlypass.android.credentials.CredentialProviderStatus
 import org.friendlypass.android.settings.AppSettings
 import org.friendlypass.android.vault.model.DatabaseRef
 import org.friendlypass.android.vault.model.VaultState
@@ -140,6 +142,20 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
             Text("App integration", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = AutofillStatus.statusText(context),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("autofill-status"),
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                Text(
+                    text = CredentialProviderStatus.statusText(context),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("credential-provider-status"),
+                )
+            }
             TextButton(
                 onClick = {
                     val intent = Intent(Settings.ACTION_REQUEST_SET_AUTOFILL_SERVICE)
