@@ -18,6 +18,8 @@ cp "$ROOT/target/$PROFILE/friendlypass-browser-host" \
     "$APP/Contents/MacOS/friendlypass-browser-host"
 cp "$ROOT/packaging/macos/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/packaging/macos/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
+cp "$ROOT/NOTICE.md" "$APP/Contents/Resources/NOTICE.md"
 chmod +x "$APP/Contents/MacOS/friendlypass-gui"
 chmod +x "$APP/Contents/MacOS/friendlypass-browser-host"
 

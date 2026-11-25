@@ -27,6 +27,6 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>GPL-3.0-or-later</string>
+	<string>GPL-3.0-only. Based on KeePassXC, Copyright (C) 2016-2023 KeePassXC Team.</string>
 </dict>
 </plist>

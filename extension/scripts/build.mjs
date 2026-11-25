@@ -177,6 +177,15 @@ async function buildTarget(target) {
   await cp(resolve(root, "src/auth/picker.html"), resolve(dist, "auth/picker.html"));
   await cp(resolve(root, "src/auth/picker.css"), resolve(dist, "auth/picker.css"));
   // --- end WP5 block -------------------------------------------------------
+
+  // --- Licence files -------------------------------------------------------
+  // GPL-3.0 sections 4 and 6 require the licence and the notices to travel
+  // with every conveyed copy, including the packaged .zip. Ship the root
+  // LICENSE and NOTICE.md at the archive root next to manifest.json.
+  const repoRoot = resolve(root, "..");
+  await cp(resolve(repoRoot, "LICENSE"), resolve(dist, "LICENSE"));
+  await cp(resolve(repoRoot, "NOTICE.md"), resolve(dist, "NOTICE.md"));
+  // --- end licence block ---------------------------------------------------
 }
 
 const requested = process.argv[2] ?? "chrome";
