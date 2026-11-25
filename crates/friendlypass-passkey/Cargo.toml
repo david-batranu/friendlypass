@@ -1,0 +1,20 @@
+[package]
+name = "friendlypass-passkey"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WebAuthn authenticator and KeePassXC KPEX_PASSKEY_* storage for friendlypass"
+
+[dependencies]
+base64 = "0.22"
+ed25519-dalek = { version = "2.2", features = ["pkcs8", "pem", "rand_core"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = "0.10"
+thiserror = "1"
+
+[dev-dependencies]
+# The integration tests verify signatures with the same pure-Rust crates the
+# authenticator uses; nothing extra is needed beyond the dependencies above.
