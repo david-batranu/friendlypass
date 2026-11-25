@@ -22,3 +22,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "friendlypass-android"
 include(":app")
+include(":testapp")
+
