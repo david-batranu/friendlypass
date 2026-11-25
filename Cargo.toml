@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/friendlypass", "crates/friendlypass-gui", "crates/friendlypass-ssh-agent", "crates/friendlypass-browser", "crates/friendlypass-browser-host"]
+members = ["crates/friendlypass", "crates/friendlypass-gui", "crates/friendlypass-ssh-agent", "crates/friendlypass-browser", "crates/friendlypass-browser-host", "crates/friendlypass-mobile"]
 
 # Local patch: challenge_response 0.5.46's nusb backend calls the Linux-only
 # `DeviceInfo::busnum()` unconditionally and does not build on macOS.

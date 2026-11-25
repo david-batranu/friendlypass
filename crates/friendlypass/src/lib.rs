@@ -22,12 +22,19 @@
 /// KeeShare signer, user agent).
 pub const PRODUCT_NAME: &str = "friendlypass";
 
-pub mod cli;
-pub mod commands;
 pub mod export;
+#[cfg(feature = "cli")]
 pub mod import;
 pub mod kdb;
 pub mod keeshare;
+#[cfg(feature = "cli")]
 pub mod keeshare_signed;
+#[cfg(feature = "cli")]
 pub mod key;
+pub mod matching;
 pub mod saveutil;
+
+#[cfg(feature = "cli")]
+pub mod cli;
+#[cfg(feature = "cli")]
+pub mod commands;

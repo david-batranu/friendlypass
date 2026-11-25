@@ -1,0 +1,24 @@
+[package]
+name = "friendlypass-mobile"
+description = "UniFFI boundary for the friendlypass Android vault (friendlypass_mobile)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "friendlypass_mobile"
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+# The core crate without its desktop/CLI surface (clap, rpassword,
+# challenge-response/USB): the mobile build only needs URL matching.
+friendlypass = { path = "../friendlypass", default-features = false }
+keepass = { version = "0.17", features = ["save_kdbx4", "totp"] }
+thiserror = "2"
+# Wipe passwords and keyfile bytes once they have been folded into the key.
+zeroize = "1"
+uniffi = { version = "0.32", features = ["cli"] }
