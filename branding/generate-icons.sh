@@ -143,6 +143,29 @@ rounded_square "$TMP/mark-full.png" 48 "$EXT_CONTENT" "$EXT_ICONS/icon-48.png"
 rounded_square "$TMP/mark-full.png" 128 "$EXT_CONTENT" "$EXT_ICONS/icon-128.png"
 echo "  extension/src/icons/icon-{16,32,48,128}.png"
 
+if [[ -d "$ROOT/android" ]]; then
+    echo "== Android launcher icon =="
+    # Adaptive icon (API 26+; minSdk 30 only needs the adaptive form): the artwork
+    # supplies a colour background layer and the mark is a foreground PNG on a
+    # 108 dp canvas. The visible safe zone is the middle 72/108 dp, so the mark
+    # is drawn at 70% of the canvas with the same 22.4% corner radius as the
+    # desktop icon. Sizes: mdpi..xxxhdpi = 108/162/216/324/432 px.
+    ANDROID_RES="$ROOT/android/app/src/main/res"
+    for spec in \
+        "mdpi 108" \
+        "hdpi 162" \
+        "xhdpi 216" \
+        "xxhdpi 324" \
+        "xxxhdpi 432"; do
+        read -r density px <<<"$spec"
+        mkdir -p "$ANDROID_RES/mipmap-$density"
+        rounded_square "$TMP/mark-full.png" "$px" 700 \
+            "$ANDROID_RES/mipmap-$density/ic_launcher_foreground.png"
+    done
+    # Background colour sampled from the artwork (res/values/colors.xml).
+    echo "  android/app/src/main/res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher_foreground.png"
+fi
+
 echo "== previews =="
 mkdir -p "$PREVIEW_DIR"
 cp "$EXT_ICONS/icon-128.png" "$PREVIEW_DIR/logo-extension-128.png"

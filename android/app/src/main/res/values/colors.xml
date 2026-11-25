@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sampled from branding/friendlypass-logo.jpg; also the adaptive icon background. -->
+    <color name="friendlypass_background">#A9D39B</color>
+    <color name="friendlypass_window_background">#F7F9F3</color>
+</resources>

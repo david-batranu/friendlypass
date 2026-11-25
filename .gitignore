@@ -1,3 +1,13 @@
 /target
 **/tests/snapshots/**/*.diff.png
 **/tests/snapshots/**/*.new.png
+
+# Android build outputs and machine-local configuration
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.kotlin/
+android/app/src/main/jniLibs
+android/.idea/
+*.apk
+*.aab
