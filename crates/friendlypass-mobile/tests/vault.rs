@@ -8,10 +8,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use friendlypass_mobile::{open_vault, NewLogin, Vault, VaultError};
+use friendlypass_mobile::{
+    open_vault, NewLogin, PasskeyCreateRequest, PasskeyRegistration, Vault, VaultError,
+};
+use friendlypass_passkey::{
+    KPEX_PASSKEY_CREDENTIAL_ID, KPEX_PASSKEY_FLAG_BE, KPEX_PASSKEY_FLAG_BS,
+    KPEX_PASSKEY_PRIVATE_KEY_PEM, KPEX_PASSKEY_RELYING_PARTY, KPEX_PASSKEY_USERNAME,
+    KPEX_PASSKEY_USER_HANDLE,
+};
 use keepass::config::{DatabaseVersion, InnerCipherConfig};
 use keepass::db::{fields, Database, TOTP};
 use keepass::DatabaseKey;
+use p256::ecdsa::signature::Verifier;
+use p256::pkcs8::DecodePublicKey;
+use sha2::{Digest, Sha256};
 
 fn fixture_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -367,4 +377,254 @@ fn password_only_database_created_here_round_trips() {
 #[test]
 fn empty_credentials_are_rejected() {
     expect_invalid_credentials(open_vault(fixture("sample4.kdbx"), None, None));
+}
+
+fn registration_request(rp_id: &str, user_name: &str) -> PasskeyCreateRequest {
+    PasskeyCreateRequest {
+        rp_id: rp_id.to_owned(),
+        rp_name: "Example".to_owned(),
+        user_name: user_name.to_owned(),
+        user_display_name: "Example User".to_owned(),
+        user_handle: b"user-handle".to_vec(),
+        algorithms: vec![friendlypass_passkey::ES256],
+        exclude_credential_ids: Vec::new(),
+    }
+}
+
+fn assert_es256_signature(
+    registration: &PasskeyRegistration,
+    authenticator_data: &[u8],
+    client_data_hash: &[u8],
+    signature: &[u8],
+) {
+    let key = p256::ecdsa::VerifyingKey::from_public_key_der(&registration.public_key_spki_der)
+        .expect("registration returns a P-256 SPKI key");
+    let signature = p256::ecdsa::Signature::from_der(signature).expect("DER ECDSA signature");
+    let mut signed = authenticator_data.to_vec();
+    signed.extend_from_slice(client_data_hash);
+    key.verify(&signed, &signature)
+        .expect("assertion signature verifies with the registration public key");
+}
+
+#[test]
+fn register_passkey_round_trips_survives_save_and_asserts() {
+    let vault = open_sample4();
+    let registration = vault
+        .register_passkey(registration_request("passkey.example", "alice"))
+        .expect("register_passkey succeeds");
+    assert_eq!(registration.algorithm, friendlypass_passkey::ES256);
+    assert_eq!(registration.credential_id.len(), 32);
+    assert_eq!(registration.entry_uuid.len(), 32);
+    assert!(vault.is_modified());
+
+    // The new entry lives in the root group, titled with the relying party.
+    let detail = vault.entry(registration.entry_uuid.clone()).unwrap();
+    assert_eq!(detail.summary.title, "passkey.example");
+    assert_eq!(detail.summary.username, "alice");
+    assert_eq!(detail.summary.url, "https://passkey.example");
+    assert_eq!(detail.summary.group_path, "Root");
+    assert!(detail.summary.has_passkey);
+    assert!(vault
+        .entries_in_group(vault.root_group_uuid())
+        .iter()
+        .any(|entry| entry.uuid == registration.entry_uuid));
+
+    // KeePassXC's protected attributes stay protected.
+    for name in [
+        KPEX_PASSKEY_CREDENTIAL_ID,
+        KPEX_PASSKEY_PRIVATE_KEY_PEM,
+        KPEX_PASSKEY_USER_HANDLE,
+    ] {
+        let field = detail
+            .custom_fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap_or_else(|| panic!("{name} is present"));
+        assert!(field.protected, "{name} must stay protected");
+    }
+    for name in [
+        KPEX_PASSKEY_USERNAME,
+        KPEX_PASSKEY_RELYING_PARTY,
+        KPEX_PASSKEY_FLAG_BE,
+        KPEX_PASSKEY_FLAG_BS,
+    ] {
+        let field = detail
+            .custom_fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap_or_else(|| panic!("{name} is present"));
+        assert!(!field.protected, "{name} must be unprotected");
+    }
+
+    // Before saving, the passkey is discoverable and filters by credential id.
+    let found = vault.passkeys_for_rp("passkey.example".to_owned(), Vec::new());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].entry_uuid, registration.entry_uuid);
+    assert_eq!(found[0].credential_id, registration.credential_id);
+    assert_eq!(found[0].username, "alice");
+    assert_eq!(found[0].user_handle, b"user-handle".to_vec());
+    assert!(vault
+        .passkeys_for_rp("passkey.example".to_owned(), vec![vec![9, 9, 9]])
+        .is_empty());
+    assert_eq!(
+        vault
+            .passkeys_for_rp(
+                "passkey.example".to_owned(),
+                vec![registration.credential_id.clone()],
+            )
+            .len(),
+        1
+    );
+    assert!(vault
+        .passkeys_for_rp("other.example".to_owned(), Vec::new())
+        .is_empty());
+
+    let bytes = vault.save().expect("save succeeds");
+    let reopened =
+        open_vault(bytes, Some("testpassword".to_owned()), None).expect("saved database reopens");
+    let found = reopened.passkeys_for_rp("passkey.example".to_owned(), Vec::new());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].entry_uuid, registration.entry_uuid);
+
+    // Protection flags survive serialisation too.
+    let reopened_detail = reopened.entry(registration.entry_uuid.clone()).unwrap();
+    for name in [
+        KPEX_PASSKEY_CREDENTIAL_ID,
+        KPEX_PASSKEY_PRIVATE_KEY_PEM,
+        KPEX_PASSKEY_USER_HANDLE,
+    ] {
+        let field = reopened_detail
+            .custom_fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap_or_else(|| panic!("{name} is present after reopening"));
+        assert!(field.protected, "{name} must stay protected across save");
+    }
+
+    let client_data_json = friendlypass_passkey::client_data_json(
+        "webauthn.get",
+        b"challenge",
+        "https://passkey.example",
+        None,
+    );
+    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
+    let assertion = reopened
+        .assert_passkey(
+            registration.entry_uuid.clone(),
+            "passkey.example".to_owned(),
+            client_data_hash.to_vec(),
+        )
+        .expect("assert_passkey succeeds after reopening");
+    assert_eq!(assertion.credential_id, registration.credential_id);
+    assert_eq!(assertion.user_handle, b"user-handle".to_vec());
+    assert_es256_signature(
+        &registration,
+        &assertion.authenticator_data,
+        &client_data_hash,
+        &assertion.signature,
+    );
+
+    assert!(matches!(
+        reopened.assert_passkey(
+            registration.entry_uuid,
+            "other.example".to_owned(),
+            client_data_hash.to_vec(),
+        ),
+        Err(VaultError::NotFound)
+    ));
+    assert!(matches!(
+        reopened.assert_passkey(
+            "ffffffffffffffffffffffffffffffff".to_owned(),
+            "passkey.example".to_owned(),
+            client_data_hash.to_vec(),
+        ),
+        Err(VaultError::NotFound)
+    ));
+}
+
+#[test]
+fn keepassxc_format_passkey_entry_is_found_and_signs() {
+    // Build an entry the way KeePassXC writes it: the exact KPEX_PASSKEY_*
+    // attribute names, protected flags and base64url values.
+    let registration = friendlypass_passkey::register(
+        "keepassxc.example",
+        "bob@example.com",
+        b"kpdx-handle",
+        &[friendlypass_passkey::ES256],
+    )
+    .expect("generate a KeePassXC passkey");
+
+    let mut database = Database::new();
+    database.config.version = DatabaseVersion::KDB4(1);
+    database.config.inner_cipher_config = InnerCipherConfig::ChaCha20;
+    {
+        let mut root = database.root_mut();
+        let mut entry = root.add_entry();
+        entry.set_unprotected(fields::TITLE, "KeePassXC Passkey");
+        entry.set_unprotected(fields::USERNAME, "bob@example.com");
+        for field in registration.passkey.to_fields() {
+            if field.protected {
+                entry.set_protected(field.name, field.value);
+            } else {
+                entry.set_unprotected(field.name, field.value);
+            }
+        }
+    }
+    let mut bytes = Vec::new();
+    database
+        .save(&mut bytes, DatabaseKey::new().with_password("pw"))
+        .expect("test database saves");
+
+    let vault = open_vault(bytes, Some("pw".to_owned()), None).expect("opens");
+    let found = vault.passkeys_for_rp("keepassxc.example".to_owned(), Vec::new());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].credential_id, registration.credential_id);
+    assert_eq!(found[0].username, "bob@example.com");
+    assert!(found[0].entry_uuid.len() == 32);
+
+    let entry = vault
+        .all_entries()
+        .into_iter()
+        .find(|entry| entry.title == "KeePassXC Passkey")
+        .expect("KeePassXC entry listed");
+    assert!(entry.has_passkey);
+
+    let client_data_json = friendlypass_passkey::client_data_json(
+        "webauthn.get",
+        b"challenge",
+        "https://keepassxc.example",
+        None,
+    );
+    let client_data_hash = Sha256::digest(client_data_json.as_bytes());
+    let assertion = vault
+        .assert_passkey(
+            entry.uuid,
+            "keepassxc.example".to_owned(),
+            client_data_hash.to_vec(),
+        )
+        .expect("KeePassXC-format passkey signs");
+    assert_eq!(assertion.credential_id, registration.credential_id);
+
+    let key = p256::ecdsa::VerifyingKey::from_public_key_der(&registration.public_key_spki_der)
+        .expect("P-256 SPKI");
+    let signature = p256::ecdsa::Signature::from_der(&assertion.signature).expect("DER signature");
+    let mut signed = assertion.authenticator_data.clone();
+    signed.extend_from_slice(&client_data_hash);
+    key.verify(&signed, &signature)
+        .expect("KeePassXC-format assertion verifies");
+}
+
+#[test]
+fn register_passkey_honours_excluded_credentials() {
+    let vault = open_sample4();
+    let registration = vault
+        .register_passkey(registration_request("excluded.example", "carol"))
+        .unwrap();
+
+    let mut request = registration_request("excluded.example", "carol");
+    request.exclude_credential_ids = vec![registration.credential_id];
+    assert!(matches!(
+        vault.register_passkey(request),
+        Err(VaultError::Unsupported { .. })
+    ));
 }

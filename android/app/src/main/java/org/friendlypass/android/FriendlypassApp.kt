@@ -12,7 +12,7 @@ import org.friendlypass.android.storage.DatabaseStore
 import org.friendlypass.android.storage.PrefsRecentStore
 import org.friendlypass.android.storage.SafDatabaseStore
 import org.friendlypass.android.unlock.BiometricUnlock
-import org.friendlypass.android.vault.FakeVaultRepository
+import org.friendlypass.android.vault.RustVaultRepository
 import org.friendlypass.android.vault.VaultRepository
 
 /**
@@ -47,8 +47,8 @@ class FriendlypassApp : Application() {
     override fun onCreate() {
         super.onCreate()
         settings = AppSettings(this)
-        vault = FakeVaultRepository()
         store = SafDatabaseStore(AndroidDocumentGateway(this), PrefsRecentStore(this))
+        vault = RustVaultRepository(store, this)
         autoLock = AutoLockController(vault, timeoutMillis = { settings.lockTimeoutMillis })
         biometric = BiometricUnlock(this)
         ContextCompat.registerReceiver(

@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use friendlypass::matching::{self, MatchCandidate, MatchTarget};
+use friendlypass_passkey::StoredPasskey;
 use keepass::config::{DatabaseVersion, InnerCipherConfig};
 use keepass::db::{fields, Database, Entry, EntryRef, GroupRef, Times};
 use keepass::DatabaseKey;
@@ -111,6 +112,48 @@ pub struct NewLogin {
     pub url: Option<String>,
     /// Written to the `AndroidApp` field when set.
     pub android_app: Option<String>,
+}
+
+/// A passkey stored in an entry (KeePassXC `KPEX_PASSKEY_*` attributes).
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyInfo {
+    pub entry_uuid: String,
+    pub credential_id: Vec<u8>,
+    pub rp_id: String,
+    pub username: String,
+    pub user_handle: Vec<u8>,
+}
+
+/// A `navigator.credentials.create` request.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyCreateRequest {
+    pub rp_id: String,
+    pub rp_name: String,
+    pub user_name: String,
+    pub user_display_name: String,
+    pub user_handle: Vec<u8>,
+    pub algorithms: Vec<i64>,
+    pub exclude_credential_ids: Vec<Vec<u8>>,
+}
+
+/// The result of creating a passkey; `entry_uuid` is the new root-group entry.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyRegistration {
+    pub entry_uuid: String,
+    pub credential_id: Vec<u8>,
+    pub authenticator_data: Vec<u8>,
+    pub attestation_object: Vec<u8>,
+    pub public_key_spki_der: Vec<u8>,
+    pub algorithm: i64,
+}
+
+/// The result of asserting a passkey.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct PasskeyAssertion {
+    pub credential_id: Vec<u8>,
+    pub authenticator_data: Vec<u8>,
+    pub signature: Vec<u8>,
+    pub user_handle: Vec<u8>,
 }
 
 /// An unlocked database. Interior mutability (`Mutex`) lets Kotlin share one
@@ -330,6 +373,134 @@ impl Vault {
         self.modified.load(Ordering::SeqCst)
     }
 
+    /// Every passkey for `rp_id`, optionally narrowed to `allow_credential_ids`
+    /// (the WebAuthn `allowCredentials` list). Recycle-bin entries are skipped.
+    pub fn passkeys_for_rp(
+        &self,
+        rp_id: String,
+        allow_credential_ids: Vec<Vec<u8>>,
+    ) -> Vec<PasskeyInfo> {
+        let database = self.database();
+        let recycle = recycle_ids(&database);
+        database
+            .iter_all_entries()
+            .filter(|entry| !in_recycle(entry, &recycle))
+            .filter_map(|entry| {
+                let passkey = stored_passkey(&entry)?;
+                if passkey.rp_id != rp_id {
+                    return None;
+                }
+                if !allow_credential_ids.is_empty()
+                    && !allow_credential_ids
+                        .iter()
+                        .any(|id| id.as_slice() == passkey.credential_id.as_slice())
+                {
+                    return None;
+                }
+                Some(PasskeyInfo {
+                    entry_uuid: uuid_of_entry(&entry),
+                    credential_id: passkey.credential_id,
+                    rp_id: passkey.rp_id,
+                    username: passkey.username,
+                    user_handle: passkey.user_handle,
+                })
+            })
+            .collect()
+    }
+
+    /// Create a passkey and store it in a new root-group entry titled `rp_id`.
+    ///
+    /// The entry carries KeePassXC's `KPEX_PASSKEY_*` attributes, with the
+    /// credential id, private key and user handle in the protected stream.
+    pub fn register_passkey(
+        &self,
+        req: PasskeyCreateRequest,
+    ) -> Result<PasskeyRegistration, VaultError> {
+        let PasskeyCreateRequest {
+            rp_id,
+            rp_name: _,
+            user_name,
+            user_display_name: _,
+            user_handle,
+            algorithms,
+            exclude_credential_ids,
+        } = req;
+
+        if !exclude_credential_ids.is_empty() {
+            let database = self.database();
+            let excluded = database.iter_all_entries().any(|entry| {
+                stored_passkey(&entry).is_some_and(|passkey| {
+                    passkey.rp_id == rp_id
+                        && exclude_credential_ids
+                            .iter()
+                            .any(|id| id.as_slice() == passkey.credential_id.as_slice())
+                })
+            });
+            if excluded {
+                return Err(VaultError::Unsupported {
+                    msg: "a matching credential is excluded".to_owned(),
+                });
+            }
+        }
+
+        let registration =
+            friendlypass_passkey::register(&rp_id, &user_name, &user_handle, &algorithms)
+                .map_err(passkey_error)?;
+
+        let entry_uuid = {
+            let mut database = self.lock_database();
+            let now = Times::now();
+            let mut root = database.root_mut();
+            let mut entry = root.add_entry();
+            entry.set_unprotected(fields::TITLE, rp_id.clone());
+            entry.set_unprotected(fields::USERNAME, user_name.clone());
+            entry.set_unprotected(fields::URL, format!("https://{rp_id}"));
+            for field in registration.passkey.to_fields() {
+                if field.protected {
+                    entry.set_protected(field.name, field.value);
+                } else {
+                    entry.set_unprotected(field.name, field.value);
+                }
+            }
+            entry.times.creation = Some(now);
+            entry.times.last_modification = Some(now);
+            uuid_of_entry(&entry)
+        };
+        self.modified.store(true, Ordering::SeqCst);
+
+        Ok(PasskeyRegistration {
+            entry_uuid,
+            credential_id: registration.credential_id,
+            authenticator_data: registration.authenticator_data,
+            attestation_object: registration.attestation_object,
+            public_key_spki_der: registration.public_key_spki_der,
+            algorithm: registration.algorithm,
+        })
+    }
+
+    /// Sign `client_data_hash` with the passkey stored on `entry_uuid`.
+    pub fn assert_passkey(
+        &self,
+        entry_uuid: String,
+        rp_id: String,
+        client_data_hash: Vec<u8>,
+    ) -> Result<PasskeyAssertion, VaultError> {
+        let database = self.database();
+        let entry = find_entry(&database, &entry_uuid).ok_or(VaultError::NotFound)?;
+        let passkey = stored_passkey(&entry).ok_or(VaultError::NotFound)?;
+        if passkey.rp_id != rp_id {
+            return Err(VaultError::NotFound);
+        }
+        let assertion =
+            friendlypass_passkey::assert(&passkey, &client_data_hash).map_err(passkey_error)?;
+        Ok(PasskeyAssertion {
+            credential_id: assertion.credential_id,
+            authenticator_data: assertion.authenticator_data,
+            signature: assertion.signature,
+            user_handle: assertion.user_handle,
+        })
+    }
+
     /// Serialize to KDBX 4.1 bytes with the credentials the vault was opened
     /// with. KDBX 3 databases are upgraded for saving (the `keepass` writer
     /// only emits KDBX 4), exactly like the desktop app.
@@ -456,6 +627,40 @@ fn find_entry<'a>(database: &'a Database, uuid: &str) -> Option<EntryRef<'a>> {
     database
         .iter_all_entries()
         .find(|entry| uuid_of_entry(entry) == uuid)
+}
+
+/// Reads a KeePassXC-format passkey from an entry's fields. Protected values
+/// are transparently unprotected by the `keepass` crate here; they stay
+/// protected in the database and in the saved bytes.
+fn stored_passkey(entry: &EntryRef<'_>) -> Option<StoredPasskey> {
+    StoredPasskey::from_fields(|name| entry.get(name).map(str::to_owned))
+}
+
+fn passkey_error(error: friendlypass_passkey::PasskeyError) -> VaultError {
+    use friendlypass_passkey::PasskeyError as Error;
+    match error {
+        Error::EmptyRpId => VaultError::Unsupported {
+            msg: "empty relying party id".to_owned(),
+        },
+        Error::UnsupportedAlgorithm(algorithm) => VaultError::Unsupported {
+            msg: format!("unsupported WebAuthn algorithm: {algorithm}"),
+        },
+        Error::InvalidBase64 => VaultError::Corrupt {
+            msg: "invalid base64url data in a passkey field".to_owned(),
+        },
+        Error::InvalidKey(msg) => VaultError::Corrupt {
+            msg: format!("invalid passkey private key: {msg}"),
+        },
+        Error::InvalidClientDataHash { len } => VaultError::Corrupt {
+            msg: format!("invalid client data hash length: {len}"),
+        },
+        Error::Random => VaultError::Io {
+            msg: "random number generator failed".to_owned(),
+        },
+        Error::Crypto(msg) => VaultError::Io {
+            msg: format!("cryptographic operation failed: {msg}"),
+        },
+    }
 }
 
 fn recycle_ids(database: &Database) -> HashSet<String> {

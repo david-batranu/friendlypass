@@ -2398,7 +2398,10 @@ name = "friendlypass-mobile"
 version = "0.1.0"
 dependencies = [
  "friendlypass",
+ "friendlypass-passkey",
  "keepass",
+ "p256",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "uniffi",
  "zeroize",
