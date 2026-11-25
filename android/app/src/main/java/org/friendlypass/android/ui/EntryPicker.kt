@@ -51,17 +51,19 @@ fun EntryPicker(
     onEntrySelected: (EntrySummary) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Only entries that can produce a one-time code (autofill picker opened for an OTP field). */
+    onlyWithTotp: Boolean = false,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as FriendlypassApp
     var query by remember { mutableStateOf("") }
-    val results = remember(query) {
+    val results = remember(query, onlyWithTotp) {
         if (query.isBlank()) {
             emptyList()
         } else {
             runCatching { app.vault.search(query) }.getOrElse { error ->
                 if (error is VaultException) emptyList() else throw error
-            }
+            }.filter { !onlyWithTotp || it.hasTotp }
         }
     }
 
@@ -91,7 +93,7 @@ fun EntryPicker(
                         value = query,
                         onValueChange = { query = it },
                         singleLine = true,
-                        placeholder = { Text("Search entries") },
+                        placeholder = { Text(if (onlyWithTotp) "Search entries with a one-time code" else "Search entries") },
                         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                         modifier = Modifier
                             .fillMaxWidth()

@@ -47,6 +47,14 @@ class AutofillUiTest {
     }
 
     @Test
+    fun otpTitleSaysOneTimeCodeAndCarriesNoCode() {
+        val title = AutofillUi(context).otpTitle("OTP Account").toString()
+
+        assertEquals("OTP Account · one-time code", title)
+        assertEquals(false, title.contains("287082"))
+    }
+
+    @Test
     fun presentationTextNeverContainsASecret() {
         // The plan carries no password field at all; this pins the pipeline by building the plan from a
         // candidate and checking the rendered view text.

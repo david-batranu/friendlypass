@@ -34,6 +34,7 @@ object AutofillMatching {
                 title = summary.title,
                 username = summary.username.ifBlank { summary.url },
                 password = detail.password,
+                hasTotp = summary.hasTotp,
             )
         }
     }

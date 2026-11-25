@@ -9,7 +9,10 @@
     <!-- Unlocked state -->
     <string name="autofill_search">Search friendlypass…</string>
     <string name="autofill_search_subtitle">Choose an entry</string>
-    <string name="autofill_error_no_fields">No username or password field to fill</string>
+    <string name="autofill_error_no_fields">No username, password or one-time code field to fill</string>
+
+    <!-- One-time codes (TOTP) -->
+    <string name="autofill_otp_title">%1$s · one-time code</string>
 
     <!-- Save sheet -->
     <string name="autofill_save_title">Save login?</string>

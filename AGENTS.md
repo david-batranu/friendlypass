@@ -148,6 +148,13 @@ Debug-only extras and test hooks (never in release):
   `credtest.friendlypass.test`. The credential provider is selected in tests by
   `settings put secure credential_service …`; the emulator's default is Google
   Password Manager.
+- OTP autofill tests use `app/src/androidTest/assets/otp-autofill.kdbx`
+  (password `testpassword`, one `OTP Account` entry with an `otp` field,
+  `URL=https://appassets.androidplatform.net` and
+  `AndroidApp=org.friendlypass.testapp`). `:testapp` serves
+  `assets/otp.html`, `assets/otp-split.html` and `assets/otp-combined.html`
+  through `WebLoginActivity` (`-e org.friendlypass.testapp.PAGE otp-split`),
+  and `LoginActivity` continues to `OtpActivity` for the username `otp-user`.
 
 ## Known gotchas (all checked in this checkout)
 

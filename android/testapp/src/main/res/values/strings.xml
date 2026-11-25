@@ -8,4 +8,7 @@
     <string name="password_hint">Password</string>
     <string name="sign_in">Sign in</string>
     <string name="open_web_login">Open web login</string>
+    <string name="otp_heading">Two-step verification</string>
+    <string name="otp_explainer">A native one-time-code form used to exercise friendlypass TOTP autofill.</string>
+    <string name="otp_hint">One-time code</string>
 </resources>

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>friendlypass segmented one-time code</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; background: #f7f9f3; color: #1a1c18; }
+    h1 { font-size: 1.4rem; }
+    p { font-size: 0.85rem; color: #43483f; }
+    .boxes { display: flex; gap: 8px; margin-top: 24px; }
+    .boxes input { width: 100%; box-sizing: border-box; padding: 12px 0; font-size: 1.2rem;
+                   text-align: center; border: 1px solid #b9c2b2; border-radius: 8px; background: #fff; }
+    button { margin-top: 24px; width: 100%; padding: 14px; font-size: 1rem; border: 0;
+             border-radius: 20px; background: #3e6b38; color: #fff; }
+  </style>
+</head>
+<body>
+  <h1>Two-step verification</h1>
+  <p>Enter the six digits of your one-time code.</p>
+  <form autocomplete="on">
+    <div class="boxes">
+      <input id="otp-1" name="otp-1" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 1">
+      <input id="otp-2" name="otp-2" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 2">
+      <input id="otp-3" name="otp-3" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 3">
+      <input id="otp-4" name="otp-4" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 4">
+      <input id="otp-5" name="otp-5" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 5">
+      <input id="otp-6" name="otp-6" type="text" inputmode="numeric" maxlength="1" aria-label="Digit 6">
+    </div>
+    <button type="button" id="verify">Verify</button>
+  </form>
+</body>
+</html>

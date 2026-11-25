@@ -52,6 +52,14 @@
             android:taskAffinity=""
             android:theme="@style/AutofillDialog" />
 
+        <!-- No UI: generates a fresh TOTP at tap time and returns the filled dataset. -->
+        <activity
+            android:name=".autofill.AutofillOtpActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@style/AutofillInvisible" />
+
         <activity
             android:name=".autofill.AutofillSaveActivity"
             android:excludeFromRecents="true"

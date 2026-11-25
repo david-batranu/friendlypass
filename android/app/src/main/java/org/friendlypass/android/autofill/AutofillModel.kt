@@ -17,6 +17,8 @@ data class AutofillNode(
     val hint: String? = null,
     val text: String? = null,
     val inputType: Int = 0,
+    /** `ViewStructure.ViewNode.maxTextLength`; -1 when the field does not limit its length. */
+    val maxLength: Int = -1,
     val autofillHints: List<String>? = null,
     val htmlInfo: HtmlAttributes? = null,
     val webDomain: String? = null,
@@ -36,19 +38,27 @@ data class HtmlAttributes(
     val attributes: Map<String, String> = emptyMap(),
 )
 
-enum class FieldRole { USERNAME, PASSWORD }
+enum class FieldRole { USERNAME, PASSWORD, OTP }
 
 /** Result of [AutofillParser.parse]: which node indexes are credential fields, plus the page's web origin. */
 data class ParsedForm(
     val usernameFieldIndices: List<Int> = emptyList(),
     val passwordFieldIndices: List<Int> = emptyList(),
+    /**
+     * One-time-code fields in document order. Segmented inputs (six single-digit boxes) are listed
+     * individually; [otpGroups] says which of them belong together.
+     */
+    val otpFieldIndices: List<Int> = emptyList(),
+    /** Every group of OTP fields: a one-field group for a normal input, N fields for a segmented one. */
+    val otpGroups: List<List<Int>> = emptyList(),
     val webDomain: String? = null,
     val webScheme: String? = null,
     val hasHtmlFields: Boolean = false,
 ) {
     val hasUsername: Boolean get() = usernameFieldIndices.isNotEmpty()
     val hasPassword: Boolean get() = passwordFieldIndices.isNotEmpty()
-    val hasCredentials: Boolean get() = hasUsername || hasPassword
+    val hasOtp: Boolean get() = otpFieldIndices.isNotEmpty()
+    val hasCredentials: Boolean get() = hasUsername || hasPassword || hasOtp
 }
 
 /**
@@ -61,13 +71,27 @@ sealed interface AutofillTarget {
     data class App(val packageName: String) : AutofillTarget
 }
 
-/** The password/username field ids of one fill request, in the order the service received them. */
+/** The password/username/one-time-code field ids of one fill request, in the order the service received them. */
 data class FieldIds(
     val usernameIds: List<AutofillId>,
     val passwordIds: List<AutofillId>,
+    val otpIds: List<AutofillId> = emptyList(),
+    /**
+     * Grouping of [otpIds], one size per group: `[1]` for a single input, `[6]` for six single-digit
+     * boxes. Empty is treated as one group covering every OTP id.
+     */
+    val otpGroupSizes: List<Int> = emptyList(),
 ) {
-    val all: List<AutofillId> get() = usernameIds + passwordIds
-    val isEmpty: Boolean get() = usernameIds.isEmpty() && passwordIds.isEmpty()
+    val all: List<AutofillId> get() = usernameIds + passwordIds + otpIds
+    val isEmpty: Boolean get() = usernameIds.isEmpty() && passwordIds.isEmpty() && otpIds.isEmpty()
+    val hasOtp: Boolean get() = otpIds.isNotEmpty()
+
+    /** Group sizes with the "one group for every id" fallback applied. */
+    fun otpGroups(): List<Int> = when {
+        otpIds.isEmpty() -> emptyList()
+        otpGroupSizes.isEmpty() -> listOf(otpIds.size)
+        else -> otpGroupSizes
+    }
 
     companion object {
         val EMPTY = FieldIds(emptyList(), emptyList())
@@ -83,6 +107,8 @@ data class FillCandidate(
     val username: String,
     /** Only written into `AutofillValue`s, never into a presentation. */
     val password: String,
+    /** True when the entry has an `otpauth://` secret the OTP flow can use. */
+    val hasTotp: Boolean = false,
 )
 
 /** Presentation-only description of one dataset: deliberately carries no secret. */

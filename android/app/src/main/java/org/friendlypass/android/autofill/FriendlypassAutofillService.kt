@@ -23,11 +23,13 @@ import org.friendlypass.android.vault.model.VaultState
  *   [AutofillAuthActivity], which unlocks and returns datasets through
  *   `AutofillManager.EXTRA_AUTHENTICATION_RESULT`.
  * - **Unlocked**: one dataset per matching entry plus a pinned "Search friendlypass…" dataset that opens
- *   [AutofillPickActivity].
+ *   [AutofillPickActivity]. When the request has a one-time-code field, only entries with a TOTP secret are
+ *   offered, each as an authenticated dataset whose chip reads "<title> · one-time code" and which computes
+ *   the code at tap time in [AutofillOtpActivity].
  * - **Save**: the request is handed to [AutofillSaveActivity] via `SaveCallback.onSuccess(IntentSender)`.
  *
- * Requests from our own app, requests without a username/password field, and web origins we cannot
- * attribute (see [AutofillTargets]) are ignored.
+ * Requests from our own app, requests without a username/password/one-time-code field, and web origins we
+ * cannot attribute (see [AutofillTargets]) are ignored.
  */
 class FriendlypassAutofillService : AutofillService() {
 
@@ -62,11 +64,17 @@ class FriendlypassAutofillService : AutofillService() {
         val fields = FieldIds(
             usernameIds = parsed.usernameFieldIndices.mapNotNull { reading[it] },
             passwordIds = parsed.passwordFieldIndices.mapNotNull { reading[it] },
+            otpIds = parsed.otpFieldIndices.mapNotNull { reading[it] },
+            otpGroupSizes = parsed.otpGroups.map { it.size },
         )
         if (fields.isEmpty) {
             callback.onFailure(getString(R.string.autofill_error_no_fields))
             return
         }
+
+        // A dataset chosen during the previous fill session is the entry the user just used; remember it
+        // for the OTP ordering. The client state names the target the selection belonged to.
+        recordHistorySelection()
 
         val inline = request.inlineSuggestionsRequest
         val spec = inline?.inlinePresentationSpecs?.firstOrNull()
@@ -75,6 +83,7 @@ class FriendlypassAutofillService : AutofillService() {
             TAG,
             "fill request: pkg=${reading.activityPackage} target=$target " +
                 "usernameFields=${fields.usernameIds.size} passwordFields=${fields.passwordIds.size} " +
+                "otpFields=${fields.otpIds.size} otpGroups=${fields.otpGroups()} " +
                 "inlineSpec=${spec != null} max=$maxSuggestions " +
                 "locked=${app.vault.state.value !is VaultState.Unlocked}",
         )
@@ -143,12 +152,36 @@ class FriendlypassAutofillService : AutofillService() {
         maxSuggestions: Int,
         spec: InlinePresentationSpec?,
     ): FillResponse {
-        val candidates = AutofillMatching.candidates(app.vault, target)
+        var candidates = AutofillMatching.candidates(app.vault, target)
+        if (fields.hasOtp) {
+            // An OTP request only offers entries that can actually produce a code; the entry used most
+            // recently for this same target comes first, the rest stay in match-score order.
+            candidates = AutofillRecents.prioritize(target, candidates.filter { it.hasTotp })
+        }
         return if (candidates.isEmpty()) {
             ui.searchOnlyResponse(fields, target, callingPackage, maxSuggestions, spec)
         } else {
             ui.unlockedResponse(fields, target, callingPackage, candidates, maxSuggestions, spec)
         }
+    }
+
+    /** Records the dataset the user chose in the previous session, if the framework kept its history. */
+    @Suppress("DEPRECATION")
+    private fun recordHistorySelection() {
+        val history = try {
+            fillEventHistory
+        } catch (e: Exception) {
+            null
+        } ?: return
+        val targetKey = history.clientState?.getString(AutofillExtras.STATE_TARGET_KEY) ?: return
+        val event = history.events.orEmpty().lastOrNull { event ->
+            event.type == android.service.autofill.FillEventHistory.Event.TYPE_DATASET_SELECTED ||
+                event.type == android.service.autofill.FillEventHistory.Event.TYPE_DATASET_AUTHENTICATION_SELECTED
+        } ?: return
+        val datasetId = event.datasetId ?: return
+        if (datasetId == AutofillDatasetPlanner.SEARCH_ID) return
+        AutofillRecents.recordKey(targetKey, datasetId)
+        Log.d(TAG, "recent fill recorded for $targetKey (type=${event.type})")
     }
 
     /**
