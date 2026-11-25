@@ -23,6 +23,34 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Credential Manager provider (API 34+; values-v34 enables it). -->
+        <service
+            android:name=".credentials.FriendlypassCredentialProviderService"
+            android:enabled="@bool/credentials_provider_enabled"
+            android:exported="true"
+            android:label="@string/credentials_provider_label"
+            android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.credentials.CredentialProviderService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.credentials.provider"
+                android:resource="@xml/provider" />
+        </service>
+
+        <activity
+            android:name=".credentials.CredentialsGetActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@style/Theme.Friendlypass" />
+
+        <activity
+            android:name=".credentials.CredentialsCreateActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@style/Theme.Friendlypass" />
+
     </application>
 
 </manifest>

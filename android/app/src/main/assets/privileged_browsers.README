@@ -1,0 +1,13 @@
+Privileged browser allowlist for the Credential Manager provider
+===============================================================
+
+File:   privileged_browsers.json
+Source: https://www.gstatic.com/gpm-passkeys-privileged-apps/apps.json
+Fetched: 2026-11-25
+SHA-256: 0891ee2507894999ead3eb4f42e17936a2e8ed8f8fd95592535c9811ef319481
+Size:   29657 bytes
+
+This is Google's published list of Android apps (browsers and similar) whose claimed web origin the
+platform is allowed to trust for passkey requests. `androidx.credentials.provider.CallingAppInfo.getOrigin`
+validates the calling package and signing certificate against it. The app itself has no INTERNET
+permission; refresh this file by re-downloading the URL above (and update the date/hash here).
