@@ -5,11 +5,28 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Desktop/CLI surface: argument parsing, password prompts, challenge-response
+# keys, import/export formats and the `friendlypass` binary. Mobile builds use
+# `default-features = false` and only need `matching` (plus `saveutil`).
+default = ["cli"]
+cli = [
+    "dep:clap",
+    "dep:rpassword",
+    "dep:zip",
+    "keepass/challenge_response",
+]
+
+[[bin]]
+name = "friendlypass"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
-keepass = { version = "0.17", features = ["save_kdbx4", "challenge_response", "totp"] }
+keepass = { version = "0.17", features = ["save_kdbx4", "totp"] }
 rust-argon2 = "3.0"
-clap = { version = "4", features = ["derive"] }
-rpassword = "7"
+clap = { version = "4", features = ["derive"], optional = true }
+rpassword = { version = "7", optional = true }
 anyhow = "1"
 sha2 = { version = "0.10", features = ["oid"] }
 hex = "0.4"
@@ -19,7 +36,7 @@ uuid = "1.29.3"
 base64 = "0.23.1"
 rsa = { version = "0.9", features = ["sha2"] }
 x509-cert = { version = "0.2", features = ["builder", "pem"] }
-zip = "2"
+zip = { version = "2", optional = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
 csv = "1.4"
 roxmltree = "0.21"

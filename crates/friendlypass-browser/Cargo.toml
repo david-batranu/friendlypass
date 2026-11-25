@@ -14,6 +14,9 @@ base64 = "0.22"
 anyhow = "1"
 libc = "0.2"
 keepass = { version = "0.17.0", features = ["totp", "save_kdbx4"] }
+# URL/app matching is shared with the Android vault (`friendlypass::matching`).
+# The browser only needs the dependency-free part of the core crate.
+friendlypass = { path = "../friendlypass", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # App-side peer verification: cdhash comparison needs CoreFoundation types
@@ -22,9 +25,6 @@ core-foundation = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
-# Used only by `examples/test_server.rs`, the headless protocol server the
-# Phase-1 never-disconnect e2e suite runs against fixtures/sample4.kdbx.
-friendlypass = { path = "../friendlypass" }
 
 [[example]]
 name = "test_server"
