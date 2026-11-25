@@ -297,6 +297,12 @@ export function mergeObservedStatus(
     appVersion: status.appVersion ?? hello.appVersion,
     locked: status.locked ?? hello.locked,
     databaseHash: status.databaseHash ?? hello.databaseHash,
+    // Additive host fields: a host that reports them in `ping` refreshes the
+    // cached `hello` copy too, and an older host simply omits them.
+    ...(status.appTrusted !== undefined
+      ? { appTrusted: status.appTrusted }
+      : {}),
+    ...(status.browser !== undefined ? { browser: status.browser } : {}),
   };
 }
 
@@ -1030,6 +1036,10 @@ class NativeTransportImpl implements NativeTransport {
         databaseHash: status.databaseHash,
         hostVersion: status.hostVersion,
         protocolVersion: status.protocolVersion,
+        ...(status.appTrusted !== undefined
+          ? { appTrusted: status.appTrusted }
+          : {}),
+        ...(status.browser !== undefined ? { browser: status.browser } : {}),
       };
     }
 

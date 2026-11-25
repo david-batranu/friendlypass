@@ -269,6 +269,29 @@ export interface HostHelloRequest {
 
 export type HostRequestFrame = HostPingRequest | HostHelloRequest;
 
+/** Browser family the host verified the launching process as (§2 `browser.kind`). */
+export type BrowserKind =
+  | "chrome"
+  | "chromium"
+  | "brave"
+  | "edge"
+  | "firefox"
+  | "unknown";
+
+/**
+ * Host-verified identity of the browser that launched it (§2 `host-identify`).
+ * Optional and additive: an older host omits it entirely.
+ */
+export interface BrowserIdentity {
+  kind: BrowserKind;
+  /** True when the host verified the browser's code signature/RPM policy. */
+  verified: boolean;
+  /** Canonical executable path, when the host reported one. */
+  executable?: string;
+  /** macOS team id, or null on platforms where it does not apply. */
+  teamId?: string | null;
+}
+
 export interface HostStatus {
   /** True when the host currently has a live socket to the app. */
   appRunning: boolean;
@@ -278,6 +301,13 @@ export interface HostStatus {
   locked: boolean | null;
   /** Database hash when unlocked and known, otherwise null. */
   databaseHash: DbHash | null;
+  /**
+   * [friendlypass] True when the app verified this host binary as its peer.
+   * Optional: an older host does not send it.
+   */
+  appTrusted?: boolean;
+  /** [friendlypass] Browser identity the host verified. Optional. */
+  browser?: BrowserIdentity;
 }
 
 export interface HostPingResponse extends HostStatus {
@@ -553,6 +583,14 @@ export const WATCHDOG_ALARM_PERIOD_MINUTES = 0.5;
 export const REQUEST_TIMEOUT_MS = 10000;
 export const LONG_REQUEST_TIMEOUT_MS = 30000;
 
+/**
+ * Automatic pairing state for the current database hash.
+ *
+ * `idle` is also the state once an association is established; `failed` means
+ * an automatic attempt was denied/failed and the UI must offer manual Connect.
+ */
+export type PairingState = "idle" | "pairing" | "failed";
+
 export interface ConnectionSnapshot {
   state: ConnectionState;
   /** Host-level `appRunning`; true only while the app socket is live. */
@@ -563,6 +601,15 @@ export interface ConnectionSnapshot {
   locked: boolean;
   /** True when `test-associate` succeeded for the current keyring entry. */
   associated: boolean;
+  /** Automatic pairing progress for the current database hash. */
+  pairing: PairingState;
+  /**
+   * [friendlypass] Host-verified app trust, when the host reports it.
+   * Null/absent from older hosts and while disconnected.
+   */
+  appTrusted: boolean | null;
+  /** [friendlypass] Browser identity reported by the host, when present. */
+  browser: BrowserIdentity | null;
   /** Current database hash, when known. */
   databaseHash: DbHash | null;
   hostVersion: string | null;
@@ -677,6 +724,8 @@ export interface StatusSummary {
   databaseOpen: boolean;
   locked: boolean;
   associated: boolean;
+  /** Automatic pairing progress; `failed` means show the manual Connect button. */
+  pairing: PairingState;
   databaseHash: DbHash | null;
   state: ConnectionState;
   hostVersion: string | null;

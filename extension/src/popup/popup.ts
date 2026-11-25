@@ -227,6 +227,10 @@ const lockButton = byId<HTMLButtonElement>("lock-database");
 const diagnostics = byId<HTMLDetailsElement>("diagnostics");
 const diagHost = byId("diag-host");
 const diagApp = byId("diag-app");
+const diagBrowser = byId("diag-browser");
+const diagBrowserLabel = byId("diag-browser-label");
+const diagTrust = byId("diag-trust");
+const diagTrustLabel = byId("diag-trust-label");
 const diagProtocol = byId("diag-protocol");
 const diagReconnects = byId("diag-reconnects");
 const diagError = byId("diag-error");
@@ -309,6 +313,24 @@ function shortHash(hash: string | null): string {
   return `${hash.slice(0, 8)}…`;
 }
 
+const BROWSER_LABELS: Record<string, string> = {
+  chrome: "Chrome",
+  chromium: "Chromium",
+  brave: "Brave",
+  edge: "Edge",
+  firefox: "Firefox",
+  unknown: "Unknown",
+};
+
+/** "Chrome (verified)" when the host reported a browser identity, else null. */
+function describeBrowser(
+  browser: { kind: string; verified: boolean } | null,
+): string | null {
+  if (browser === null) return null;
+  const label = BROWSER_LABELS[browser.kind] ?? "Unknown";
+  return `${label} (${browser.verified ? "verified" : "not verified"})`;
+}
+
 function statusView(status: StatusSummary): StatusView {
   if (status.state === "CONNECTING" || status.state === "HANDSHAKING") {
     return {
@@ -346,6 +368,14 @@ function statusView(status: StatusSummary): StatusView {
           await refreshStatus();
         },
       },
+    };
+  }
+  if (status.pairing === "pairing") {
+    return {
+      title: "Connecting to this database…",
+      detail: "Waiting for friendlypass to trust this browser.",
+      tone: "muted",
+      spinner: true,
     };
   }
   if (!status.associated) {
@@ -590,6 +620,7 @@ function emptyMessage(): string {
   }
   if (!status.appRunning) return "Start friendlypass to see logins.";
   if (status.locked) return "Unlock friendlypass to see logins.";
+  if (status.pairing === "pairing") return "Connecting to this database…";
   if (!status.associated) return "Connect this browser to see logins.";
   if (!isWebUrl(state.url)) return "This page cannot be filled.";
   return `No logins for ${host}`;
@@ -715,6 +746,19 @@ async function refreshDiagnostics(): Promise<void> {
   const connection = result.value.connection;
   diagHost.textContent = connection.hostVersion ?? "—";
   diagApp.textContent = connection.appVersion ?? "—";
+  const browser = describeBrowser(connection.browser);
+  diagBrowser.hidden = browser === null;
+  diagBrowserLabel.hidden = browser === null;
+  diagBrowser.textContent = browser ?? "—";
+  const trusted =
+    typeof connection.appTrusted === "boolean"
+      ? connection.appTrusted
+        ? "Trusted"
+        : "Not trusted"
+      : null;
+  diagTrust.hidden = trusted === null;
+  diagTrustLabel.hidden = trusted === null;
+  diagTrust.textContent = trusted ?? "—";
   diagProtocol.textContent = `v${connection.protocolVersion}`;
   diagReconnects.textContent = String(result.value.reconnects);
   diagError.textContent =
@@ -832,7 +876,13 @@ document.addEventListener("keydown", (event) => {
 let loginContext = "";
 
 function contextKey(status: StatusSummary): string {
-  return [status.state, status.appRunning, status.locked, status.associated].join("|");
+  return [
+    status.state,
+    status.appRunning,
+    status.locked,
+    status.associated,
+    status.pairing,
+  ].join("|");
 }
 
 let refreshTimer: number | null = null;
