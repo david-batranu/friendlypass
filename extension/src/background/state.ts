@@ -252,6 +252,9 @@ export function initialSnapshot(): ConnectionSnapshot {
     databaseOpen: false,
     locked: false,
     associated: false,
+    pairing: "idle",
+    appTrusted: null,
+    browser: null,
     databaseHash: null,
     hostVersion: null,
     appVersion: null,
@@ -425,6 +428,7 @@ function statusFromSnapshot(snapshot: ConnectionSnapshot): StatusSummary {
     databaseOpen: snapshot.databaseOpen,
     locked: snapshot.locked,
     associated: snapshot.associated,
+    pairing: snapshot.pairing,
     databaseHash: snapshot.databaseHash,
     state: snapshot.state,
     hostVersion: snapshot.hostVersion,
@@ -441,6 +445,10 @@ function sameSnapshot(a: ConnectionSnapshot, b: ConnectionSnapshot): boolean {
     a.databaseOpen === b.databaseOpen &&
     a.locked === b.locked &&
     a.associated === b.associated &&
+    a.pairing === b.pairing &&
+    a.appTrusted === b.appTrusted &&
+    a.browser?.kind === b.browser?.kind &&
+    a.browser?.verified === b.browser?.verified &&
     a.databaseHash === b.databaseHash &&
     a.hostVersion === b.hostVersion &&
     a.appVersion === b.appVersion &&
@@ -648,6 +656,10 @@ export function createStateStore(options: StateStoreOptions = {}): StateStore {
               appVersion: snapshot.appVersion,
               locked: snapshot.locked,
               databaseHash: snapshot.databaseHash,
+              ...(snapshot.appTrusted !== null
+                ? { appTrusted: snapshot.appTrusted }
+                : {}),
+              ...(snapshot.browser !== null ? { browser: snapshot.browser } : {}),
             };
       return {
         entries: diagnostics.map((entry) => ({ ...entry })),

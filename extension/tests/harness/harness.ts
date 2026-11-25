@@ -57,6 +57,11 @@ export interface HarnessOptions {
   appMode?: "mock" | "rust";
   /** Built `test_server` example; defaults to target/debug/examples/test_server. */
   testServerBinary?: string;
+  /**
+   * Start the Node app mock with `associate` denied (error 6). Only meaningful
+   * with `appMode: "mock"`; the real Rust test server auto-approves.
+   */
+  denyAssociations?: boolean;
 }
 
 /** The lifecycle surface the harness needs from either app backend. */
@@ -159,6 +164,7 @@ export class Harness {
         app = new AppMock({
           socketPath: paths.appSocket,
           logPath: paths.appLog,
+          denyAssociations: options.denyAssociations === true,
         });
       }
       await app.start();
@@ -439,6 +445,15 @@ export class Harness {
       return this.app.stall(ms);
     }
     throw new Error("stallApp() requires the Node app mock");
+  }
+
+  /** Simulate the app user approving or denying association prompts. */
+  setAssociationDenied(denied: boolean): void {
+    if (this.app instanceof AppMock) {
+      this.app.setAssociationDenied(denied);
+      return;
+    }
+    throw new Error("setAssociationDenied() requires the Node app mock");
   }
 
   sendCorruptFrame(): boolean {

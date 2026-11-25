@@ -67,6 +67,7 @@ import { errorMessageFor } from "../../src/common/messages";
 import {
   KpxcErrorCode,
   type AssociationRecord,
+  type GetLoginsResponse,
   type HostHelloResponse,
   type HostToExtensionFrame,
   type NativeRequestFrame,
@@ -855,26 +856,40 @@ describe("session lifecycle", () => {
     expect(harness.counters.testAssociate).toBe(2);
   });
 
-  it("stays READY but unassociated when the stored association is stale", async () => {
+  it("recovers from a stale stored association with an automatic associate", async () => {
     const stale: AssociationRecord = {
       ...STANDARD_ASSOCIATION,
       id: "stale-id",
     };
     const harness = await createHarness({ association: stale });
-    // The app does not know this association (stale id/key).
+    // The app does not know this association (stale id/key), so test-associate
+    // fails and contract §6 asks the extension to associate automatically.
     harness.host.associations = [];
     const snapshot = await harness.session.ensureSession();
     expect(snapshot.state).toBe("READY");
     expect(snapshot.associated).toBe(false);
     expect(snapshot.lastError?.code).toBe(KpxcErrorCode.ASSOCIATION_FAILED);
 
-    await expect(
-      harness.session.request({
-        action: "get-logins",
-        requiresAssociation: true,
-        buildInner: () => buildGetLoginsInner({ url: "https://example.com/" }),
-      }),
-    ).rejects.toMatchObject({ code: KpxcErrorCode.ASSOCIATION_FAILED });
+    // The attempt is queued after the handshake settles.
+    const deadline = Date.now() + 2000;
+    while (!harness.session.snapshot().associated && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(harness.session.snapshot().associated).toBe(true);
+    expect(harness.session.snapshot().lastError).toBeNull();
+    // The stale keyring record was replaced under the same hash.
+    const keyRing = await harness.store.keyRing();
+    expect(keyRing[DB_HASH].id).toBe("chrome-work-laptop");
+
+    // Credential actions are serialised with the automatic association and
+    // therefore succeed without a manual Connect.
+    const response = await harness.session.request<GetLoginsResponse>({
+      action: "get-logins",
+      requiresAssociation: true,
+      buildInner: () => buildGetLoginsInner({ url: "https://example.com/" }),
+    });
+    expect(response.entries).toHaveLength(1);
+    expect(response.entries[0].login).toBe("alice@example.com");
   });
 
   it("associates on demand, persists the keyring and then serves credential actions", async () => {

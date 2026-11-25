@@ -37,7 +37,7 @@ import {
 import { createNativeTransport } from "./transport";
 import type { NativeTransport, TransportStateEvent } from "./transport";
 import { ensureWatchdogAlarm, registerLifecycleListeners } from "./lifecycle";
-import { createSession } from "./session";
+import { createSession, sanitiseBrowserIdentity } from "./session";
 import type { ProtocolSession } from "./session";
 import { broadcastEvent } from "./broadcast";
 import { createStateStore, normaliseOrigin, upsertSiteException } from "./state";
@@ -299,6 +299,11 @@ function handleTransportState(event: TransportStateEvent): void {
         patch.hostVersion = event.hello.hostVersion;
         patch.appVersion = event.hello.appVersion;
         patch.protocolVersion = event.hello.protocolVersion;
+        patch.appTrusted =
+          typeof event.hello.appTrusted === "boolean"
+            ? event.hello.appTrusted
+            : null;
+        patch.browser = sanitiseBrowserIdentity(event.hello.browser);
         if (snapshot.state === "DISCONNECTED") {
           patch.state = "READY";
         }

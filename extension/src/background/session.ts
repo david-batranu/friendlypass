@@ -73,10 +73,12 @@ import {
   type NativeErrorFrame,
   type NativeRequestFrame,
   type NativeSuccessFrame,
+  type PairingState,
   type ProtocolError,
   type SetLoginRequest,
   type TestAssociateRequest,
   type AssociationRecord,
+  type BrowserIdentity,
 } from "../common/types";
 import type {
   NativeTransport,
@@ -689,6 +691,51 @@ export function isHexUuid(value: string): boolean {
   return HEX_UUID.test(value);
 }
 
+const BROWSER_KINDS = [
+  "chrome",
+  "chromium",
+  "brave",
+  "edge",
+  "firefox",
+  "unknown",
+] as const;
+
+/**
+ * [friendlypass] Validate the optional `browser` identity from `hello`/`ping`.
+ * Unknown shapes are dropped rather than displayed; the field is additive and
+ * an older host simply omits it.
+ */
+export function sanitiseBrowserIdentity(value: unknown): BrowserIdentity | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const kind = value["kind"];
+  const verified = value["verified"];
+  if (
+    typeof kind !== "string" ||
+    !(BROWSER_KINDS as readonly string[]).includes(kind) ||
+    typeof verified !== "boolean"
+  ) {
+    return null;
+  }
+  const browser: BrowserIdentity = {
+    kind: kind as BrowserIdentity["kind"],
+    verified,
+  };
+  if (typeof value["executable"] === "string" && value["executable"].length > 0) {
+    browser.executable = value["executable"];
+  }
+  const teamId = value["teamId"];
+  if (typeof teamId === "string" || teamId === null) {
+    browser.teamId = teamId;
+  }
+  return browser;
+}
+
+function optionalTrust(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
 export function createSession(deps: SessionDependencies): ProtocolSession {
   const { transport, store } = deps;
   const now = deps.now ?? (() => Date.now());
@@ -708,6 +755,27 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
   let revalidationQueued = false;
   let revalidationAgain = false;
   let lastError: ProtocolError | null = null;
+
+  // --- automatic pairing (§6) ---------------------------------------------
+  //
+  // At most one associate may be in flight. `pairQueue` serialises manual and
+  // automatic attempts; `autoPairAttempted` is the per-service-worker-lifetime
+  // "once per database hash" ledger (a successful or failed attempt consumes
+  // it), and `failedPairs` is what the UI surfaces as the manual fallback.
+  let pairingState: PairingState = "idle";
+  let pairingHash: DbHash | null = null;
+  let autoPairPending = false;
+  let pairInFlight: Promise<{ id: string; hash: DbHash }> | null = null;
+  let pairQueue: Promise<unknown> = Promise.resolve();
+  const autoPairAttempted = new Set<DbHash>();
+  const failedPairs = new Set<DbHash>();
+  /**
+   * Identification public key used by this service-worker lifetime when the
+   * keyring has no record yet. One key per lifetime keeps repeated associate
+   * calls idempotent (the app reuses the existing association instead of
+   * seeing a second, unrelated identity for the same suggested id).
+   */
+  let sessionIdentityKey: B64 | null = null;
 
   const pendingByNonce = new Map<B64, Pending>();
   const pendingByAction = new Map<string, Pending[]>();
@@ -825,11 +893,16 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
   function noteLocked(error: ProtocolError = makeProtocolError(KpxcErrorCode.DATABASE_NOT_OPENED)): void {
     associated = false;
     lastError = error;
+    if (pairInFlight === null) {
+      pairingState = "idle";
+      pairingHash = null;
+    }
     updateSnapshot({
       state: "LOCKED",
       locked: true,
       databaseOpen: false,
       associated: false,
+      pairing: pairingForHash(store.snapshot().databaseHash),
       lastError: error,
     });
   }
@@ -997,6 +1070,7 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
         databaseHash: frame.databaseHash ?? null,
         databaseOpen: false,
         associated: false,
+        pairing: pairingForHash(null),
         lastError: error,
       });
       return;
@@ -1012,13 +1086,22 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
           : previous.protocolVersion,
       locked: frame.locked ?? previous.locked,
       databaseHash: frame.databaseHash ?? previous.databaseHash,
+      ...(typeof frame.appTrusted === "boolean"
+        ? { appTrusted: frame.appTrusted }
+        : {}),
+      ...(sanitiseBrowserIdentity(frame.browser) !== null
+        ? { browser: sanitiseBrowserIdentity(frame.browser) }
+        : {}),
     });
     if (appRunning && !previous.appRunning) {
       // The app answered again: move READY back to a fresh handshake. When a
       // handshake is already running it may have read a stale app-down `hello`,
       // so re-run it once it settles rather than dropping the transition.
       if (previous.state !== "HANDSHAKING") {
-        updateSnapshot({ state: "READY", lastError: null });
+        // HANDSHAKING (not READY) so the popup/options show "Connecting"
+        // instead of flashing the manual Connect fallback while the
+        // association is revalidated.
+        updateSnapshot({ state: "HANDSHAKING", lastError: null });
       }
       scheduleRevalidate(true);
     }
@@ -1074,6 +1157,148 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
     clearKeys();
     generation += 1;
     inFlight = null;
+  }
+
+  // --- automatic pairing ---------------------------------------------------
+
+  /** Public pairing state for a database hash (the UI's Connect fallback). */
+  function pairingForHash(hash: DbHash | null): PairingState {
+    if (hash !== null && pairingHash === hash) {
+      return pairingState;
+    }
+    if (hash !== null && failedPairs.has(hash)) {
+      return "failed";
+    }
+    return "idle";
+  }
+
+  /**
+   * Run one `associate` after every earlier attempt settled. Automatic and
+   * manual attempts share this queue, so two callers can never send
+   * `associate` concurrently (contract §6).
+   */
+  function queueAssociate(
+    auto: boolean,
+  ): Promise<{ id: string; hash: DbHash }> {
+    const run = async (): Promise<{ id: string; hash: DbHash }> => {
+      const hash = store.snapshot().databaseHash;
+      pairingState = "pairing";
+      pairingHash = hash;
+      updateSnapshot({ pairing: "pairing" });
+      try {
+        const result = await associateNow();
+        failedPairs.delete(result.hash);
+        pairingState = "idle";
+        pairingHash = null;
+        updateSnapshot({ pairing: "idle" });
+        return result;
+      } catch (cause) {
+        const error = asProtocolError(cause);
+        if (error.code === KpxcErrorCode.DATABASE_NOT_OPENED) {
+          // The database locked mid-attempt: the preconditions never held, so
+          // this is not a failure for the hash and a later unlock may retry.
+          if (auto && hash !== null) {
+            autoPairAttempted.delete(hash);
+          }
+          pairingState = "idle";
+          pairingHash = null;
+        } else {
+          // Includes a user denial (code 6). Stop auto-trying for this hash
+          // and let the UI offer the manual Connect button.
+          if (hash !== null) {
+            failedPairs.add(hash);
+          }
+          pairingState = "failed";
+          pairingHash = hash;
+          lastError = error;
+        }
+        updateSnapshot({
+          pairing: pairingForHash(store.snapshot().databaseHash),
+          ...(error.code === KpxcErrorCode.DATABASE_NOT_OPENED
+            ? {}
+            : { lastError: error }),
+        });
+        throw cause;
+      }
+    };
+    const promise = pairQueue.then(run, run);
+    pairQueue = promise.then(
+      () => undefined,
+      () => undefined,
+    );
+    pairInFlight = promise;
+    void promise.then(
+      () => {
+        if (pairInFlight === promise) {
+          pairInFlight = null;
+        }
+      },
+      () => {
+        if (pairInFlight === promise) {
+          pairInFlight = null;
+        }
+      },
+    );
+    return promise;
+  }
+
+  /**
+   * Wait for an in-flight association (automatic or manual) to settle. An
+   * encrypted credential action started while the browser is still pairing
+   * must not race it: the app would answer error 8 and the happy path would
+   * look broken. The pairing promise is bounded by its own long timeout.
+   */
+  async function waitForPairing(): Promise<void> {
+    const pending = pairInFlight;
+    if (pending === null) {
+      return;
+    }
+    try {
+      await pending;
+    } catch {
+      // The typed failure is already exposed through `pairing`/`lastError`.
+    }
+  }
+
+  /**
+   * Execute a queued automatic attempt once no handshake is running. Called
+   * from `ensureSession()`'s `finally`, which is the only place the handshake
+   * promise is cleared: the attempt therefore never interleaves with
+   * `change-public-keys`/`get-databasehash`/`test-associate` frames.
+   */
+  function maybeRunAutoPair(): void {
+    if (!autoPairPending || inFlight !== null) {
+      return;
+    }
+    autoPairPending = false;
+    const snapshot = store.snapshot();
+    const hash = snapshot.databaseHash;
+    const eligible =
+      hash !== null &&
+      pairInFlight === null &&
+      snapshot.state === "READY" &&
+      snapshot.appRunning &&
+      snapshot.databaseOpen &&
+      !snapshot.locked &&
+      !snapshot.associated;
+    if (!eligible) {
+      // The state changed between scheduling and running (disconnect, lock,
+      // manual association). Give the opportunity back rather than burning the
+      // per-hash attempt.
+      if (hash !== null) {
+        autoPairAttempted.delete(hash);
+      }
+      if (pairingState === "pairing" && pairingHash === hash) {
+        pairingState = "idle";
+        pairingHash = null;
+        updateSnapshot({ pairing: "idle" });
+      }
+      return;
+    }
+    void queueAssociate(true).catch(() => {
+      // The failure is already exposed through `pairing`/`lastError`; the
+      // fire-and-forget path must not produce an unhandled rejection.
+    });
   }
 
   /**
@@ -1303,6 +1528,8 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
         protocolVersion: hello.protocolVersion,
         locked: hello.locked === true,
         databaseHash: hello.databaseHash ?? null,
+        appTrusted: optionalTrust(hello.appTrusted),
+        browser: sanitiseBrowserIdentity(hello.browser),
       });
 
       if (hello.appRunning !== true) {
@@ -1323,6 +1550,8 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
             appVersion: hello.appVersion ?? null,
             locked: hello.locked === true,
             databaseHash: hello.databaseHash ?? null,
+            appTrusted: optionalTrust(hello.appTrusted),
+            browser: sanitiseBrowserIdentity(hello.browser),
           });
         }
       }
@@ -1336,6 +1565,7 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
           databaseOpen: false,
           locked: hello.locked === true,
           associated: false,
+          pairing: pairingForHash(null),
           databaseHash: hello.databaseHash ?? null,
           attempt: 0,
           lastError: null,
@@ -1400,16 +1630,35 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
       }
 
       sessionValid = true;
+      // No working association? Ask once, automatically, before the user sees
+      // a manual Connect button. The decision is made here, after the
+      // handshake settled, and the attempt itself runs from `ensureSession()`'s
+      // `finally` so it never interleaves with handshake frames.
+      const autoPair =
+        !associated &&
+        pairingForHash(hash) !== "failed" &&
+        !autoPairAttempted.has(hash) &&
+        pairInFlight === null;
+      if (autoPair) {
+        autoPairAttempted.add(hash);
+        autoPairPending = true;
+        pairingState = "pairing";
+        pairingHash = hash;
+      }
       updateSnapshot({
         state: "READY",
         appRunning: true,
         databaseOpen: true,
         locked: false,
         associated,
+        pairing: autoPair ? "pairing" : pairingForHash(hash),
         databaseHash: hash,
         attempt: 0,
         lastError,
       });
+      if (autoPair) {
+        maybeRunAutoPair();
+      }
       return store.snapshot();
     } catch (cause) {
       return failSession(token, cause);
@@ -1457,6 +1706,7 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
         if (inFlight === promise) {
           inFlight = null;
         }
+        maybeRunAutoPair();
       });
     inFlight = promise;
     return promise;
@@ -1531,9 +1781,15 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
   }
 
   async function request<T>(options: SessionRequestOptions): Promise<T> {
-    const snapshot = await ensureSession({
+    let snapshot = await ensureSession({
       triggerUnlock: options.triggerUnlock === true,
     });
+    if (!snapshot.associated && pairInFlight !== null) {
+      // Serialise with automatic pairing: the attempt settles, then this
+      // action sees the fresh association instead of a spurious error 8.
+      await waitForPairing();
+      snapshot = store.snapshot();
+    }
     if (!snapshot.appRunning) {
       throw makeProtocolError(
         KpxcErrorCode.TIMEOUT_OR_NOT_CONNECTED,
@@ -1628,15 +1884,129 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
     );
     lastError = error;
     void rejectAllPending(error);
+    if (pairInFlight === null) {
+      pairingState = "idle";
+      pairingHash = null;
+    }
     updateSnapshot({
       state: "DISCONNECTED",
       appRunning: false,
       databaseOpen: false,
       locked: false,
       associated: false,
+      pairing: pairingForHash(null),
       databaseHash: null,
       lastError: error,
     });
+  }
+
+  /**
+   * One `associate` exchange. Callers must go through {@link queueAssociate};
+   * this function assumes the preconditions were checked and the session is
+   * READY.
+   */
+  async function associateNow(): Promise<{ id: string; hash: DbHash }> {
+    const snapshot = await ensureSession({ triggerUnlock: true });
+    if (!snapshot.appRunning) {
+      throw makeProtocolError(
+        KpxcErrorCode.TIMEOUT_OR_NOT_CONNECTED,
+        "friendlypass is not running",
+      );
+    }
+    if (snapshot.state === "LOCKED") {
+      throw (
+        snapshot.lastError ??
+        makeProtocolError(KpxcErrorCode.DATABASE_NOT_OPENED)
+      );
+    }
+    if (snapshot.state !== "READY") {
+      throw (
+        snapshot.lastError ??
+        makeProtocolError(
+          KpxcErrorCode.TIMEOUT_OR_NOT_CONNECTED,
+          "Session is not ready",
+        )
+      );
+    }
+    if (!keys || !sessionValid) {
+      throw makeProtocolError(
+        KpxcErrorCode.CLIENT_PUBLIC_KEY_NOT_RECEIVED,
+        "No session public key; handshake required",
+      );
+    }
+    // Read the keyring before capturing the session keys: the lookup yields,
+    // so a concurrent re-handshake must not leave us sending an identity key
+    // paired with a different session key (the app answers error 8 then).
+    const keyRing = await store.keyRing();
+    const current = store.snapshot();
+    if (!keys || !sessionValid) {
+      throw makeProtocolError(
+        KpxcErrorCode.CLIENT_PUBLIC_KEY_NOT_RECEIVED,
+        "No session public key; handshake required",
+      );
+    }
+    const sessionKeys = keys;
+    const existingRecord = current.databaseHash
+      ? keyRing[current.databaseHash]
+      : undefined;
+    let idKey = existingRecord?.key;
+    if (idKey === undefined) {
+      if (sessionIdentityKey === null) {
+        const identity = makeIdentityKeyPair();
+        if (identity.publicKey.length !== KEY_BYTES) {
+          throw makeProtocolError(
+            KpxcErrorCode.ENCRYPTION_KEY_UNRECOGNIZED,
+            "Identity keypair generation failed",
+          );
+        }
+        sessionIdentityKey = encodeBase64(identity.publicKey);
+      }
+      idKey = sessionIdentityKey;
+    }
+    const response = await sendEncryptedNow<AssociateResponse>(
+      KpxcAction.ASSOCIATE,
+      () =>
+        buildAssociateInner({
+          key: encodeBase64(sessionKeys.clientPublicKey),
+          idKey,
+        }),
+      { triggerUnlock: true, timeoutMs: longTimeout },
+    );
+    if (typeof response.id !== "string" || response.id.length === 0) {
+      throw makeProtocolError(
+        KpxcErrorCode.ASSOCIATION_FAILED,
+        "Association response has no id",
+      );
+    }
+    if (!/^[0-9a-f]{64}$/.test(response.hash ?? "")) {
+      throw makeProtocolError(
+        KpxcErrorCode.DATABASE_HASH_NOT_RECEIVED,
+        "Association response has no database hash",
+      );
+    }
+    const at = now();
+    const record: AssociationRecord = {
+      id: response.id,
+      key: idKey,
+      hash: response.hash,
+      created: at,
+      lastUsed: at,
+    };
+    await store.putAssociation(response.hash, record);
+    associated = true;
+    association = { id: record.id, key: record.key };
+    lastError = null;
+    updateSnapshot({
+      state: "READY",
+      appRunning: true,
+      databaseOpen: true,
+      locked: false,
+      associated: true,
+      databaseHash: response.hash,
+      pairing: "idle",
+      lastError: null,
+    });
+    return { id: response.id, hash: response.hash };
   }
 
   const transportHandlers: TransportHandlers = {
@@ -1674,12 +2044,17 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
       );
       lastError = error;
       void rejectAllPending(error);
+      if (pairInFlight === null) {
+        pairingState = "idle";
+        pairingHash = null;
+      }
       updateSnapshot({
         state: "DISCONNECTED",
         appRunning: false,
         databaseOpen: false,
         locked: false,
         associated: false,
+        pairing: pairingForHash(null),
         databaseHash: null,
         lastError: error,
       });
@@ -1734,86 +2109,7 @@ export function createSession(deps: SessionDependencies): ProtocolSession {
     },
 
     async associate() {
-      const snapshot = await ensureSession({ triggerUnlock: true });
-      if (!snapshot.appRunning) {
-        throw makeProtocolError(
-          KpxcErrorCode.TIMEOUT_OR_NOT_CONNECTED,
-          "friendlypass is not running",
-        );
-      }
-      if (snapshot.state === "LOCKED") {
-        throw (
-          snapshot.lastError ??
-          makeProtocolError(KpxcErrorCode.DATABASE_NOT_OPENED)
-        );
-      }
-      if (snapshot.state !== "READY") {
-        throw (
-          snapshot.lastError ??
-          makeProtocolError(
-            KpxcErrorCode.TIMEOUT_OR_NOT_CONNECTED,
-            "Session is not ready",
-          )
-        );
-      }
-      if (!keys || !sessionValid) {
-        throw makeProtocolError(
-          KpxcErrorCode.CLIENT_PUBLIC_KEY_NOT_RECEIVED,
-          "No session public key; handshake required",
-        );
-      }
-      const sessionKeys = keys;
-      const identity = makeIdentityKeyPair();
-      if (identity.publicKey.length !== KEY_BYTES) {
-        throw makeProtocolError(
-          KpxcErrorCode.ENCRYPTION_KEY_UNRECOGNIZED,
-          "Identity keypair generation failed",
-        );
-      }
-      const idKey = encodeBase64(identity.publicKey);
-      const response = await sendEncryptedNow<AssociateResponse>(
-        KpxcAction.ASSOCIATE,
-        () =>
-          buildAssociateInner({
-            key: encodeBase64(sessionKeys.clientPublicKey),
-            idKey,
-          }),
-        { triggerUnlock: true, timeoutMs: longTimeout },
-      );
-      if (typeof response.id !== "string" || response.id.length === 0) {
-        throw makeProtocolError(
-          KpxcErrorCode.ASSOCIATION_FAILED,
-          "Association response has no id",
-        );
-      }
-      if (!/^[0-9a-f]{64}$/.test(response.hash ?? "")) {
-        throw makeProtocolError(
-          KpxcErrorCode.DATABASE_HASH_NOT_RECEIVED,
-          "Association response has no database hash",
-        );
-      }
-      const at = now();
-      const record: AssociationRecord = {
-        id: response.id,
-        key: idKey,
-        hash: response.hash,
-        created: at,
-        lastUsed: at,
-      };
-      await store.putAssociation(response.hash, record);
-      associated = true;
-      association = { id: record.id, key: record.key };
-      lastError = null;
-      updateSnapshot({
-        state: "READY",
-        appRunning: true,
-        databaseOpen: true,
-        locked: false,
-        associated: true,
-        databaseHash: response.hash,
-        lastError: null,
-      });
-      return { id: response.id, hash: response.hash };
+      return queueAssociate(false);
     },
 
     async testAssociate() {

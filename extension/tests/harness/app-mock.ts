@@ -85,6 +85,11 @@ function loadFixture(): Fixture {
 export interface AppMockOptions {
   socketPath: string;
   logPath: string;
+  /**
+   * Start with `associate` denied (error 6). Used by the automatic-pairing
+   * tests to observe the manual Connect fallback without a GUI prompt.
+   */
+  denyAssociations?: boolean;
 }
 
 interface Session {
@@ -115,6 +120,7 @@ export class AppMock {
 
   private stallUntil = 0;
   private locked = false;
+  private associationDenied: boolean;
   /** Monotonic counter so `generate-password` returns a distinct value. */
   private generatedPasswords = 0;
 
@@ -128,10 +134,22 @@ export class AppMock {
   constructor(options: AppMockOptions) {
     this.socketPath = options.socketPath;
     this.logPath = options.logPath;
+    this.associationDenied = options.denyAssociations === true;
   }
 
   get listening(): boolean {
     return this.server !== null;
+  }
+
+  /** `true` while `associate` is answered with error 6 (user denial). */
+  get isAssociationDenied(): boolean {
+    return this.associationDenied;
+  }
+
+  /** Simulate the user approving or denying association prompts. */
+  setAssociationDenied(denied: boolean): void {
+    this.associationDenied = denied;
+    this.appendLog({ event: "association-policy", denied });
   }
 
   get connectionCount(): number {
@@ -400,6 +418,11 @@ export class AppMock {
         return;
 
       case "associate": {
+        if (this.associationDenied) {
+          this.appendLog({ event: "associate-denied" });
+          this.outerError(socket, action, 6, "Association denied");
+          return;
+        }
         // The extension generates a fresh identity key per install, so the mock
         // accepts whatever 32-byte key it is given (production stores it and
         // verifies it on `test-associate`). Golden-vector replays still work:

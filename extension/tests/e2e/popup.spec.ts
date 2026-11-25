@@ -133,8 +133,15 @@ async function waitForStatus(
   throw new Error(`status never matched; last: ${JSON.stringify(last)}`);
 }
 
-/** Associate the browser with the app mock's database (retries startup races). */
+/** Wait for the automatic pairing to associate the test database. */
 async function associate(harness: Harness): Promise<void> {
+  try {
+    await waitForStatus(harness, (status) => status.associated === true, 20_000);
+    return;
+  } catch {
+    // Automatic pairing may have been denied; fall back to the manual request
+    // exactly like the popup's Connect button.
+  }
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
@@ -492,28 +499,56 @@ test("locked: the unlock button asks the app to unlock", async ({ stack }) => {
   await page.close();
 });
 
-test("not connected to this database: Connect associates the browser", async ({
+test("automatic pairing: the popup reaches Connected without clicking anything", async ({
   stack,
 }) => {
   const { harness, pages } = stack;
-  // No association yet: a fresh profile starts unassociated.
+  // No setup call and no click anywhere: the background must associate on its
+  // own when it sees an unlocked database without a working association.
   const page = await openLocalPage(stack, "/login");
   const tabId = await tabIdFor(harness, `${pages.baseUrl}/login`);
   const popup = await openPopup(harness, tabId);
 
-  await expect(statusTitle(popup)).toHaveText("Not connected to this database");
-  await expect(popup.locator("#status-action")).toHaveText("Connect");
-  await expect(popup.locator("#logins .empty-state")).toContainText(
-    "Connect this browser",
-  );
-  await capture(popup, "popup-not-connected");
-
-  await popup.locator("#status-action").click();
-  await expect(statusTitle(popup)).toHaveText("Connected");
+  await expect(statusTitle(popup)).toHaveText("Connected", { timeout: 25_000 });
+  await expect(popup.locator("#status-action")).toBeHidden();
   await expect(loginCards(popup)).toHaveCount(1);
 
+  await capture(popup, "popup-auto-connected");
   await popup.close();
   await page.close();
+});
+
+test("denied automatic pairing: manual Connect associates the browser", async () => {
+  const pages = await startPages();
+  const harness = await Harness.start({ denyAssociations: true });
+  try {
+    const page = await harness.context.newPage();
+    await page.goto(`${pages.baseUrl}/login`, { waitUntil: "load" });
+    const tabId = await tabIdFor(harness, `${pages.baseUrl}/login`);
+    const popup = await openPopup(harness, tabId);
+
+    // The automatic attempt was denied (error 6): show the manual fallback.
+    await expect(statusTitle(popup)).toHaveText(
+      "Not connected to this database",
+      { timeout: 25_000 },
+    );
+    await expect(popup.locator("#status-action")).toHaveText("Connect");
+    await expect(popup.locator("#logins .empty-state")).toContainText(
+      "Connect this browser",
+    );
+    await capture(popup, "popup-not-connected");
+
+    harness.setAssociationDenied(false);
+    await popup.locator("#status-action").click();
+    await expect(statusTitle(popup)).toHaveText("Connected");
+    await expect(loginCards(popup)).toHaveCount(1);
+
+    await popup.close();
+    await page.close();
+  } finally {
+    await harness.close().catch(() => undefined);
+    await pages.close().catch(() => undefined);
+  }
 });
 
 test("connecting: a stalled handshake shows the spinner state", async ({

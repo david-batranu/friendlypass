@@ -133,6 +133,24 @@ async function getSettings(harness: Harness): Promise<SettingsLike> {
 }
 
 async function associate(harness: Harness): Promise<void> {
+  // Automatic pairing normally wins the race; only fall back to the manual
+  // request (the popup/options Connect path) if it did not.
+  try {
+    await expect
+      .poll(
+        async () => {
+          const status = (await harness.internalRequest("status.get")) as {
+            associated: boolean;
+          };
+          return status.associated;
+        },
+        { timeout: 20_000, intervals: [250, 500, 1_000] },
+      )
+      .toBe(true);
+    return;
+  } catch {
+    // Fall through to the manual attempt below.
+  }
   await expect
     .poll(
       async () => {
@@ -362,6 +380,30 @@ test("shortcut section shows the effective commands and links to Chrome", async 
 
   await captureSection(options, "#shortcuts-section", "options-shortcuts");
   await options.close();
+});
+
+test("automatic pairing denied: the options page offers the manual Connect fallback", async () => {
+  const harness = await Harness.start({ denyAssociations: true });
+  try {
+    const options = await openOptions(harness);
+    await expect(options.locator("#conn-state")).toHaveText(
+      "Not connected to this database",
+      { timeout: 25_000 },
+    );
+    await expect(options.locator("#connect")).toBeVisible();
+    // No warning spinner once the automatic attempt has stopped.
+    await expect(options.locator("#conn-dot")).not.toHaveClass(/fp-spinner/);
+
+    harness.setAssociationDenied(false);
+    await options.locator("#connect").click();
+    await expect(options.locator("#conn-state")).toHaveText("Connected", {
+      timeout: 20_000,
+    });
+    await expect(options.locator("#connect")).toBeHidden();
+    await options.close();
+  } finally {
+    await harness.close().catch(() => undefined);
+  }
 });
 
 test("connection details and reconnect", async ({ stack }) => {

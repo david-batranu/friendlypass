@@ -363,16 +363,25 @@ const connApp = byId("conn-app");
 const connProtocol = byId("conn-protocol");
 const connDatabase = byId("conn-database");
 const reconnectStatus = byId("reconnect-status");
+const connectButton = byId<HTMLButtonElement>("connect");
+const connectStatus = byId("connect-status");
 
-function describeConnection(status: StatusSummary): { label: string; tone: string } {
+function describeConnection(status: StatusSummary): {
+  label: string;
+  tone: string;
+  spinner?: boolean;
+} {
   if (status.state === "CONNECTING" || status.state === "HANDSHAKING") {
-    return { label: "Connecting…", tone: "warn" };
+    return { label: "Connecting…", tone: "warn", spinner: true };
   }
   if (!status.appRunning) {
     return { label: "friendlypass is not running", tone: "error" };
   }
   if (status.locked) {
     return { label: "Database locked", tone: "warn" };
+  }
+  if (status.pairing === "pairing") {
+    return { label: "Connecting to this database…", tone: "muted", spinner: true };
   }
   if (!status.associated) {
     return { label: "Not connected to this database", tone: "warn" };
@@ -388,11 +397,22 @@ function renderConnection(): void {
   if (status === null) {
     connState.textContent = "Checking…";
     connDot.className = "fp-dot";
+    connectButton.hidden = true;
     return;
   }
   const view = describeConnection(status);
   connState.textContent = view.label;
-  connDot.className = `fp-dot fp-dot--${view.tone}`;
+  connDot.className = view.spinner ? "fp-spinner" : `fp-dot fp-dot--${view.tone}`;
+
+  // Manual fallback only after automatic pairing stopped (denied/failed), or
+  // when an older host cannot auto-pair. The happy path never shows it.
+  connectButton.hidden = !(
+    status.state === "READY" &&
+    status.appRunning &&
+    !status.locked &&
+    !status.associated &&
+    status.pairing !== "pairing"
+  );
 
   const diagnostics = state.diagnostics;
   connHost.textContent = diagnostics?.connection.hostVersion ?? "—";
@@ -401,6 +421,28 @@ function renderConnection(): void {
   connDatabase.textContent =
     status.databaseHash === null ? "—" : `${status.databaseHash.slice(0, 16)}…`;
 }
+
+connectButton.addEventListener("click", () => {
+  connectButton.disabled = true;
+  connectStatus.textContent = "Connecting…";
+  void sendBackgroundMessage("association.create")
+    .then(async (result) => {
+      if (result.ok) {
+        connectStatus.textContent = "Connected";
+      } else {
+        connectStatus.textContent = "Could not connect to the database";
+      }
+      await refreshStatus();
+      await refreshDiagnostics();
+    })
+    .catch(() => {
+      connectStatus.textContent = "Could not connect to the database";
+    })
+    .finally(() => {
+      connectButton.disabled = false;
+      renderConnection();
+    });
+});
 
 byId("reconnect").addEventListener("click", () => {
   reconnectStatus.textContent = "Reconnecting…";
