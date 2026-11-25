@@ -111,9 +111,71 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  firefox-e2e:
+    name: firefox-e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # The pinned Firefox is large; keep it between runs. The key includes
+      # the harness config (which holds FP_FIREFOX_VERSION's default).
+      - name: Cache Firefox
+        uses: actions/cache@v4
+        with:
+          path: extension/.cache/firefox
+          key: firefox-${{ runner.os }}-${{ hashFiles('extension/tests/firefox/config.mjs') }}
+          restore-keys: |
+            firefox-${{ runner.os }}-
+
+      - name: Build native host and test server
+        run: |
+          cargo build -p friendlypass-browser-host
+          cargo build -p friendlypass
+          cargo build -p friendlypass-browser --example test_server
+
+      - name: npm ci
+        working-directory: extension
+        run: npm ci
+
+      - name: Install Firefox dependencies and Xvfb (Linux)
+        if: runner.os == 'Linux'
+        working-directory: extension
+        run: |
+          npx playwright install-deps firefox
+          sudo apt-get install -y xvfb
+
+      # Firefox's WebDriver BiDi harness needs a display on Linux; Xvfb is
+      # enough. macOS runs the same headless Firefox directly.
+      - name: Firefox e2e (Linux)
+        if: runner.os == 'Linux'
+        working-directory: extension
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" npm run e2e:firefox
+
+      - name: Firefox e2e (macOS)
+        if: runner.os == 'macOS'
+        working-directory: extension
+        run: npm run e2e:firefox
+
   # Tag builds: ship the macOS app bundle (GUI + native host) and the Linux
-  # tarball. Extension zips come from WP9's `npm run package`; the steps are
-  # skipped gracefully while that script does not exist yet.
+  # tarball. The extension zips are built by `npm run package`, which writes
+  # extension/artifacts/friendlypass-{chrome,firefox}-<version>.zip.
   release:
     name: release (${{ matrix.os }})
     if: startsWith(github.ref, 'refs/tags/')
@@ -163,18 +225,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Extension packages (optional, added by WP9)
+      - name: Extension packages
         working-directory: extension
         run: |
           npm ci
-          npm run package --if-present
+          npm run package
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v4
         with:
           name: friendlypass-extension-${{ runner.os }}
-          path: |
-            extension/dist/**/*.zip
-            extension/*.zip
-          if-no-files-found: ignore
+          path: extension/artifacts/*.zip
+          if-no-files-found: error
           retention-days: 14

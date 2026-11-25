@@ -103,6 +103,9 @@ export async function launchFirefox({ executablePath, paths }) {
     HOME: paths.home,
     XDG_CONFIG_HOME: path.join(paths.home, ".config"),
     TMPDIR: paths.root,
+    // WebDriver BiDi needs this to evaluate scripts in moz-extension pages
+    // (the popup window assertion). Test-only; never set for users.
+    MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: "1",
   };
   // Foundation ignores $HOME for ~/Library/Application Support (and therefore
   // for the native-messaging manifest); CFFIXED_USER_HOME is the override.

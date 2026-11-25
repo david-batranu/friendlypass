@@ -46,6 +46,13 @@ impl Fixture {
             .join(platform.manifest_dir(browser))
             .join(format!("{HOST_NAME}.json"))
     }
+
+    /// A browser is only registered when its per-user config root exists.
+    fn install_roots(&self, platform: Platform, browsers: &[Browser]) {
+        for &browser in browsers {
+            std::fs::create_dir_all(self.home.join(platform.config_root(browser))).unwrap();
+        }
+    }
 }
 
 fn make_executable(path: &Path) {
@@ -68,9 +75,11 @@ fn read_manifest(path: &Path) -> serde_json::Value {
 fn installs_every_browser_on_macos_and_linux() {
     for platform in [Platform::MacOs, Platform::Linux] {
         let fixture = Fixture::new();
+        fixture.install_roots(platform, &Browser::ALL);
         let options = fixture.options(platform, Browser::ALL.to_vec());
         let report = native_messaging::install(&options).unwrap();
         assert_eq!(report.changed.len(), Browser::ALL.len());
+        assert!(report.skipped.is_empty());
         assert!(report.unchanged.is_empty());
 
         let host = std::fs::canonicalize(&fixture.host).unwrap();
@@ -110,6 +119,7 @@ fn installs_every_browser_on_macos_and_linux() {
 #[test]
 fn install_is_idempotent_and_unchanged_files_are_not_rewritten() {
     let fixture = Fixture::new();
+    fixture.install_roots(Platform::Linux, &[Browser::Chrome]);
     let options = fixture.options(Platform::Linux, vec![Browser::Chrome]);
 
     let first = native_messaging::install(&options).unwrap();
@@ -136,6 +146,7 @@ fn install_is_idempotent_and_unchanged_files_are_not_rewritten() {
 #[test]
 fn a_changed_host_path_rewrites_the_manifest() {
     let fixture = Fixture::new();
+    fixture.install_roots(Platform::MacOs, &[Browser::Chrome]);
     let options = fixture.options(Platform::MacOs, vec![Browser::Chrome]);
     let path = fixture.path(Platform::MacOs, Browser::Chrome);
     native_messaging::install(&options).unwrap();
@@ -167,6 +178,7 @@ fn a_changed_host_path_rewrites_the_manifest() {
 #[test]
 fn uninstall_removes_only_our_manifest_and_is_repeatable() {
     let fixture = Fixture::new();
+    fixture.install_roots(Platform::MacOs, &Browser::ALL);
     let options = fixture.options(Platform::MacOs, Browser::ALL.to_vec());
 
     // A different native host already lives in every browser directory.
@@ -198,6 +210,7 @@ fn uninstall_removes_only_our_manifest_and_is_repeatable() {
 #[test]
 fn uninstall_can_target_a_subset_of_browsers() {
     let fixture = Fixture::new();
+    fixture.install_roots(Platform::Linux, &Browser::ALL);
     let all = fixture.options(Platform::Linux, Browser::ALL.to_vec());
     native_messaging::install(&all).unwrap();
 
@@ -210,6 +223,7 @@ fn uninstall_can_target_a_subset_of_browsers() {
 #[test]
 fn firefox_only_install_leaves_chrome_alone() {
     let fixture = Fixture::new();
+    fixture.install_roots(Platform::Linux, &[Browser::Firefox]);
     let firefox = fixture.options(Platform::Linux, vec![Browser::Firefox]);
     native_messaging::install(&firefox).unwrap();
     assert!(fixture.path(Platform::Linux, Browser::Firefox).exists());
@@ -217,14 +231,109 @@ fn firefox_only_install_leaves_chrome_alone() {
 }
 
 #[test]
+fn install_skips_browsers_without_a_config_root() {
+    for platform in [Platform::MacOs, Platform::Linux] {
+        let fixture = Fixture::new();
+        fixture.install_roots(platform, &[Browser::Chrome, Browser::Firefox]);
+        let options = fixture.options(platform, Browser::ALL.to_vec());
+
+        let report = native_messaging::install(&options).unwrap();
+        assert_eq!(
+            report.changed,
+            vec![
+                fixture.path(platform, Browser::Chrome),
+                fixture.path(platform, Browser::Firefox),
+            ]
+        );
+        assert_eq!(
+            report.skipped,
+            vec![Browser::Chromium, Browser::Brave, Browser::Edge]
+        );
+        assert!(report.unchanged.is_empty());
+
+        for browser in [Browser::Chromium, Browser::Brave, Browser::Edge] {
+            assert!(
+                !fixture.home.join(platform.config_root(browser)).exists(),
+                "{} config root must not be created",
+                browser.label()
+            );
+            assert!(!fixture.path(platform, browser).exists());
+        }
+        // The existing roots are untouched and only our manifest was added.
+        assert!(fixture
+            .home
+            .join(platform.config_root(Browser::Chrome))
+            .is_dir());
+        drop(fixture.dir);
+    }
+}
+
+#[test]
+fn force_installs_missing_browsers_and_creates_their_roots() {
+    let fixture = Fixture::new();
+    let mut options = fixture.options(Platform::Linux, Browser::ALL.to_vec());
+    options.force = true;
+
+    let report = native_messaging::install(&options).unwrap();
+    assert_eq!(report.changed.len(), Browser::ALL.len());
+    assert!(report.skipped.is_empty());
+    for browser in Browser::ALL {
+        assert!(fixture
+            .home
+            .join(Platform::Linux.config_root(browser))
+            .is_dir());
+        assert!(fixture.path(Platform::Linux, browser).exists());
+    }
+}
+
+#[test]
+fn uninstall_removes_a_manifest_left_by_a_previous_version() {
+    let fixture = Fixture::new();
+    let options = fixture.options(Platform::Linux, vec![Browser::Chrome, Browser::Firefox]);
+    // Manifests written by an older build, with no install options/root
+    // detection involved: uninstall still finds and removes them.
+    for browser in [Browser::Chrome, Browser::Firefox] {
+        let dir = fixture.home.join(Platform::Linux.manifest_dir(browser));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{HOST_NAME}.json")),
+            b"{\"name\":\"org.friendlypass.browser\"}",
+        )
+        .unwrap();
+    }
+
+    let report = native_messaging::uninstall(&options).unwrap();
+    assert_eq!(report.removed.len(), 2);
+    assert!(!fixture.path(Platform::Linux, Browser::Chrome).exists());
+    assert!(!fixture.path(Platform::Linux, Browser::Firefox).exists());
+}
+
+#[test]
+fn uninstall_with_no_browser_roots_is_a_harmless_noop() {
+    let fixture = Fixture::new();
+    let options = fixture.options(Platform::Linux, Browser::ALL.to_vec());
+    let report = native_messaging::uninstall(&options).unwrap();
+    assert!(report.removed.is_empty());
+    assert_eq!(report.absent.len(), Browser::ALL.len());
+    assert!(!fixture.home.join(".config").exists());
+    assert!(!fixture.home.join(".mozilla").exists());
+}
+
+#[test]
 fn dry_run_reports_changes_without_touching_the_filesystem() {
     let fixture = Fixture::new();
+    fixture.install_roots(Platform::Linux, &Browser::ALL);
     let mut options = fixture.options(Platform::Linux, Browser::ALL.to_vec());
     options.dry_run = true;
 
     let report = native_messaging::install(&options).unwrap();
     assert_eq!(report.changed.len(), Browser::ALL.len());
-    assert!(!fixture.home.join(".config").exists());
+    for browser in Browser::ALL {
+        assert!(!fixture
+            .home
+            .join(Platform::Linux.manifest_dir(browser))
+            .exists());
+    }
 
     let uninstall = native_messaging::uninstall(&options).unwrap();
     assert!(uninstall.removed.is_empty());

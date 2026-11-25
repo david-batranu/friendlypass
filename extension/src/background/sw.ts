@@ -65,8 +65,8 @@ import {
   storageGet,
   storageRemove,
   storageSet,
-  windowsCreate,
 } from "../common/platform";
+import { openPopupWindow } from "../common/popup";
 
 const EXTENSION_VERSION = "0.1.0";
 
@@ -759,16 +759,19 @@ async function openPopupForTab(
     }
   }
   try {
-    const base = chrome.runtime.getURL("popup/popup.html");
-    const url =
-      typeof tabId === "number" ? `${base}?tab=${encodeURIComponent(tabId)}` : base;
-    await windowsCreate({
-      url,
-      type: "popup",
-      width: 380,
-      height: 620,
-      focused: true,
-    });
+    // Firefox does not always attach `sender.tab` to a content-script
+    // message. The popup page runs in its own window, so it cannot discover
+    // the source tab through `currentWindow` either: resolve the active web
+    // tab now, before the popup becomes the focused window.
+    let callerTabId = tabId;
+    if (typeof callerTabId !== "number") {
+      callerTabId = (await activeHttpTab())?.tabId;
+    }
+    // Firefox creates a popup window before a moz-extension URL is
+    // navigable, which leaves an empty window; create the window and then
+    // load the page into its tab. See common/popup.ts.
+    const opened = await openPopupWindow(callerTabId);
+    debug("popup", `fallback window opened via ${opened.via}`);
     popupOpenStats.fallback += 1;
     return { opened: true, via: "fallback" };
   } catch (cause) {

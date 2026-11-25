@@ -18,8 +18,13 @@ export const EXTENSION_ROOT = path.resolve(here, "../..");
 /** The Firefox MV3 build produced by `npm run build:firefox`. */
 export const FIREFOX_DIST = path.join(EXTENSION_ROOT, "dist-firefox");
 
-/** Pinned test browser. Override with FP_FIREFOX_VERSION for a manual bisect. */
-export const FIREFOX_VERSION = process.env.FP_FIREFOX_VERSION ?? "stable_140.0";
+/**
+ * Pinned test browser. Override with FP_FIREFOX_VERSION for a manual bisect.
+ *
+ * 140 ESR cannot start its WebDriver BiDi remote agent on current macOS
+ * (26/27), which leaves the whole Firefox suite unable to connect there.
+ */
+export const FIREFOX_VERSION = process.env.FP_FIREFOX_VERSION ?? "stable_161.0";
 
 export const FIREFOX_CACHE = path.join(EXTENSION_ROOT, ".cache", "firefox");
 

@@ -18,10 +18,20 @@ share one implementation (the `friendlypass_browser::native_messaging` module).
    browser integration** and the browsers you use.
 3. Install the friendlypass extension in those browsers.
 
+Only browsers that have been started at least once are registered: the app and
+the installer require the browser's per-user configuration root to exist (for
+example `~/.config/google-chrome` or
+`~/Library/Application Support/Google/Chrome`). Browsers without one are shown
+as disabled with “(not installed)” in the settings dialog and skipped by the
+command-line installer, so ticking every box never creates empty Brave/Edge
+directories. Start the browser and reopen the dialog (or run the installer
+again) to register it; `--force` overrides the check explicitly.
+
 The app rewrites a stale manifest on every start (for example after the app is
 moved or updated) and removes the manifest when a browser is unticked. It only
 ever touches `org.friendlypass.browser.json`; other native hosts' manifests are
-left alone.
+left alone. Uninstall does not need the browser to still be installed: any
+manifest of ours that exists is removed.
 
 ## Build the host first
 
@@ -67,7 +77,8 @@ Options (the script forwards them to the host CLI):
 | `--host-path PATH` | Override the host binary. |
 | `--home DIR` | Use `DIR` as `$HOME` (tests, alternate profiles). |
 | `--platform macos\|linux` | Override detection (tests). |
-| `--browsers LIST` | Comma list of `chrome,chromium,brave,edge,firefox`; default all. |
+| `--browsers LIST` | Comma list of `chrome,chromium,brave,edge,firefox`; default all. Missing browsers are skipped. |
+| `--force` | Register a selected browser even when its per-user config root does not exist (creates it). |
 | `--dry-run` | Print targets, write nothing. |
 | `--uninstall` | Remove the manifests (no extension id needed). |
 
@@ -93,6 +104,11 @@ The file name is always `org.friendlypass.browser.json`. Chrome-family manifests
 carry `allowed_origins: ["chrome-extension://<id>/"]`; Firefox manifests carry
 `allowed_extensions: ["<add-on id>"]`.
 
+The table shows the configuration root that must already exist
+(`.../Google/Chrome`, `.config/chromium`, …); only its `NativeMessagingHosts`
+child is created. The root itself is never created, so no manifest appears for
+a browser that is not installed.
+
 ## Uninstall
 
 ```sh
@@ -109,8 +125,8 @@ other native hosts) stay.
 ```
 
 Runs the installer in a temporary `$HOME` for both layouts, validates every
-JSON file with Python, checks idempotence, browser selection, validation
-errors, dry-run and uninstall. It builds
+JSON file with Python, checks idempotence, browser selection, installed-browser
+detection/skip/`--force`, validation errors, dry-run and uninstall. It builds
 `target/debug/friendlypass-browser-host` when needed and also exercises the
 host's `--install/--uninstall --browser` flags directly.
 

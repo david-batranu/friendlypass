@@ -281,6 +281,32 @@ export function tabsCreate(options: Record<string, unknown>): Promise<TabLike | 
   );
 }
 
+/** `chrome.tabs.update(tabId, options)` as a Promise on both browsers. */
+export function tabUpdate(
+  tabId: number,
+  options: Record<string, unknown>,
+): Promise<TabLike | null> {
+  const api = (
+    globalThis as unknown as {
+      chrome?: {
+        tabs?: {
+          update?: (
+            id: number,
+            updateProperties: Record<string, unknown>,
+            callback: (tab: TabLike) => void,
+          ) => unknown;
+        };
+      };
+    }
+  ).chrome?.tabs;
+  if (!api?.update) {
+    return Promise.reject(new Error("tabs.update is unavailable"));
+  }
+  return callWithCallback<TabLike | null>((callback) =>
+    api.update?.(tabId, options, (tab) => callback(tab ?? null)),
+  );
+}
+
 /** `chrome.tabs.get(tabId)` as a Promise on both browsers. */
 export function getTab(tabId: number): Promise<TabLike | null> {
   const api = (

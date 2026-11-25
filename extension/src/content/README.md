@@ -109,7 +109,9 @@ registrable site, within 60 s. Two loopback ports are different sites, and
 - The action popup is opened through a `popup.open` background request:
   `chrome.action.openPopup()` when Chrome accepts it, otherwise a small popup
   window. Chrome may decline the API without a user gesture; the fallback is
-  then used.
+  then used. In Firefox the window is created first and its tab is navigated to
+  `popup/popup.html`, which avoids the empty window a direct `moz-extension:`
+  URL in `windows.create` can produce there.
 - The save card's editable title is sent as the optional `[friendlypass]`
   `title` field of `set-login`; new entries use it and updates rewrite the title
   only when the user changed it. Without it, the entry title remains derived

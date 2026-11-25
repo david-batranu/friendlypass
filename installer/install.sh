@@ -27,6 +27,8 @@
 #   --platform macos|linux   Override platform detection (for tests).
 #   --browsers LIST          Comma list of chrome,chromium,brave,edge,firefox.
 #                            Default: all.
+#   --force                  Register a browser even when its per-user config
+#                            root does not exist (creates the directory).
 #   --uninstall              Remove the manifests instead of installing.
 #   --dry-run                Show what would be written, write nothing.
 #   -h, --help               This help.
@@ -37,7 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 usage() {
-    sed -n '3,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '3,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -54,6 +56,7 @@ BROWSERS=""
 BROWSERS_SET=0
 UNINSTALL=0
 DRY_RUN=0
+FORCE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -115,6 +118,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --uninstall)
             UNINSTALL=1
+            shift
+            ;;
+        --force)
+            FORCE=1
             shift
             ;;
         --dry-run)
@@ -190,5 +197,6 @@ if [[ -n "$BROWSERS" ]]; then
     done
 fi
 [[ $DRY_RUN -eq 1 ]] && ARGS+=(--dry-run)
+[[ $FORCE -eq 1 ]] && ARGS+=(--force)
 
 exec "$HOST_PATH" "${ARGS[@]}"

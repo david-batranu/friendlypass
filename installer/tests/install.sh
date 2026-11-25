@@ -24,6 +24,33 @@ ok() {
     printf 'ok - %s\n' "$*"
 }
 
+# A browser is only registered when its per-user config root already exists.
+make_mac_roots() {
+    local home="$1"
+    for root in \
+        "Library/Application Support/Google/Chrome" \
+        "Library/Application Support/Chromium" \
+        "Library/Application Support/BraveSoftware/Brave-Browser" \
+        "Library/Application Support/Microsoft Edge" \
+        "Library/Application Support/Mozilla"
+    do
+        mkdir -p "$home/$root"
+    done
+}
+
+make_linux_roots() {
+    local home="$1"
+    for root in \
+        ".config/google-chrome" \
+        ".config/chromium" \
+        ".config/BraveSoftware/Brave-Browser" \
+        ".config/microsoft-edge" \
+        ".mozilla"
+    do
+        mkdir -p "$home/$root"
+    done
+}
+
 [[ -x "$INSTALL" ]] || fail "install.sh is not executable: $INSTALL"
 
 # The manifest logic now lives in the host binary (install.sh is a thin
@@ -84,6 +111,7 @@ PY
 
 MAC_HOME="$TMP_ROOT/home mac" # a space proves the quoting
 mkdir -p "$MAC_HOME"
+make_mac_roots "$MAC_HOME"
 
 install_ok --platform macos --home "$MAC_HOME" --extension-id "$CHROME_ID" \
     --firefox-extension-id "$FF_ID" --host-path "$HOST_BIN"
@@ -112,6 +140,7 @@ ok "macOS re-install is idempotent"
 
 LINUX_HOME="$TMP_ROOT/home-linux"
 mkdir -p "$LINUX_HOME"
+make_linux_roots "$LINUX_HOME"
 
 install_ok --platform linux --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
     --firefox-extension-id "$FF_ID" --host-path "$HOST_BIN"
@@ -134,6 +163,8 @@ ok "Linux manifests for chrome, chromium, brave, edge, firefox"
 
 SELECT_HOME="$TMP_ROOT/home-select"
 mkdir -p "$SELECT_HOME"
+mkdir -p "$SELECT_HOME/.config/google-chrome" "$SELECT_HOME/.mozilla" \
+    "$SELECT_HOME/.config/chromium"
 install_ok --platform linux --home "$SELECT_HOME" --extension-id "$CHROME_ID" \
     --host-path "$HOST_BIN" --browsers chrome,firefox
 
@@ -149,12 +180,44 @@ install_ok --platform=linux --home="$SELECT_HOME" --extension-id="$CHROME_ID" \
 ok "--option=value spelling works"
 
 # ---------------------------------------------------------------------------
+# Installed-browser detection (only existing config roots are touched)
+# ---------------------------------------------------------------------------
+
+SKIP_HOME="$TMP_ROOT/home-skip"
+mkdir -p "$SKIP_HOME/.config/google-chrome"
+install_ok --platform linux --home "$SKIP_HOME" --extension-id "$CHROME_ID" \
+    --host-path "$HOST_BIN"
+[[ -f "$SKIP_HOME/$LINUX_CHROME/org.friendlypass.browser.json" ]] || fail "chrome not written"
+for root in ".config/chromium" ".config/BraveSoftware/Brave-Browser" \
+    ".config/microsoft-edge" ".mozilla"
+do
+    [[ ! -e "$SKIP_HOME/$root" ]] || fail "missing browser root was created: $root"
+done
+grep -q "skipped Chromium: not installed" "$TMP_ROOT/last.log" ||
+    fail "missing skip message for Chromium"
+ok "missing browsers are skipped and their config roots are not created"
+
+install_ok --platform linux --home "$SKIP_HOME" --extension-id "$CHROME_ID" \
+    --host-path "$HOST_BIN" --browsers edge
+[[ ! -e "$SKIP_HOME/$LINUX_EDGE/org.friendlypass.browser.json" ]] ||
+    fail "--browsers edge wrote a missing browser"
+grep -q "skipped Edge: not installed" "$TMP_ROOT/last.log" ||
+    fail "explicit missing browser was not reported"
+ok "explicit --browsers edge for a missing browser skips with a message"
+
+# --force is the explicit opt-in for registering a browser before it starts.
+install_ok --force --platform linux --home "$SKIP_HOME" --extension-id "$CHROME_ID" \
+    --host-path "$HOST_BIN" --browsers edge
+check_manifest "$SKIP_HOME/$LINUX_EDGE/org.friendlypass.browser.json" chromium
+ok "--force registers a missing browser"
+
+# ---------------------------------------------------------------------------
 # Validation errors
 # ---------------------------------------------------------------------------
 
 # No --extension-id: the pinned manifest key's id becomes the default.
 DEFAULT_HOME="$TMP_ROOT/default-home"
-mkdir -p "$DEFAULT_HOME"
+mkdir -p "$DEFAULT_HOME/.config/google-chrome"
 install_ok --platform linux --home "$DEFAULT_HOME" --host-path "$HOST_BIN" --browsers chrome
 DEFAULT_MANIFEST="$DEFAULT_HOME/.config/google-chrome/NativeMessagingHosts/org.friendlypass.browser.json"
 grep -q 'chrome-extension://pfdmagadklmhbghfipamhfbphcljdkbi/' "$DEFAULT_MANIFEST" ||
@@ -187,9 +250,13 @@ ok "unsupported platform is rejected"
 
 DRY_HOME="$TMP_ROOT/home-dry"
 mkdir -p "$DRY_HOME"
+make_linux_roots "$DRY_HOME"
 install_ok --platform linux --home "$DRY_HOME" --extension-id "$CHROME_ID" \
     --host-path "$HOST_BIN" --dry-run
-[[ ! -e "$DRY_HOME/.config" ]] || fail "--dry-run wrote files"
+for dir in "$LINUX_CHROME" "$LINUX_CHROMIUM" "$LINUX_BRAVE" "$LINUX_EDGE" "$LINUX_FIREFOX"; do
+    [[ ! -e "$DRY_HOME/$dir/org.friendlypass.browser.json" ]] ||
+        fail "--dry-run wrote $dir"
+done
 ok "--dry-run writes nothing"
 
 # ---------------------------------------------------------------------------
@@ -215,7 +282,7 @@ ok "macOS uninstall removes manifests"
 # ---------------------------------------------------------------------------
 
 DIRECT_HOME="$TMP_ROOT/home-direct"
-mkdir -p "$DIRECT_HOME"
+mkdir -p "$DIRECT_HOME/.config/microsoft-edge"
 "$HOST_BIN" --install --platform linux --home "$DIRECT_HOME" \
     --host-path "$HOST_BIN" --extension-id "$CHROME_ID" \
     --firefox-extension-id "$FF_ID" --browser edge >/dev/null
