@@ -176,6 +176,13 @@ impl Host {
         self.recv(Duration::from_secs(10))
     }
 
+    /// Receive one frame if the host writes one within `timeout`. Used to
+    /// assert that the host stays silent (e.g. it never forwards the
+    /// `host-identify` reply).
+    pub fn try_recv_payload(&self, timeout: Duration) -> Option<Vec<u8>> {
+        self.frames.recv_timeout(timeout).ok()
+    }
+
     pub fn ping(&mut self, nonce: &str) -> Value {
         self.send(&serde_json::json!({"action": "ping", "nonce": nonce}));
         self.recv(Duration::from_secs(5))
@@ -215,21 +222,52 @@ pub fn frame_bytes(payload: &[u8]) -> Vec<u8> {
     framed
 }
 
+/// How the mock app answers the host's first-frame `host-identify` frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentifyReply {
+    /// A modern app: answers `{"action":"host-identify","success":"true",
+    /// "trusted":<value>}`.
+    Trusted(bool),
+    /// An app that does not know the action: the §3.6 host error frame with an
+    /// empty `action` (the host must ignore it and carry on).
+    HostError,
+    /// The same error, but echoing the action.
+    HostErrorWithAction,
+}
+
+impl Default for IdentifyReply {
+    fn default() -> Self {
+        Self::Trusted(false)
+    }
+}
+
 /// A mock app server on the host's socket path.
 ///
 /// The handler receives each raw request object and returns the raw response
 /// objects to write. It runs on the connection thread, so a stateful `FnMut`
-/// can batch requests. Requests are recorded for assertions.
+/// can batch requests. Requests are recorded for assertions, except the host's
+/// own liveness probes (`ping`) and the first-frame `host-identify`, which the
+/// harness answers itself.
 pub struct MockApp {
     path: PathBuf,
     running: Arc<AtomicBool>,
     active: Arc<Mutex<Option<UnixStream>>>,
     requests: Arc<Mutex<Vec<Vec<u8>>>>,
+    identifies: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// The first frame of each connection, in connection order.
+    first_frames: Arc<Mutex<Vec<Vec<u8>>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl MockApp {
-    pub fn start<F>(path: &Path, mut handler: F) -> Self
+    pub fn start<F>(path: &Path, handler: F) -> Self
+    where
+        F: FnMut(&[u8]) -> Vec<Vec<u8>> + Send + 'static,
+    {
+        Self::start_with_identify(path, IdentifyReply::default(), handler)
+    }
+
+    pub fn start_with_identify<F>(path: &Path, identify_reply: IdentifyReply, mut handler: F) -> Self
     where
         F: FnMut(&[u8]) -> Vec<Vec<u8>> + Send + 'static,
     {
@@ -242,10 +280,14 @@ impl MockApp {
         let running = Arc::new(AtomicBool::new(true));
         let active: Arc<Mutex<Option<UnixStream>>> = Arc::new(Mutex::new(None));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let identifies = Arc::new(Mutex::new(Vec::new()));
+        let first_frames = Arc::new(Mutex::new(Vec::new()));
 
         let thread_running = Arc::clone(&running);
         let thread_active = Arc::clone(&active);
         let thread_requests = Arc::clone(&requests);
+        let thread_identifies = Arc::clone(&identifies);
+        let thread_first_frames = Arc::clone(&first_frames);
         let thread = thread::spawn(move || {
             while thread_running.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -254,7 +296,15 @@ impl MockApp {
                         let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
                         *thread_active.lock().unwrap_or_else(|e| e.into_inner()) =
                             stream.try_clone().ok();
-                        serve(&stream, &thread_running, &thread_requests, &mut handler);
+                        serve(
+                            &stream,
+                            &thread_running,
+                            &thread_requests,
+                            &thread_identifies,
+                            &thread_first_frames,
+                            identify_reply,
+                            &mut handler,
+                        );
                         *thread_active.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -270,6 +320,8 @@ impl MockApp {
             running,
             active,
             requests,
+            identifies,
+            first_frames,
             thread: Some(thread),
         }
     }
@@ -281,6 +333,23 @@ impl MockApp {
 
     pub fn requests(&self) -> Vec<Vec<u8>> {
         self.requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Every `host-identify` frame received, in arrival order (one per host
+    /// connection).
+    pub fn identify_frames(&self) -> Vec<Vec<u8>> {
+        self.identifies
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The first frame received on each connection, in connection order.
+    pub fn first_frames(&self) -> Vec<Vec<u8>> {
+        self.first_frames
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
@@ -314,26 +383,74 @@ impl Drop for MockApp {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve<F>(
     mut stream: &UnixStream,
     running: &AtomicBool,
     requests: &Mutex<Vec<Vec<u8>>>,
+    identifies: &Mutex<Vec<Vec<u8>>>,
+    first_frames: &Mutex<Vec<Vec<u8>>>,
+    identify_reply: IdentifyReply,
     handler: &mut F,
 ) where
     F: FnMut(&[u8]) -> Vec<Vec<u8>>,
 {
     let mut framer = TestFramer::default();
     let mut buffer = [0u8; 8192];
+    let mut first = true;
     while running.load(Ordering::SeqCst) {
         match stream.read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => {
                 framer.push(&buffer[..n]);
                 while let Some(request) = framer.next() {
-                    // The host's liveness probe is answered by the harness so
-                    // tests only deal with their own requests.
+                    if first {
+                        first = false;
+                        first_frames
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(request.clone());
+                    }
                     let parsed: Value = serde_json::from_slice(&request).unwrap_or(Value::Null);
-                    if parsed.get("action").and_then(Value::as_str) == Some("ping") {
+                    let action = parsed.get("action").and_then(Value::as_str);
+
+                    // The host's first-frame identity claim is answered by the
+                    // harness (and recorded) so tests deal only with their own
+                    // requests.
+                    if action == Some("host-identify") {
+                        identifies
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(request.clone());
+                        let reply = match identify_reply {
+                            IdentifyReply::Trusted(trusted) => serde_json::json!({
+                                "action": "host-identify",
+                                "success": "true",
+                                "trusted": trusted,
+                            }),
+                            IdentifyReply::HostError => serde_json::json!({
+                                "action": "",
+                                "error": "Unknown host action",
+                                "errorCode": "1003",
+                                "hostError": true,
+                            }),
+                            IdentifyReply::HostErrorWithAction => serde_json::json!({
+                                "action": "host-identify",
+                                "error": "Unknown host action",
+                                "errorCode": "1003",
+                                "hostError": true,
+                            }),
+                        };
+                        let reply = serde_json::to_vec(&reply).expect("serialise mock reply");
+                        if stream.write_all(&reply).is_err() {
+                            return;
+                        }
+                        let _ = stream.flush();
+                        continue;
+                    }
+
+                    // The host's liveness probe is answered the same way.
+                    if action == Some("ping") {
                         let reply = serde_json::to_vec(&serde_json::json!({
                             "action": "ping",
                             "success": "true",

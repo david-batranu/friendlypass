@@ -9,6 +9,7 @@
 //! stdout carries protocol frames only; all diagnostics go to stderr.
 
 mod app;
+mod browser_identity;
 mod dispatch;
 mod errors;
 mod framing;
@@ -29,6 +30,11 @@ fn main() {
     if let Some(code) = install_cli::run_if_requested(std::env::args().skip(1)) {
         std::process::exit(code);
     }
+
+    // Identify the launching browser once. Debug-level only (`FP_HOST_DEBUG`):
+    // this is process metadata, never credentials, but normal runs stay quiet.
+    let identity = browser_identity::cached_identity();
+    browser_identity::log_identity_debug(identity);
 
     let socket_path = friendlypass_browser::browser_server_path();
     eprintln!(

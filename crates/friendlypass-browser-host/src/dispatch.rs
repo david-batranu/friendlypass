@@ -142,6 +142,7 @@ impl Runtime {
         frame.insert("appVersion".into(), option_string(snapshot.app_version));
         frame.insert("locked".into(), option_bool(snapshot.locked));
         frame.insert("databaseHash".into(), option_string(snapshot.database_hash));
+        insert_trust_fields(&mut frame, snapshot.app_trusted);
         if let Some(nonce) = nonce {
             // Echoed verbatim, never incremented (§2.3, §5.2).
             frame.insert("nonce".into(), Value::from(nonce));
@@ -169,6 +170,7 @@ impl Runtime {
         frame.insert("appVersion".into(), option_string(snapshot.app_version));
         frame.insert("locked".into(), option_bool(snapshot.locked));
         frame.insert("databaseHash".into(), option_string(snapshot.database_hash));
+        insert_trust_fields(&mut frame, snapshot.app_trusted);
         frame.insert("sessionId".into(), Value::from(self.session_id.clone()));
         frame.insert("hostPid".into(), Value::from(std::process::id()));
         self.out.value(&Value::Object(frame))
@@ -216,6 +218,18 @@ fn option_string(value: Option<String>) -> Value {
 
 fn option_bool(value: Option<bool>) -> Value {
     value.map(Value::Bool).unwrap_or(Value::Null)
+}
+
+/// Additive **[friendlypass]** fields shared by `ping` and `hello`:
+/// `appTrusted` (the app's answer to `host-identify`) and `browser`
+/// (`{kind, verified}` of the browser that launched this host). Both are
+/// documented in `protocol/ACTIONS.md` §5.2/§5.3; older clients ignore them.
+fn insert_trust_fields(frame: &mut Map<String, Value>, app_trusted: Option<bool>) {
+    frame.insert(
+        "appTrusted".into(),
+        app_trusted.map(Value::Bool).unwrap_or(Value::Null),
+    );
+    frame.insert("browser".into(), crate::browser_identity::summary_json());
 }
 
 /// A random UUID-shaped id for diagnostics only (not authentication). Uses the
