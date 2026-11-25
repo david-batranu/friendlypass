@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use friendlypass::matching::{self, MatchCandidate, MatchTarget};
 use serde_json::{json, Value};
 
 use crate::bridge::{AssociationRequest, BrowserBridge, DenyAllBridge, SetLoginRequest};
@@ -120,23 +121,55 @@ impl ServiceState {
     /// Find credentials matching a URL host/path (KeePassXC's `findEntries`
     /// subset), sorted by match quality. Recycle-bin entries never reach this
     /// list — the snapshot excludes them.
-    pub fn find_entries(&self, url: &str, submit_url: Option<&str>, http_auth: bool) -> Vec<&CredentialEntry> {
-        let target = UrlParts::parse(url);
-        let form = submit_url.map(UrlParts::parse);
+    ///
+    /// Scoring lives in [`friendlypass::matching`] so the Android vault matches
+    /// URLs exactly like the browser does.
+    pub fn find_entries(
+        &self,
+        url: &str,
+        submit_url: Option<&str>,
+        http_auth: bool,
+    ) -> Vec<&CredentialEntry> {
+        let allowed = |entry: &&CredentialEntry| {
+            if http_auth {
+                !entry.not_http_auth
+            } else {
+                !entry.http_only
+            }
+        };
+
+        // `keepassxc://by-uuid/<uuid>` is used by the extension's diagnostics
+        // and names one entry directly rather than scoring URLs.
+        if let Some(uuid) = matching::by_uuid_target(url) {
+            return self
+                .entries
+                .iter()
+                .filter(allowed)
+                .filter(|entry| entry.uuid == uuid)
+                .collect();
+        }
+
+        let target = MatchTarget {
+            web_url: Some(url),
+            android_package: None,
+        };
+        let form_target = submit_url.map(|form| MatchTarget {
+            web_url: Some(form),
+            android_package: None,
+        });
         let mut matches: Vec<(u16, &CredentialEntry)> = self
             .entries
             .iter()
-            .filter(|entry| {
-                if http_auth {
-                    !entry.not_http_auth
-                } else {
-                    !entry.http_only
-                }
-            })
+            .filter(allowed)
             .filter_map(|entry| {
-                let mut best = entry_match_score(entry, &target);
-                if let Some(form) = &form {
-                    if let Some(form_score) = entry_match_score(entry, form) {
+                let candidate = MatchCandidate {
+                    url: &entry.url,
+                    additional_urls: &entry.additional_urls,
+                    android_apps: &[],
+                };
+                let mut best = matching::score(&candidate, &target);
+                if let Some(form) = &form_target {
+                    if let Some(form_score) = matching::score(&candidate, form) {
                         best = Some(best.map_or(form_score, |score| score.min(form_score)));
                     }
                 }
@@ -146,110 +179,6 @@ impl ServiceState {
         matches.sort_by_key(|(score, entry)| (*score, entry.title.to_lowercase()));
         matches.into_iter().map(|(_, entry)| entry).collect()
     }
-}
-
-/// A parsed URL, reduced to the parts credential matching needs.
-#[derive(Debug, Default, Clone)]
-struct UrlParts {
-    scheme: String,
-    host: String,
-    path: String,
-}
-
-impl UrlParts {
-    fn parse(raw: &str) -> UrlParts {
-        let raw = raw.trim();
-        let (scheme, rest) = match raw.split_once("://") {
-            Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
-            None => (String::new(), raw),
-        };
-        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-        let authority = &rest[..authority_end];
-        let host = authority
-            .rsplit_once('@')
-            .map(|(_, host)| host)
-            .unwrap_or(authority)
-            .split(':')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let host = host.strip_prefix("www.").unwrap_or(&host).to_owned();
-        let mut path = rest[authority_end..].to_owned();
-        if let Some(cut) = path.find(['?', '#']) {
-            path.truncate(cut);
-        }
-        if path.is_empty() {
-            path.push('/');
-        }
-        UrlParts { scheme, host, path }
-    }
-
-    fn full(&self) -> String {
-        format!("{}://{}{}", self.scheme, self.host, self.path)
-    }
-}
-
-/// Lower is better; `None` means no match.
-fn entry_match_score(entry: &CredentialEntry, target: &UrlParts) -> Option<u16> {
-    // `keepassxc://by-uuid/<uuid>` is used by the extension's diagnostics.
-    if let Some(rest) = target.path.strip_prefix("/by-uuid/") {
-        return (entry.uuid == normalize_uuid(rest).unwrap_or_default()).then_some(0);
-    }
-
-    let mut best = single_url_score(&entry.url, target);
-    for extra in &entry.additional_urls {
-        if let Some(score) = single_url_score(extra, target) {
-            best = Some(best.map_or(score + 8, |current: u16| current.min(score + 8)));
-        }
-    }
-    best
-}
-
-fn single_url_score(raw: &str, target: &UrlParts) -> Option<u16> {
-    if raw.is_empty() {
-        return None;
-    }
-    let entry = UrlParts::parse(raw);
-    if entry.host != target.host {
-        // Wildcards: `*.example.com` matches any subdomain; `*` matches any
-        // host. Otherwise allow a parent/subdomain relationship, like
-        // KeePassXC's `handleURL`.
-        let subdomain = target.host.ends_with(&format!(".{}", entry.host))
-            || entry.host.ends_with(&format!(".{}", target.host));
-        let wildcard_match = entry.host == "*"
-            || match entry.host.strip_prefix("*.") {
-                Some("") => true,
-                Some(suffix) => {
-                    target.host == suffix || target.host.ends_with(&format!(".{suffix}"))
-                }
-                None => false,
-            };
-        if !subdomain && !wildcard_match {
-            return None;
-        }
-    }
-    if !entry.scheme.is_empty() && !target.scheme.is_empty() && entry.scheme != target.scheme {
-        // http vs https is allowed; other schemes are not.
-        if !(entry.scheme == "http" && target.scheme == "https")
-            && !(entry.scheme == "https" && target.scheme == "http")
-        {
-            return None;
-        }
-    }
-    let same_host = entry.host == target.host;
-    if same_host && entry.full() == target.full() {
-        return Some(0);
-    }
-    if same_host && (entry.path == "/" || entry.path.is_empty()) {
-        return Some(1);
-    }
-    if same_host && entry.path == target.path {
-        return Some(2);
-    }
-    if same_host && target.path.starts_with(entry.path.trim_end_matches('/')) {
-        return Some(3);
-    }
-    Some(if same_host { 6 } else { 4 })
 }
 
 /// Per-connection protocol state (like the C++ `BrowserAction` instance).
@@ -400,7 +329,9 @@ impl ClientSession {
         };
 
         match result {
-            Ok(params) => self.encrypt_reply(&action, &client_public, &response_nonce_bytes, params),
+            Ok(params) => {
+                self.encrypt_reply(&action, &client_public, &response_nonce_bytes, params)
+            }
             Err(code) => error_reply(&action, code),
         }
     }
@@ -528,7 +459,11 @@ impl ClientSession {
     /// Contract §5: the auto-approve chain needs our host as the socket peer
     /// and a browser the host itself verified.
     fn auto_approvable(&self) -> bool {
-        self.peer.trusted && self.browser.as_ref().is_some_and(|browser| browser.verified)
+        self.peer.trusted
+            && self
+                .browser
+                .as_ref()
+                .is_some_and(|browser| browser.verified)
     }
 
     /// Remember how this association came about, for the Browser Integration
@@ -538,13 +473,17 @@ impl ClientSession {
             return;
         };
         let mut state = lock_state(state);
-        let previous = state.associations_info.get(id).map(|info| info.auto_approved);
+        let previous = state
+            .associations_info
+            .get(id)
+            .map(|info| info.auto_approved);
         // On a later `test-associate` (auto_name = None) the earlier verdict
         // stays; for an association loaded from database metadata the name
         // shape is all that is left.
         let auto_approved = match auto_name {
             Some(name) => name == id,
-            None => previous.unwrap_or_else(|| crate::bridge::automatic_association_browser(id).is_some()),
+            None => previous
+                .unwrap_or_else(|| crate::bridge::automatic_association_browser(id).is_some()),
         };
         state.associations_info.insert(
             id.to_owned(),
@@ -583,7 +522,9 @@ impl ClientSession {
         }
         // Identification key: defaults to the connection key (backwards
         // compatibility, like the C++).
-        let id_key = get_str(inner, "idKey").filter(|value| !value.is_empty()).unwrap_or(key);
+        let id_key = get_str(inner, "idKey")
+            .filter(|value| !value.is_empty())
+            .unwrap_or(key);
         if B64.decode(id_key.as_bytes()).map(|bytes| bytes.len()) != Ok(32) {
             return Err(ERROR_ASSOCIATION_FAILED);
         }
@@ -732,7 +673,9 @@ impl ClientSession {
             return Err(ERROR_CANNOT_USE_REFERENCES);
         }
         let uuid = match get_str(inner, "uuid") {
-            Some(raw) if !raw.is_empty() => Some(normalize_uuid(&raw).ok_or(ERROR_NO_VALID_UUID_PROVIDED)?),
+            Some(raw) if !raw.is_empty() => {
+                Some(normalize_uuid(&raw).ok_or(ERROR_NO_VALID_UUID_PROVIDED)?)
+            }
             _ => None,
         };
         let request = SetLoginRequest {
@@ -777,10 +720,7 @@ impl ClientSession {
         Ok(vec![("totp", json!(code))])
     }
 
-    fn get_database_groups(
-        &self,
-        state: &SharedState,
-    ) -> Result<Vec<(&'static str, Value)>, i32> {
+    fn get_database_groups(&self, state: &SharedState) -> Result<Vec<(&'static str, Value)>, i32> {
         if !self.associated || !self.still_associated(state) {
             return Err(ERROR_ASSOCIATION_FAILED);
         }
@@ -907,7 +847,11 @@ fn generate_session_id() -> String {
 }
 
 fn default_association_id(session_id: &str) -> String {
-    let suffix: String = session_id.chars().filter(|ch| ch.is_ascii_alphanumeric()).take(6).collect();
+    let suffix: String = session_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(6)
+        .collect();
     if suffix.is_empty() {
         "chrome-browser".into()
     } else {

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Credential Manager capabilities. The androidx provider speaks the androidx type names; the platform
+    spellings are declared too so both the framework and the Jetpack client pick us up.
+-->
+<credential-provider xmlns:android="http://schemas.android.com/apk/res/android">
+    <capabilities>
+        <capability name="android.credentials.TYPE_PASSWORD_CREDENTIAL" />
+        <capability name="android.credentials.TYPE_PUBLIC_KEY_CREDENTIAL" />
+        <capability name="androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL" />
+    </capabilities>
+</credential-provider>

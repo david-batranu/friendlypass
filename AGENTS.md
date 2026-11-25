@@ -21,9 +21,12 @@ against KeePassXC 2.8.0 (`verify.sh`).
 | `crates/friendlypass/` | Core library + `friendlypass` CLI: commands, KDBX open/save, keyfiles, import/export, KeeShare. | `src/commands.rs`, `src/import.rs`, `src/export.rs`, `src/saveutil.rs`, `src/key.rs`, `tests/integration.rs` |
 | `crates/friendlypass-gui/` | egui/eframe GUI, dialogs, browser bridge, auto-type, TOTP, icons; headless `egui_kittest` tests and PNG snapshots. | `src/app.rs`, `src/dialogs.rs`, `src/browser_bridge.rs`, `src/autotype.rs`, `src/icons.rs`, `tests/gui.rs`, `tests/browser.rs` |
 | `crates/friendlypass-ssh-agent/` | SSH agent (unencrypted `ssh-ed25519` subset) plus `friendlypass-ssh-agent` binary. | `src/server.rs`, `src/openssh.rs`, `tests/e2e.rs` |
+| `crates/friendlypass-mobile/` | UniFFI cdylib `friendlypass_mobile` for Android: vault open/search/save, mobile passkey records. | `src/lib.rs`, `src/bin/uniffi-bindgen.rs`, `Cargo.toml` |
+| `crates/friendlypass-passkey/` | WebAuthn authenticator (ES256/EdDSA/RSA) and KeePassXC `KPEX_PASSKEY_*` field format, no keepass dependency. | `src/lib.rs`, `tests/` |
 | `crates/friendlypass-browser/` | Socket-side KeePassXC-Browser protocol: crypto, sessions, actions, push, peer verification, native-messaging manifests. | `src/server.rs`, `src/service.rs`, `src/crypto.rs`, `src/protocol.rs`, `src/peer.rs`, `src/bridge.rs`, `tests/fixtures_*.rs` |
 | `crates/friendlypass-browser-host/` | `friendlypass-browser-host`: native-messaging stdio ↔ app socket bridge (registered as `org.friendlypass.browser`). | `src/dispatch.rs`, `src/app.rs`, `src/framing.rs`, `src/browser_identity.rs`, `src/install_cli.rs`, `tests/host_identify.rs` |
 | `extension/` | MV3 browser extension (hard fork of keepassxc-browser): transport, session, actions, content/fill engine, popup/options. | `src/background/transport.ts`, `src/background/session.ts`, `src/background/actions.ts`, `src/content/fill.ts`, `tests/unit/` |
+| `android/` | Android app (`org.friendlypass.android`): Compose UI, UniFFI vault, SAF storage, autofill service, Credential Manager provider, debug-only `:testapp` and `:credtest` drivers, instrumented tests. Contract is frozen. | `CONTRACT.md`, `app/src/main/java/org/friendlypass/android/`, `app/src/androidTest/`, `app/build.gradle.kts` |
 | `protocol/` | Frozen wire contract, golden frames, file ownership. | `ACTIONS.md`, `OWNERSHIP.md`, `version`, `fixtures/` |
 | `installer/` | Registers the native host with Chrome-family browsers and Firefox; thin delegate to `friendlypass-browser-host --install`. | `install.sh`, `tests/install.sh` |
 | `packaging/` | macOS `.app` bundle and Linux tarball/desktop entry; both ship GUI + browser host. | `macos/package.sh`, `linux/package.sh`, `README.md` |
@@ -102,6 +105,49 @@ from `extension/`.
 `friendlypass-gui` and the core `friendlypass` crate have pre-existing clippy
 findings. Do not add new ones, and do not run `-D warnings` on them expecting a
 clean result.
+
+## Android
+
+Run every `./gradlew` command from `android/`. The Rust half is cross-compiled
+by `cargo-ndk`; `uniffi-bindgen` generates the Kotlin bindings into
+`app/build/generated/uniffi` before `compileDebugKotlin`.
+
+```sh
+export PATH=/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH
+export ANDROID_HOME=$HOME/Library/Android/sdk
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export CARGO_TARGET_DIR=/Users/david/Work/Projects/friendlypass/wt/_target-android
+```
+
+| Area | Command | Notes |
+|---|---|---|
+| Build debug | `./gradlew :app:assembleDebug` | cargo-ndk builds arm64-v8a + x86_64 |
+| JVM unit tests | `./gradlew :app:testDebugUnitTest` | 94 tests; results under `app/build/test-results/` |
+| Instrumented tests | `ANDROID_SERIAL=emulator-<port> ./gradlew :app:connectedDebugAndroidTest` | installs `:testapp` and `:credtest` first via task dependencies |
+| Release APK | `./gradlew :app:assembleRelease` | unsigned, R8/minify off, release cargo profile |
+| One test class | `ANDROID_SERIAL=emulator-<port> ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=<fqcn>` | append `#method` for one method |
+
+Emulators: use the assigned port only and always pass `-s emulator-<port>` to
+adb; run read-only so instances do not collide:
+`$ANDROID_HOME/emulator/emulator -avd Pixel_9a -read-only -no-window -no-audio -no-snapshot-save -port <port>`
+(then `adb -s emulator-<port> wait-for-device` and poll
+`getprop sys.boot_completed`). Kill only your own with
+`adb -s emulator-<port> emu kill`.
+
+Debug-only extras and test hooks (never in release):
+- `org.friendlypass.android.DEMO_DATABASE=true` opens the in-memory Kotlin fake
+  (password `test`); `org.friendlypass.android.ALLOW_CAPTURE=true` skips
+  `FLAG_SECURE` for screenshots.
+- `org.friendlypass.android.DEBUG_DATABASE_FILE=<path>` opens a `file://` KDBX
+  copied into app storage. `SafDatabaseStore` accepts `file://` only in debug
+  builds; instrumented tests stage fixtures with
+  `app/src/debug/.../DebugVaultFile.kt`.
+- Instrumented tests use `sample4.kdbx` from `app/src/androidTest/assets`
+  (password `testpassword`) and drive `:credtest` with the rpId
+  `credtest.friendlypass.test`. The credential provider is selected in tests by
+  `settings put secure credential_service …`; the emulator's default is Google
+  Password Manager.
 
 ## Known gotchas (all checked in this checkout)
 

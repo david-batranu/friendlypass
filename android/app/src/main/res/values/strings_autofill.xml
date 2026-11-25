@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="autofill_service_label">friendlypass</string>
+
+    <!-- Locked state -->
+    <string name="autofill_unlock_chip">Unlock friendlypass</string>
+    <string name="autofill_unlock_chip_subtitle">Tap to unlock your database</string>
+
+    <!-- Unlocked state -->
+    <string name="autofill_search">Search friendlypass…</string>
+    <string name="autofill_search_subtitle">Choose an entry</string>
+    <string name="autofill_error_no_fields">No username or password field to fill</string>
+
+    <!-- Save sheet -->
+    <string name="autofill_save_title">Save login?</string>
+    <string name="autofill_save_default_title">New login</string>
+    <string name="autofill_save_name">Name</string>
+    <string name="autofill_save_username">Username</string>
+    <string name="autofill_save_password">Password</string>
+    <string name="autofill_save_confirm">Save</string>
+    <string name="autofill_save_not_now">Not now</string>
+    <string name="autofill_save_conflict">The database changed elsewhere and the login could not be saved. Unlock it again and retry.</string>
+    <string name="autofill_save_failed">The login could not be saved</string>
+
+    <!-- Settings -->
+    <string name="autofill_settings_title">Autofill</string>
+    <string name="autofill_settings_explainer">friendlypass offers your logins in the keyboard and the autofill menu of apps and browsers, and offers to save new logins.</string>
+    <string name="autofill_settings_choose">Choose autofill service</string>
+    <string name="autofill_status_active">friendlypass is your autofill service.</string>
+    <string name="autofill_status_other">Another app is your autofill service.</string>
+    <string name="autofill_status_off">Autofill is turned off.</string>
+</resources>
