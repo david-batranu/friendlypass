@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::browser_identity;
 use crate::errors;
 use crate::framing::ObjectFramer;
 use crate::status::StatusCell;
@@ -71,6 +72,10 @@ struct Conn {
     pending_probe: bool,
     probe_sent: Option<Instant>,
     misses: u8,
+    /// A `host-identify` frame was written on this connection and its reply
+    /// has not been consumed yet. Used to recognise the host-error answer an
+    /// older app gives for an action it does not implement.
+    identify_pending: bool,
 }
 
 pub struct AppLink {
@@ -210,6 +215,21 @@ impl AppLink {
         conn.pending_probe = false;
         conn.probe_sent = None;
         conn.misses = 0;
+        conn.identify_pending = true;
+
+        // Contract §2: `host-identify` is the FIRST frame on every connection,
+        // before anything is forwarded and before the first probe. The frame
+        // is pre-serialised once; the write is bounded by the 5 s timeout.
+        let identified = match conn.stream.as_mut() {
+            Some(stream) => stream
+                .write_all(browser_identity::identify_frame_bytes())
+                .is_ok(),
+            None => false,
+        };
+        if !identified {
+            disconnect(conn);
+            return false;
+        }
 
         let generation = conn.generation;
         self.status.set_connected();
@@ -265,6 +285,12 @@ impl AppLink {
             );
             return;
         }
+        // The app's answer to `host-identify` is consumed by the host and is
+        // never forwarded to the extension (contract §2).
+        if self.consume_identify_reply(generation, &parsed) {
+            return;
+        }
+
         let action = parsed.get("action").and_then(Value::as_str);
 
         if action == Some("ping") {
@@ -308,6 +334,42 @@ impl AppLink {
                 self.status.observe_push(action, hash);
             }
         }
+    }
+
+    /// Consume an app frame that answers `host-identify`, recording
+    /// `trusted`. Returns `true` when the frame was the identify reply.
+    ///
+    /// An app that predates the action answers with a host error frame
+    /// (`errorCode: "1003"`, `hostError: true`), whose `action` may be empty;
+    /// that is ignored as the contract requires. It is only treated as the
+    /// identify reply while one is outstanding, so a genuine error for a
+    /// forwarded action is never swallowed.
+    fn consume_identify_reply(&self, generation: u64, parsed: &Value) -> bool {
+        let action = parsed.get("action").and_then(Value::as_str);
+        let is_host_error = parsed
+            .get("hostError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        {
+            let mut conn = self.lock_conn();
+            if conn.generation != generation {
+                return false;
+            }
+            let is_identify = action == Some("host-identify");
+            let is_identify_error = conn.identify_pending
+                && is_host_error
+                && matches!(action, None | Some("") | Some("host-identify"));
+            if !is_identify && !is_identify_error {
+                return false;
+            }
+            conn.identify_pending = false;
+        }
+        // Fail closed: only an explicit `trusted: true` makes the app trusted.
+        // A host error frame (unknown action) means the app cannot vouch for
+        // us, so the extension must fall back to the manual approval path.
+        let trusted = trusted_from_reply(parsed).unwrap_or(false);
+        self.status.set_app_trusted(trusted);
+        true
     }
 
     fn probe_answered(&self, generation: u64, value: Option<&Value>) {
@@ -382,6 +444,12 @@ impl AppLink {
                 .map(Value::from)
                 .unwrap_or(Value::Null),
         );
+        // Additive [friendlypass] status fields, same as `ping`/`hello`.
+        frame.insert(
+            "appTrusted".into(),
+            snapshot.app_trusted.map(Value::from).unwrap_or(Value::Null),
+        );
+        frame.insert("browser".into(), browser_identity::summary_json());
         if self.out.value(&Value::Object(frame)).is_err() {
             // The browser closed the port; the stdin loop will notice EOF and
             // exit. Nothing else to do from this thread.
@@ -558,7 +626,23 @@ fn disconnect(conn: &mut Conn) -> u64 {
     conn.pending_probe = false;
     conn.probe_sent = None;
     conn.misses = 0;
+    conn.identify_pending = false;
     generation
+}
+
+/// Read `trusted` from a `host-identify` reply. The contract shows a JSON
+/// boolean; the string forms are accepted too because every other protocol
+/// boolean is a string (`"true"`), so an app may reasonably send either.
+fn trusted_from_reply(parsed: &Value) -> Option<bool> {
+    match parsed.get("trusted") {
+        Some(Value::Bool(value)) => Some(*value),
+        Some(Value::String(value)) => match value.as_str() {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn spawn_thread<F>(name: &str, body: F)
@@ -568,4 +652,39 @@ where
     // A failed thread spawn is not fatal: the manager simply tries again on
     // the next loop, and the writer queue stays drained by its owner.
     let _ = thread::Builder::new().name(name.to_owned()).spawn(body);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusted_accepts_boolean_and_string_forms() {
+        assert_eq!(
+            trusted_from_reply(&serde_json::json!({"trusted": true})),
+            Some(true)
+        );
+        assert_eq!(
+            trusted_from_reply(&serde_json::json!({"trusted": false})),
+            Some(false)
+        );
+        assert_eq!(
+            trusted_from_reply(&serde_json::json!({"trusted": "true"})),
+            Some(true)
+        );
+        assert_eq!(
+            trusted_from_reply(&serde_json::json!({"trusted": "false"})),
+            Some(false)
+        );
+        // Anything else is "no verdict"; the caller fails closed.
+        assert_eq!(trusted_from_reply(&serde_json::json!({})), None);
+        assert_eq!(
+            trusted_from_reply(&serde_json::json!({"trusted": null})),
+            None
+        );
+        assert_eq!(
+            trusted_from_reply(&serde_json::json!({"trusted": "yes"})),
+            None
+        );
+    }
 }

@@ -19,6 +19,10 @@ pub struct Snapshot {
     pub app_version: Option<String>,
     pub locked: Option<bool>,
     pub database_hash: Option<String>,
+    /// The app's verdict on the `host-identify` frame (contract §2): `true`
+    /// only when the app verified that its socket peer is our host binary.
+    /// `None` means the app has not answered the identify frame yet.
+    pub app_trusted: Option<bool>,
 }
 
 #[derive(Default)]
@@ -28,6 +32,7 @@ struct State {
     app_version: Option<String>,
     locked: Option<bool>,
     database_hash: Option<String>,
+    app_trusted: Option<bool>,
 }
 
 /// Mutex-protected status cache shared by the reader, manager, and dispatcher.
@@ -53,15 +58,18 @@ impl StatusCell {
             app_version: state.app_version.clone(),
             locked: state.locked,
             database_hash: state.database_hash.clone(),
+            app_trusted: state.app_trusted,
         }
     }
 
     /// A socket was established. Status fields stay unknown until the first
-    /// probe answer.
+    /// probe answer; `appTrusted` is also reset because a new peer has not
+    /// answered `host-identify` yet.
     pub fn set_connected(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.connected = true;
         state.last_probe_ok = None;
+        state.app_trusted = None;
     }
 
     /// The socket is gone: everything becomes unknown again.
@@ -72,6 +80,14 @@ impl StatusCell {
         state.app_version = None;
         state.locked = None;
         state.database_hash = None;
+        state.app_trusted = None;
+    }
+
+    /// Record the app's answer to `host-identify` (contract §2). The verdict
+    /// belongs to one connection: it is cleared on disconnect.
+    pub fn set_app_trusted(&self, trusted: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.app_trusted = Some(trusted);
     }
 
     /// The app answered a status probe. `None` fields keep their cached value,
@@ -146,5 +162,22 @@ mod tests {
         assert!(!snapshot.app_running);
         assert_eq!(snapshot.app_version, None);
         assert_eq!(snapshot.locked, None);
+    }
+
+    #[test]
+    fn trust_starts_unknown_and_is_cleared_by_reconnect() {
+        let cell = StatusCell::new();
+        assert_eq!(cell.snapshot().app_trusted, None);
+        cell.set_connected();
+        assert_eq!(cell.snapshot().app_trusted, None);
+        cell.set_app_trusted(true);
+        assert_eq!(cell.snapshot().app_trusted, Some(true));
+        cell.set_app_trusted(false);
+        assert_eq!(cell.snapshot().app_trusted, Some(false));
+        // A reconnect must not inherit the previous peer's verdict.
+        cell.set_disconnected();
+        assert_eq!(cell.snapshot().app_trusted, None);
+        cell.set_connected();
+        assert_eq!(cell.snapshot().app_trusted, None);
     }
 }

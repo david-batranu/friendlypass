@@ -965,12 +965,24 @@ Response:
   "appVersion": null,
   "locked": null,
   "databaseHash": null,
+  "appTrusted": null,
+  "browser": { "kind": "chrome", "verified": true },
   "nonce": "<echo of the request nonce, if sent>"
 }
 ```
 
 Rules:
 
+- **[friendlypass]** `appTrusted` and `browser` are additive fields (host-identify
+  §2, host-side check §4). `appTrusted` is the app's answer to the host's
+  `host-identify` frame: `true` only when the app verified that its socket peer
+  is our host binary, `false` when it did not (including an app that does not
+  implement the action), `null` before the reply or while no app is connected.
+  `browser` is `{kind, verified}` for the browser that launched this host, with
+  `kind` one of `chrome|chromium|brave|edge|firefox|unknown`; the detailed
+  `executable`/`teamId` values are host↔app only. The `browser` claim is
+  advisory outside the app: auto-approval already required the app to trust the
+  peer, so a client only needs `appTrusted`.
 - The host MUST answer within 100 ms and MUST NOT block on the app socket.
 - The echoed `nonce` is **not** incremented; it is an RTT probe.
 - `appRunning` is true only when the host has a live app socket and the app
@@ -1014,11 +1026,18 @@ Response:
   "appVersion": "0.1.0",
   "locked": true,
   "databaseHash": null,
+  "appTrusted": true,
+  "browser": { "kind": "chrome", "verified": true },
   "sessionId": "7b1d0c5e-4a2f-4f6e-9c3b-2d1a0e8f6b4c",
   "hostPid": 4242
 }
 ```
 
+- **[friendlypass]** `appTrusted` and `browser` are the same additive fields as
+  in `ping` (§5.2), with the same meaning and nullability. They are repeated
+  here so a client that only sends `hello` sees them without a second request;
+  the unsolicited `appRunning` status frames allowed by `statusPush` below use
+  the `ping` shape and therefore carry them too.
 - `sessionId` is host-generated and stable for the stdio connection. It is for
   diagnostics only, not authentication.
 - `hello` MUST NOT trigger a database unlock or any GUI action.

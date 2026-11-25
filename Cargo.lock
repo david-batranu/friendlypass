@@ -2196,7 +2196,9 @@ name = "friendlypass-browser-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "core-foundation 0.10.1",
  "friendlypass-browser",
+ "libc",
  "serde_json",
 ]
 
