@@ -42,6 +42,7 @@ object AndroidStructureReader {
                 hint = node.hint,
                 text = node.text?.toString(),
                 inputType = node.inputType,
+                maxLength = node.maxTextLength,
                 autofillHints = node.autofillHints?.toList(),
                 htmlInfo = node.htmlInfo?.toModel(),
                 webDomain = node.webDomain?.takeIf { it.isNotBlank() },

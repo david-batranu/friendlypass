@@ -6,6 +6,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import org.friendlypass.android.autofill.AutofillRecents
 import org.friendlypass.android.settings.AppSettings
 import org.friendlypass.android.storage.AndroidDocumentGateway
 import org.friendlypass.android.storage.DatabaseStore
@@ -36,6 +42,8 @@ class FriendlypassApp : Application() {
     lateinit var biometric: BiometricUnlock
         private set
 
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_SCREEN_OFF) {
@@ -57,5 +65,13 @@ class FriendlypassApp : Application() {
             IntentFilter(Intent.ACTION_SCREEN_OFF),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        // Autofill's "most recently used entry" memory is only valid while the vault is open.
+        appScope.launch {
+            vault.state.collect { state ->
+                if (state !is org.friendlypass.android.vault.model.VaultState.Unlocked) {
+                    AutofillRecents.clear()
+                }
+            }
+        }
     }
 }

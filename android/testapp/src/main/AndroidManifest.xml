@@ -23,6 +23,12 @@
             android:exported="true"
             android:label="@string/web_login_title"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".OtpActivity"
+            android:exported="true"
+            android:label="@string/otp_heading"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 
 </manifest>

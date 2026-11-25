@@ -86,18 +86,74 @@ class AutofillUi(private val context: Context) {
     ): Dataset {
         val title = context.getString(R.string.autofill_search)
         val subtitle = context.getString(R.string.autofill_search_subtitle)
-        val intent = AutofillPickActivity.newIntent(context, fields, target, callingPackage, maxSuggestions, spec)
+        val intent = AutofillPickActivity.newIntent(
+            context,
+            fields,
+            target,
+            callingPackage,
+            maxSuggestions,
+            spec,
+            onlyWithTotp = fields.hasOtp,
+        )
         val pendingIntent = AutofillPendingIntents.forIntent(context, intent)
         val builder = Dataset.Builder(datasetPresentation(title, subtitle))
             .setId(AutofillDatasetPlanner.SEARCH_ID)
             .setAuthentication(pendingIntent.intentSender)
         // A dataset must carry at least one field value, even when it authenticates: the picker activity
-        // returns the real Dataset (with the chosen password) through EXTRA_AUTHENTICATION_RESULT.
+        // returns the real Dataset (with the chosen password/code) through EXTRA_AUTHENTICATION_RESULT.
         fields.all.forEach { id -> builder.setValue(id, AutofillValue.forText("")) }
         // The keyboard chip has room for one line only; the title is enough there.
         inlineChip(spec, title, null, pendingIntent)?.let(builder::setInlinePresentation)
         return builder.build()
     }
+
+    /**
+     * One-time-code suggestion: only a presentation and an authentication intent. The code is computed by
+     * [AutofillOtpActivity] when the user taps, so it is always fresh and never shown in the UI.
+     */
+    fun otpDataset(
+        fields: FieldIds,
+        plan: DatasetPlan,
+        target: AutofillTarget,
+        callingPackage: String?,
+        spec: InlinePresentationSpec?,
+    ): Dataset {
+        val title = otpTitle(plan.title)
+        val intent = AutofillOtpActivity.newIntent(context, fields, target, callingPackage, plan.entryUuid)
+        val pendingIntent = AutofillPendingIntents.forIntent(context, intent)
+        val builder = Dataset.Builder(datasetPresentation(title, plan.subtitle))
+            .setId(plan.id)
+            .setAuthentication(pendingIntent.intentSender)
+        fields.all.forEach { id -> builder.setValue(id, AutofillValue.forText("")) }
+        inlineChip(spec, title, null, pendingIntent)?.let(builder::setInlinePresentation)
+        return builder.build()
+    }
+
+    /** A complete OTP dataset, built at tap time by [AutofillOtpActivity] or the picker. */
+    fun otpFilledDataset(
+        fields: FieldIds,
+        title: CharSequence,
+        subtitle: CharSequence?,
+        entryUuid: String,
+        candidate: FillCandidate,
+        code: String,
+        spec: InlinePresentationSpec?,
+    ): Dataset {
+        val presentationTitle = otpTitle(title)
+        val builder = Dataset.Builder(datasetPresentation(presentationTitle, subtitle))
+            .setId(entryUuid)
+        inlineChip(spec, presentationTitle, null, attributionIntent())?.let(builder::setInlinePresentation)
+        fields.usernameIds.forEach { id -> builder.setValue(id, AutofillValue.forText(candidate.username)) }
+        fields.passwordIds.forEach { id -> builder.setValue(id, AutofillValue.forText(candidate.password)) }
+        val values = AutofillOtp.values(code, fields.otpGroups())
+        fields.otpIds.forEachIndexed { index, id ->
+            builder.setValue(id, AutofillValue.forText(values.getOrElse(index) { "" }))
+        }
+        return builder.build()
+    }
+
+    /** "<title> · one-time code": the only OTP text ever shown in a presentation. */
+    fun otpTitle(title: CharSequence): CharSequence = context.getString(R.string.autofill_otp_title, title)
 
     /** A dataset built after the user picked an entry in [AutofillPickActivity]. */
     fun pickedDataset(
@@ -116,6 +172,9 @@ class AutofillUi(private val context: Context) {
 
     /**
      * A FillResponse for an unlocked vault: one dataset per match plus the pinned search dataset.
+     *
+     * With an OTP field present, matches are authenticated OTP datasets (the code is computed at tap
+     * time), and for combined pages the same dataset also carries username/password.
      */
     fun unlockedResponse(
         fields: FieldIds,
@@ -126,12 +185,18 @@ class AutofillUi(private val context: Context) {
         spec: InlinePresentationSpec?,
     ): FillResponse {
         val plans = AutofillDatasetPlanner.plan(candidates, maxSuggestions, includeSearch = true)
-        android.util.Log.d("FriendlypassAutofill", "unlocked response: plans=${plans.size} matches=${candidates.size} inline=${spec != null}")
+        android.util.Log.d(
+            "FriendlypassAutofill",
+            "unlocked response: plans=${plans.size} matches=${candidates.size} inline=${spec != null} otp=${fields.hasOtp}",
+        )
         val byUuid = candidates.associateBy { it.entryUuid }
         val builder = FillResponse.Builder()
+        builder.setClientState(clientState(target))
         plans.forEach { plan ->
             if (plan.isSearch) {
                 builder.addDataset(searchDataset(fields, target, callingPackage, maxSuggestions, spec))
+            } else if (fields.hasOtp) {
+                builder.addDataset(otpDataset(fields, plan, target, callingPackage, spec))
             } else {
                 val candidate = byUuid[plan.entryUuid] ?: return@forEach
                 builder.addDataset(entryDataset(fields, plan, candidate, spec))
@@ -150,6 +215,7 @@ class AutofillUi(private val context: Context) {
         spec: InlinePresentationSpec?,
     ): FillResponse {
         val builder = FillResponse.Builder()
+        builder.setClientState(clientState(target))
         builder.addDataset(searchDataset(fields, target, callingPackage, maxSuggestions, spec))
         saveInfo(fields)?.let { builder.setSaveInfo(it) }
         return builder.build()
@@ -161,11 +227,15 @@ class AutofillUi(private val context: Context) {
         val pendingIntent = AutofillPendingIntents.forIntent(context, intent)
         val label = context.getString(R.string.autofill_unlock_chip)
         val builder = FillResponse.Builder()
+        builder.setClientState(clientState(target))
         val ids: Array<AutofillId> = fields.all.toTypedArray()
         val auth = authPresentation(label)
         // Chip text is one line in most keyboards; the dropdown keeps the longer explanation.
         val inline = inlineChip(spec, label, null, pendingIntent)
-        android.util.Log.d("FriendlypassAutofill", "locked response: inline=${inline != null} ids=${ids.size}")
+        android.util.Log.d(
+            "FriendlypassAutofill",
+            "locked response: inline=${inline != null} ids=${ids.size} otp=${fields.otpIds.size}",
+        )
         if (inline != null) {
             builder.setAuthentication(ids, pendingIntent.intentSender, auth, inline)
         } else {
@@ -174,6 +244,12 @@ class AutofillUi(private val context: Context) {
         saveInfo(fields)?.let(builder::setSaveInfo)
         return builder.build()
     }
+
+    /** Client state lets [FriendlypassAutofillService] attribute a later dataset selection to its target. */
+    private fun clientState(target: AutofillTarget): android.os.Bundle =
+        android.os.Bundle().apply {
+            putString(AutofillExtras.STATE_TARGET_KEY, AutofillRecents.targetKey(target))
+        }
 
     /**
      * SaveInfo when a password field exists: the password is required, the username optional. Requests

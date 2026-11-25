@@ -16,6 +16,8 @@ import java.util.concurrent.atomic.AtomicInteger
 object AutofillExtras {
     const val EXTRA_USERNAME_IDS = "org.friendlypass.android.autofill.USERNAME_IDS"
     const val EXTRA_PASSWORD_IDS = "org.friendlypass.android.autofill.PASSWORD_IDS"
+    const val EXTRA_OTP_IDS = "org.friendlypass.android.autofill.OTP_IDS"
+    const val EXTRA_OTP_GROUP_SIZES = "org.friendlypass.android.autofill.OTP_GROUP_SIZES"
     const val EXTRA_WEB_URL = "org.friendlypass.android.autofill.WEB_URL"
     const val EXTRA_WEB_DOMAIN = "org.friendlypass.android.autofill.WEB_DOMAIN"
     const val EXTRA_ANDROID_PACKAGE = "org.friendlypass.android.autofill.ANDROID_PACKAGE"
@@ -24,6 +26,11 @@ object AutofillExtras {
     const val EXTRA_INLINE_SPEC = "org.friendlypass.android.autofill.INLINE_SPEC"
     const val EXTRA_SAVE_USERNAME = "org.friendlypass.android.autofill.SAVE_USERNAME"
     const val EXTRA_SAVE_PASSWORD = "org.friendlypass.android.autofill.SAVE_PASSWORD"
+    const val EXTRA_ENTRY_UUID = "org.friendlypass.android.autofill.ENTRY_UUID"
+    const val EXTRA_ONLY_TOTP = "org.friendlypass.android.autofill.ONLY_TOTP"
+
+    /** Key of the target inside a [android.service.autofill.FillResponse] client-state bundle. */
+    const val STATE_TARGET_KEY = "org.friendlypass.android.autofill.STATE_TARGET_KEY"
 
     private val requestCode = AtomicInteger(1_000)
 
@@ -40,6 +47,8 @@ object AutofillExtras {
     fun putFieldIds(intent: Intent, fields: FieldIds): Intent = intent.apply {
         intent.putParcelableArrayListExtra(EXTRA_USERNAME_IDS, ArrayList(fields.usernameIds))
         intent.putParcelableArrayListExtra(EXTRA_PASSWORD_IDS, ArrayList(fields.passwordIds))
+        intent.putParcelableArrayListExtra(EXTRA_OTP_IDS, ArrayList(fields.otpIds))
+        intent.putIntegerArrayListExtra(EXTRA_OTP_GROUP_SIZES, ArrayList(fields.otpGroups()))
     }
 
     fun fieldIds(intent: Intent): FieldIds = FieldIds(
@@ -47,6 +56,9 @@ object AutofillExtras {
             .orEmpty(),
         passwordIds = IntentCompat.getParcelableArrayListExtra(intent, EXTRA_PASSWORD_IDS, AutofillId::class.java)
             .orEmpty(),
+        otpIds = IntentCompat.getParcelableArrayListExtra(intent, EXTRA_OTP_IDS, AutofillId::class.java)
+            .orEmpty(),
+        otpGroupSizes = intent.getIntegerArrayListExtra(EXTRA_OTP_GROUP_SIZES).orEmpty(),
     )
 
     fun putTarget(intent: Intent, target: AutofillTarget, callingPackage: String?): Intent = intent.apply {

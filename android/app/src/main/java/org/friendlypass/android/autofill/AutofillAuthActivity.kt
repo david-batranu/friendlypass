@@ -20,7 +20,8 @@ import org.friendlypass.android.unlock.UnlockGate
  *
  * Hosts [UnlockGate]; once the vault is unlocked it matches the remembered target, builds a
  * [FillResponse] with one dataset per match (or only the "Search friendlypass…" dataset) and returns it
- * through [AutofillManager.EXTRA_AUTHENTICATION_RESULT].
+ * through [AutofillManager.EXTRA_AUTHENTICATION_RESULT]. One-time-code requests only get entries with a
+ * TOTP secret, as authenticated datasets.
  */
 class AutofillAuthActivity : FragmentActivity() {
 
@@ -65,7 +66,13 @@ class AutofillAuthActivity : FragmentActivity() {
         resultDelivered = true
         val resolvedTarget = target ?: return finishCancelled()
         val app = application as FriendlypassApp
-        val candidates = AutofillMatching.candidates(app.vault, resolvedTarget)
+        var candidates = AutofillMatching.candidates(app.vault, resolvedTarget)
+        if (fields.hasOtp) {
+            candidates = AutofillRecents.prioritize(
+                resolvedTarget,
+                candidates.filter { it.hasTotp },
+            )
+        }
         val ui = AutofillUi(this)
         val response = if (candidates.isEmpty()) {
             ui.searchOnlyResponse(fields, resolvedTarget, callingPackage, maxSuggestions, spec)
@@ -98,7 +105,6 @@ class AutofillAuthActivity : FragmentActivity() {
             AutofillExtras.putTarget(this, target, null)
             putExtra(AutofillExtras.EXTRA_MAX_SUGGESTIONS, maxSuggestions)
             AutofillExtras.putInlineSpec(this, spec)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }
 }
