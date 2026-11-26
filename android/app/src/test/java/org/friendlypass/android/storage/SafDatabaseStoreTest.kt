@@ -9,7 +9,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.io.FileNotFoundException
 import java.io.IOException
+import java.io.OutputStream
 
 class SafDatabaseStoreTest {
 
@@ -130,6 +133,55 @@ class SafDatabaseStoreTest {
     }
 
     @Test
+    fun `write asks for rwt first so Google Drive accepts the document`() = runTest {
+        gateway.documentMetadata = DocumentMetadata(lastModified = 1L, size = 1L)
+        val expected = Snapshot(byteArrayOf(1), lastModified = 1L, size = 1L)
+
+        val result = store.write(db, byteArrayOf(2, 3), expected)
+
+        assertTrue(result is WriteResult.Written)
+        assertEquals("rwt", gateway.writeMode)
+    }
+
+    @Test
+    fun `write falls back to wt when a provider rejects rwt`() = runTest {
+        gateway.documentMetadata = DocumentMetadata(lastModified = 1L, size = 1L)
+        gateway.unsupportedModes = setOf("rwt")
+        val expected = Snapshot(byteArrayOf(1), lastModified = 1L, size = 1L)
+
+        val result = store.write(db, byteArrayOf(2, 3), expected)
+
+        assertTrue(result is WriteResult.Written)
+        assertEquals("wt", gateway.writeMode)
+        assertArrayEquals(byteArrayOf(2, 3), gateway.documentBytes)
+    }
+
+    @Test
+    fun `write never falls back to the non-truncating w mode`() = runTest {
+        gateway.documentMetadata = DocumentMetadata(lastModified = 1L, size = 1L)
+        gateway.unsupportedModes = setOf("rwt", "wt")
+        val expected = Snapshot(byteArrayOf(1), lastModified = 1L, size = 1L)
+
+        val error = runCatching { store.write(db, byteArrayOf(2, 3), expected) }.exceptionOrNull()
+
+        assertTrue(error is VaultException.Failure)
+        assertNull(gateway.writeBytes)
+        assertNull(gateway.writeMode)
+    }
+
+    @Test
+    fun `write fails without touching the document when every mode is rejected`() = runTest {
+        gateway.documentMetadata = DocumentMetadata(lastModified = 1L, size = 1L)
+        gateway.unsupportedModes = setOf("rwt", "wt")
+        val expected = Snapshot(byteArrayOf(1), lastModified = 1L, size = 1L)
+
+        val error = runCatching { store.write(db, byteArrayOf(2), expected) }.exceptionOrNull()
+
+        assertTrue(error is VaultException.Failure)
+        assertNull(gateway.writeBytes)
+    }
+
+    @Test
     fun `recent list keeps newest first without duplicates`() {
         val first = DatabaseRef("content://test/a.kdbx", "a.kdbx")
         val second = DatabaseRef("content://test/b.kdbx", "b.kdbx")
@@ -176,6 +228,8 @@ class SafDatabaseStoreTest {
         var documentMetadata: DocumentMetadata? = DocumentMetadata(lastModified = 1L, size = 1L)
         var failReads = false
         var failWrites = false
+        var unsupportedModes: Set<String> = emptySet()
+        var writeMode: String? = null
         var writeBytes: ByteArray? = null
         val cache = mutableMapOf<String, ByteArray>()
 
@@ -188,14 +242,22 @@ class SafDatabaseStoreTest {
             return documentBytes
         }
 
-        override fun write(uri: String, bytes: ByteArray) {
+        override fun openWrite(uri: String, mode: String): OutputStream {
             if (failWrites) throw IOException("provider read-only")
-            writeBytes = bytes
-            documentBytes = bytes
-            documentMetadata = DocumentMetadata(
-                lastModified = (documentMetadata?.lastModified ?: 0L) + 1,
-                size = bytes.size.toLong(),
-            )
+            if (mode in unsupportedModes) throw FileNotFoundException("Unsupported mode: $mode")
+            writeMode = mode
+            return object : ByteArrayOutputStream() {
+                override fun close() {
+                    super.close()
+                    val bytes = toByteArray()
+                    writeBytes = bytes
+                    documentBytes = bytes
+                    documentMetadata = DocumentMetadata(
+                        lastModified = (documentMetadata?.lastModified ?: 0L) + 1,
+                        size = bytes.size.toLong(),
+                    )
+                }
+            }
         }
 
         override fun readCache(key: String): ByteArray? = cache[key]

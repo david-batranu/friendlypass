@@ -78,12 +78,13 @@ class MainActivity : Activity() {
         column.addView(button("Get password") { getPassword() })
         column.addView(button("Save password") { savePassword() })
         column.addView(button("Create passkey") { createPasskey() })
+        column.addView(button("Create real passkey") { createRealPasskey() })
         column.addView(button("Sign in with passkey") { signInWithPasskey() })
         column.addView(
             TextView(this).apply {
                 textSize = 12f
                 setPadding(0, 32, 0, 0)
-                text = "rpId: $RP_ID\nRegister a passkey first, then sign in."
+                text = "rpId: ${activeRpId()}\nRegister a passkey first, then sign in."
             },
         )
         column.addView(result)
@@ -166,12 +167,52 @@ class MainActivity : Activity() {
             .put("attestation", "none")
             .toString()
 
+        create(requestJson, RP_ID)
+    }
+
+    /**
+     * Replays the creation options Chrome sent to passkeys.io (captured on an emulator): `attestation: "direct"`,
+     * `residentKey: "required"`, `userVerification: "preferred"`, ten algorithms and a 16-byte user id. Keep this
+     * shape in sync with `RealWorldRequestTest`.
+     */
+    private fun createRealPasskey() = run("Create real passkey") {
+        val challenge = ByteArray(32).also(random::nextBytes)
+        val userHandle = ByteArray(16).also(random::nextBytes)
+        val algorithms = longArrayOf(-7, -35, -36, -257, -258, -259, -37, -38, -39, -8)
+        val params = org.json.JSONArray()
+        for (algorithm in algorithms) {
+            params.put(JSONObject().put("type", "public-key").put("alg", algorithm))
+        }
+        val requestJson = JSONObject()
+            .put("attestation", "direct")
+            .put(
+                "authenticatorSelection",
+                JSONObject().put("residentKey", "required").put("userVerification", "preferred"),
+            )
+            .put("challenge", b64(challenge))
+            .put("excludeCredentials", org.json.JSONArray())
+            .put("pubKeyCredParams", params)
+            .put("rp", JSONObject().put("id", REAL_RP_ID).put("name", "passkeys.io"))
+            .put("timeout", 600000)
+            .put(
+                "user",
+                JSONObject()
+                    .put("displayName", REAL_USER)
+                    .put("id", b64(userHandle))
+                    .put("name", REAL_USER),
+            )
+            .toString()
+
+        create(requestJson, REAL_RP_ID)
+    }
+
+    private suspend fun create(requestJson: String, rpId: String): String {
         val response = credentialManager.createCredential(
             this,
             CreatePublicKeyCredentialRequest(requestJson),
         )
         if (response !is CreatePublicKeyCredentialResponse) {
-            return@run "unexpected response: $response"
+            return "unexpected response: $response"
         }
         val json = JSONObject(response.registrationResponseJson)
         val inner = json.getJSONObject("response")
@@ -179,12 +220,14 @@ class MainActivity : Activity() {
             .putString(KEY_CREDENTIAL_ID, json.getString("id"))
             .putString(KEY_PUBLIC_KEY, inner.getString("publicKey"))
             .putLong(KEY_ALGORITHM, inner.optLong("publicKeyAlgorithm", -7))
+            .putString(KEY_RP_ID, rpId)
             .apply()
-        response.registrationResponseJson
+        return response.registrationResponseJson
     }
 
     private fun signInWithPasskey() = run("Sign in with passkey") {
         val credentialId = prefs.getString(KEY_CREDENTIAL_ID, null)
+        val rpId = activeRpId()
         val challenge = ByteArray(32).also(random::nextBytes)
         val allowCredentials = org.json.JSONArray()
         if (credentialId != null) {
@@ -192,7 +235,7 @@ class MainActivity : Activity() {
         }
         val requestJson = JSONObject()
             .put("challenge", b64(challenge))
-            .put("rpId", RP_ID)
+            .put("rpId", rpId)
             .put("allowCredentials", allowCredentials)
             .put("userVerification", "required")
             .toString()
@@ -248,12 +291,17 @@ class MainActivity : Activity() {
     private fun b64(bytes: ByteArray): String =
         Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 
+    private fun activeRpId(): String = prefs.getString(KEY_RP_ID, RP_ID) ?: RP_ID
+
     private fun decode(value: String): ByteArray = Base64.getUrlDecoder().decode(value)
 
     companion object {
         private const val RP_ID = "credtest.friendlypass.test"
+        private const val REAL_RP_ID = "www.passkeys.io"
+        private const val REAL_USER = "fp-real-shape@example.com"
         private const val KEY_CREDENTIAL_ID = "credential_id"
         private const val KEY_PUBLIC_KEY = "public_key"
         private const val KEY_ALGORITHM = "algorithm"
+        private const val KEY_RP_ID = "rp_id"
     }
 }

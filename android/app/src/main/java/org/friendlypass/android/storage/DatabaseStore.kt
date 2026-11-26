@@ -46,8 +46,14 @@ interface DocumentGateway {
 
     fun read(uri: String): ByteArray
 
-    /** Truncating write (`openOutputStream(uri, "wt")`). */
-    fun write(uri: String, bytes: ByteArray)
+    /**
+     * Opens [uri] for writing with the SAF [mode] (`"rwt"`, `"wt"` or `"w"`).
+     *
+     * The store chooses the mode, because providers disagree: Google Drive rejects `"wt"` with
+     * `FileNotFoundException: Unsupported mode: wt` and Google recommends `"rwt"`. Returns `null` when the
+     * provider hands back no stream.
+     */
+    fun openWrite(uri: String, mode: String): java.io.OutputStream?
 
     fun readCache(key: String): ByteArray?
 

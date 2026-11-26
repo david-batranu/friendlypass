@@ -11,6 +11,8 @@ import org.friendlypass.android.BuildConfig
 import org.friendlypass.android.vault.model.DatabaseRef
 import org.friendlypass.android.vault.model.VaultException
 import java.io.File
+import java.io.FileNotFoundException
+import java.io.IOException
 import java.security.MessageDigest
 import java.util.Base64
 
@@ -23,7 +25,7 @@ import java.util.Base64
  *
  * Write: the metadata is re-queried first and compared with [expected]; any difference (including "expected
  * unknown" vs "provider now reports metadata") is a [WriteResult.Conflict]. Only a matching snapshot is written
- * with `openOutputStream(uri, "wt")`, then re-queried and cached.
+ * through [SafWrite] (which picks the first truncating mode the provider accepts), then re-queried and cached.
  */
 class SafDatabaseStore(
     private val gateway: DocumentGateway,
@@ -62,7 +64,7 @@ class SafDatabaseStore(
             val current = runCatching { gateway.metadata(db.uri) }.getOrNull()
             if (!unchanged(current, expected)) return@withContext WriteResult.Conflict
             try {
-                gateway.write(db.uri, bytes)
+                SafWrite.write(gateway, db.uri, bytes)
             } catch (e: Exception) {
                 throw VaultException.Failure(
                     "Could not save ${db.displayName}: ${e.message ?: "provider unavailable"}",
@@ -155,17 +157,14 @@ class AndroidDocumentGateway(private val context: Context) : DocumentGateway {
             ?: throw java.io.IOException("provider returned no stream")
     }
 
-    override fun write(uri: String, bytes: ByteArray) {
+    override fun openWrite(uri: String, mode: String): java.io.OutputStream? {
         debugFile(uri)?.let { file ->
             file.parentFile?.mkdirs()
-            file.writeBytes(bytes)
-            return
+            // file:// is debug-test-only and always truncates, mirroring the "rwt"/"wt" modes.
+            return java.io.FileOutputStream(file, false)
         }
         val parsed = Uri.parse(uri)
-        context.contentResolver.openOutputStream(parsed, "wt")?.use { stream ->
-            stream.write(bytes)
-            stream.flush()
-        } ?: throw java.io.IOException("provider returned no stream")
+        return context.contentResolver.openOutputStream(parsed, mode)
     }
 
     override fun readCache(key: String): ByteArray? {
@@ -182,6 +181,46 @@ class AndroidDocumentGateway(private val context: Context) : DocumentGateway {
     }
 
     private fun cacheFile(key: String): File = File(context.filesDir, "cache-$key.kdbx")
+}
+
+/**
+ * Writes a whole document through the first SAF mode the provider accepts.
+ *
+ * Providers disagree about truncating modes, and the difference breaks saving on a real device: Google Drive's
+ * document provider rejects `"wt"` with `FileNotFoundException: Unsupported mode: wt` (Google recommends `"rwt"`
+ * instead), while some local/third-party providers only implement `"wt"`. Plain `"w"` is never used: it may
+ * not truncate on Android 10+, which would leave stale bytes after a shorter KDBX and corrupt the database.
+ *
+ * A failure to *open* a mode falls through to the next one; a failure while writing is propagated, because
+ * retrying a partially written document would duplicate bytes.
+ */
+internal object SafWrite {
+
+    val MODES: List<String> = listOf("rwt", "wt")
+
+    fun write(gateway: DocumentGateway, uri: String, bytes: ByteArray) {
+        var last: Exception? = null
+        for (mode in MODES) {
+            val stream = try {
+                gateway.openWrite(uri, mode) ?: continue
+            } catch (e: FileNotFoundException) {
+                last = e
+                continue
+            } catch (e: UnsupportedOperationException) {
+                last = e
+                continue
+            } catch (e: IllegalArgumentException) {
+                last = e
+                continue
+            }
+            stream.use {
+                it.write(bytes)
+                it.flush()
+            }
+            return
+        }
+        throw IOException("provider does not support writing (tried ${MODES.joinToString()})", last)
+    }
 }
 
 /** Recent list in `SharedPreferences`: URI plus display name, nothing else. */
