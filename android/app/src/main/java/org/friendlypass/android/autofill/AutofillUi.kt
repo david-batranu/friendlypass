@@ -8,6 +8,7 @@ import android.service.autofill.FillResponse
 import android.service.autofill.InlinePresentation
 import android.service.autofill.SaveInfo
 import android.view.autofill.AutofillId
+import android.view.autofill.AutofillManager
 import android.view.autofill.AutofillValue
 import android.widget.RemoteViews
 import android.widget.inline.InlinePresentationSpec
@@ -119,7 +120,8 @@ class AutofillUi(private val context: Context) {
         spec: InlinePresentationSpec?,
     ): Dataset {
         val title = otpTitle(plan.title)
-        val intent = AutofillOtpActivity.newIntent(context, fields, target, callingPackage, plan.entryUuid)
+        val intent =
+            AutofillOtpActivity.newIntent(context, fields, target, callingPackage, plan.entryUuid, spec)
         val pendingIntent = AutofillPendingIntents.forIntent(context, intent)
         val builder = Dataset.Builder(datasetPresentation(title, plan.subtitle))
             .setId(plan.id)
@@ -129,7 +131,18 @@ class AutofillUi(private val context: Context) {
         return builder.build()
     }
 
-    /** A complete OTP dataset, built at tap time by [AutofillOtpActivity] or the picker. */
+    /**
+     * A complete OTP dataset, built at tap time by [AutofillOtpActivity] or the picker.
+     *
+     * The dataset is returned as an *ephemeral* authentication result (see
+     * [AutofillManager.EXTRA_AUTHENTICATION_RESULT_EPHEMERAL_DATASET]): it fills the fields once and does
+     * not replace the authenticated dataset in the framework's cached `FillResponse`, so clearing the
+     * field re-offers the original chip and every later tap computes a fresh code again. On API 30,
+     * where the extra is ignored and the result replaces the original dataset, this dataset must still
+     * carry the inline presentation, or no chip would survive the clear. It must not carry an
+     * authentication IntentSender: the framework would run it as the next authentication step of this
+     * same selection, in a loop.
+     */
     fun otpFilledDataset(
         fields: FieldIds,
         title: CharSequence,
@@ -151,6 +164,17 @@ class AutofillUi(private val context: Context) {
         }
         return builder.build()
     }
+
+    /**
+     * The authentication result [Intent]: the filled dataset, flagged ephemeral (API 31+) so the
+     * framework does not replace the session's authenticated chip dataset with this value snapshot.
+     */
+    fun authenticationResultIntent(dataset: Dataset): Intent =
+        Intent().putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT, dataset).apply {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT_EPHEMERAL_DATASET, true)
+            }
+        }
 
     /** "<title> · one-time code": the only OTP text ever shown in a presentation. */
     fun otpTitle(title: CharSequence): CharSequence = context.getString(R.string.autofill_otp_title, title)
