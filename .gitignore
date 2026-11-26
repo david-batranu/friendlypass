@@ -11,3 +11,6 @@ android/app/src/main/jniLibs
 android/.idea/
 *.apk
 *.aab
+
+# Local agent-tool configuration (per developer, not part of the project)
+opencode.json

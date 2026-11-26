@@ -10,6 +10,8 @@
 #
 # Requires: cargo, and keepassxc-cli (looked up in $PATH or in
 # /Applications/KeePassXC.app).
+# Optional: KEEPASSXC_SRC=/path/to/keepassxc (a KeePassXC source checkout) enables
+# the attachment comparison against KeePassXC's test data; it is skipped if unset.
 
 set -uo pipefail
 
@@ -72,8 +74,15 @@ check "friendlypass rejects a wrong password" \
 
 echo
 echo "== 2. attachment fidelity =="
-check "friendlypass exports keepassxc attachment byte-identically" \
-    env sh -c "printf 'testpassword\n' | '$FRIENDLYPASS' attachment-export sample4.kdbx 'Sample Entry' attach.txt -o '$WORK/attach.txt' && cmp '$WORK/attach.txt' '$ROOT/../keepassxc/tests/data/Attachment.txt'"
+ATTACH_REF="${KEEPASSXC_SRC:-}/tests/data/Attachment.txt"
+if [ -z "${KEEPASSXC_SRC:-}" ]; then
+    echo "SKIP: attachment byte-identical check (KEEPASSXC_SRC not set)"
+elif [ ! -f "$ATTACH_REF" ]; then
+    echo "SKIP: attachment byte-identical check ($ATTACH_REF not found)"
+else
+    check "friendlypass exports keepassxc attachment byte-identically" \
+        env sh -c "printf 'testpassword\n' | '$FRIENDLYPASS' attachment-export sample4.kdbx 'Sample Entry' attach.txt -o '$WORK/attach.txt' && cmp '$WORK/attach.txt' '$ATTACH_REF'"
+fi
 
 echo
 echo "== 3. friendlypass-created databases open in keepassxc-cli =="

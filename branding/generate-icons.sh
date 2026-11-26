@@ -9,7 +9,8 @@
 #         packaging/macos/AppIcon.icns                (macOS app icon, 16..1024)
 #         crates/friendlypass-gui/assets/app-icon.png (512 px squircle)
 #         extension/src/icons/icon-{16,32,48,128}.png
-#         ../../briefs/shots/logo-*.png               (review previews)
+#         target/icon-previews/logo-*.png             (review previews; git-ignored,
+#                                                      PREVIEW_DIR overrides the directory)
 #
 # Everything is rendered from the master directly (never from a previously
 # generated asset), so repeated runs produce byte-identical files. The only
@@ -22,7 +23,7 @@ DERIVED="$ROOT/branding/derived"
 ICONSET_OUT="$ROOT/packaging/macos/AppIcon.icns"
 GUI_ICON="$ROOT/crates/friendlypass-gui/assets/app-icon.png"
 EXT_ICONS="$ROOT/extension/src/icons"
-PREVIEW_DIR="${PREVIEW_DIR:-$(cd "$ROOT/../.." && pwd)/briefs/shots}"
+PREVIEW_DIR="${PREVIEW_DIR:-$ROOT/target/icon-previews}"
 
 # Crop boxes in the 2048x2048 master.
 #   mark  — square around the mascot (shield, key, arms, feet); the 1597

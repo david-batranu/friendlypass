@@ -12,8 +12,8 @@ The name is the `friendlypass` binary (CLI) and the `friendlypass-gui`
 desktop app. Databases stay standard KDBX files, so they keep opening in
 KeePassXC, KeePass, and mobile KeePass apps.
 
-The original C++ implementation lives in `../keepassxc` (cloned from
-https://github.com/keepassxreboot/keepassxc); friendlypass is built to be
+The original C++ implementation is KeePassXC
+(https://github.com/keepassxreboot/keepassxc); friendlypass is built to be
 behaviorally compatible with it.
 
 ## What it does
@@ -129,8 +129,13 @@ crates/friendlypass/tests/    integration tests against the fixtures
 fixtures/             real .kdbx files (see passwords below)
 packaging/            macOS .app bundle, Linux .desktop entry
 verify.sh             end-to-end Rust <=> KeePassXC cross-verification
-../keepassxc/         the original C++ (reference clone)
 ```
+
+`verify.sh` cross-checks friendlypass against a KeePassXC 2.8.0 install
+(`keepassxc-cli` on `PATH`, or `/Applications/KeePassXC.app` on macOS). One
+check compares an attachment with KeePassXC's own test data and needs a
+KeePassXC source checkout, given as `KEEPASSXC_SRC=/path/to/keepassxc`. When
+that variable is unset, the check is skipped with a message.
 
 Working on the code? See [`AGENTS.md`](AGENTS.md) for the crate map, test
 commands and known gotchas.
