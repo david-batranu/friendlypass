@@ -153,6 +153,28 @@ describe("pending submitted credentials", () => {
     expect(await store.take({ tabId: 7, frameId: 4, url: LOGIN })).not.toBeNull();
   });
 
+  it("never hands a submission back to the document that stored it", async () => {
+    // The submitting page is still alive until the navigation commits, and its
+    // own pending-check can run in that window. It must not consume the pair:
+    // the next document has to get the banner, and the old one must not.
+    const storage = new MemoryArea();
+    const store = createPendingStore({ storage });
+
+    expect(await store.store(submission({ documentId: "login-doc" }))).toBe(true);
+    expect(
+      await store.take({ tabId: 7, frameId: 0, url: LOGIN, documentId: "login-doc" }),
+    ).toBeNull();
+
+    const next = await store.take({
+      tabId: 7,
+      frameId: 0,
+      url: LOGIN,
+      documentId: "home-doc",
+    });
+    expect(next?.username).toBe("alice@example.com");
+    expect(next?.password).toBe(PASSWORD);
+  });
+
   it("does not store for an origin the user opted out of", async () => {
     const storage = new MemoryArea();
     const never = new MemoryArea();

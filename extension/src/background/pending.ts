@@ -10,7 +10,8 @@
  *
  * Isolation rules (all enforced here, not in the page):
  *  - keyed by tab, so one tab can never see another tab's submission;
- *  - only returned to the submitting frame;
+ *  - only returned to the submitting frame, and never to the submitting
+ *    document (it may still be alive while its navigation is in flight);
  *  - only returned on the same registrable site (IP hosts compare
  *    scheme/host/port, so two local test servers are different sites);
  *  - expires after {@link PENDING_TTL_MS} (a test-only setting may shorten it);
@@ -51,6 +52,12 @@ export interface PendingSubmissionInput {
   tabId: number;
   /** Submitting frame; only that frame is offered the banner again. */
   frameId?: number;
+  /**
+   * Random id of the submitting document (one per content-script instance).
+   * The submitting page stays alive until its navigation commits and may run
+   * its own pending-check in that window; this id keeps the pair away from it.
+   */
+  documentId?: string;
   /** URL of the page that contained the form. */
   url: string;
   username: string;
@@ -64,6 +71,7 @@ export type { PendingCredential };
 interface StoredPending extends PendingCredential {
   tabId: number;
   frameId?: number;
+  documentId?: string;
   /** Registrable site used for the cross-site check. */
   site: string;
   expiresAt: number;
@@ -87,6 +95,7 @@ export interface PendingStore {
     tabId: number;
     frameId?: number;
     url: string;
+    documentId?: string;
   }): Promise<PendingCredential | null>;
   /** Drop any pending pair for the tab (save, dismiss, never-for-site). */
   clear(tabId: number): Promise<void>;
@@ -317,6 +326,7 @@ export function createPendingStore(options: PendingStoreOptions): PendingStore {
         const entry: StoredPending = {
           tabId: input.tabId,
           ...(input.frameId !== undefined ? { frameId: input.frameId } : {}),
+          ...(input.documentId ? { documentId: input.documentId } : {}),
           url: input.url,
           origin,
           site,
@@ -355,6 +365,14 @@ export function createPendingStore(options: PendingStoreOptions): PendingStore {
           input.frameId !== undefined &&
           entry.frameId !== input.frameId
         ) {
+          if (changed) {
+            await writeMap(map);
+          }
+          return null;
+        }
+        // The page that submitted the form is not the next page: leave the pair
+        // for the document that loads after the navigation.
+        if (entry.documentId !== undefined && entry.documentId === input.documentId) {
           if (changed) {
             await writeMap(map);
           }

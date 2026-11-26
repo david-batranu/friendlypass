@@ -449,6 +449,9 @@ function buildBackgroundHandlers(): BackgroundHandlers {
       const stored = await getPendingStore().store({
         tabId,
         ...(typeof sender.frameId === "number" ? { frameId: sender.frameId } : {}),
+        ...(typeof args.documentId === "string" && args.documentId
+          ? { documentId: args.documentId }
+          : {}),
         url: typeof args.url === "string" ? args.url : "",
         username: typeof args.username === "string" ? args.username : "",
         password: typeof args.password === "string" ? args.password : "",
@@ -467,6 +470,9 @@ function buildBackgroundHandlers(): BackgroundHandlers {
       return getPendingStore().take({
         tabId,
         ...(typeof sender.frameId === "number" ? { frameId: sender.frameId } : {}),
+        ...(typeof args.documentId === "string" && args.documentId
+          ? { documentId: args.documentId }
+          : {}),
         url: typeof args.url === "string" ? args.url : "",
       });
     },

@@ -852,6 +852,8 @@ export interface StoreSubmittedArgs {
   username: string;
   password: string;
   submitUrl?: string;
+  /** Id of the submitting document; it never receives its own pair back. */
+  documentId?: string;
 }
 
 export interface StoreSubmittedResult {
@@ -905,7 +907,10 @@ export interface BackgroundRequestMap {
   /** Store the pair a form just submitted, before the page can unload. */
   "submit.store": { args: StoreSubmittedArgs; result: StoreSubmittedResult };
   /** Consume the pending pair for the calling tab/frame/page. */
-  "submit.pending": { args: { url: string }; result: PendingCredential | null };
+  "submit.pending": {
+    args: { url: string; documentId?: string };
+    result: PendingCredential | null;
+  };
   /** Drop the pending pair for the calling tab (save, dismiss). */
   "submit.clear": { args: void; result: void };
   /** Never offer to save on this origin again. */
