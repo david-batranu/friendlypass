@@ -1,6 +1,6 @@
 [package]
 name = "friendlypass-browser"
-description = "friendlypass browser integration: KeePassXC-Browser protocol server (keepassxc-proxy compatible)"
+description = "friendlypass browser integration: browser protocol server for the friendlypass extension"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

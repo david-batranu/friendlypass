@@ -2,7 +2,7 @@
 //!
 //! Opens a real database from `fixtures/` with the `friendlypass` crate,
 //! installs an auto-approving association bridge (so `associate` needs no
-//! GUI), and serves the KeePassXC-Browser protocol on
+//! GUI), and serves the friendlypass browser protocol on
 //! `friendlypass_browser::browser_server_path()` — i.e. on `FP_APP_SOCKET`
 //! when the e2e harness sets it. `set-login` writes the entry with the same
 //! code path as the GUI bridge (`entry_write::apply_set_login`) and saves the

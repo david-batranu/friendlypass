@@ -1,11 +1,18 @@
 //! End-to-end verification against the REAL `keepassxc-proxy` binary from
-//! the KeePassXC.app bundle — the same proxy the actual browser extension
-//! launches.
+//! the KeePassXC.app bundle — an upstream compatibility oracle for the wire
+//! protocol.
+//!
+//! friendlypass serves its own socket
+//! (`friendlypass_browser::browser_server_path()`, normally
+//! `<user temp dir>/org.friendlypass.BrowserServer`). The upstream proxy has
+//! `org.keepassxc.KeePassXC.BrowserServer` compiled in, so this one test binds
+//! that legacy path to prove protocol compatibility. It never takes over a
+//! path that is already in use: when KeePassXC's browser integration is
+//! running, the test skips instead of touching the live socket.
 //!
 //! The proxy relays native-messaging frames (4-byte LE length + JSON) between
-//! the browser and the BrowserServer socket. We start our protocol server at
-//! the exact socket path KeePassXC uses, drive the REAL proxy over stdin,
-//! and verify the complete protocol flow on stdout:
+//! the browser and the BrowserServer socket. We drive the REAL proxy over
+//! stdin and verify the complete protocol flow on stdout:
 //!
 //! 1. `change-public-keys` handshake (unencrypted, nonce-increment reply)
 //! 2. `associate` (encrypted) — an approved association id is issued
@@ -90,8 +97,17 @@ fn full_protocol_flow_through_the_real_keepassxc_proxy() {
         return;
     };
 
-    let socket = friendlypass_browser::user_temp_dir().join("org.keepassxc.KeePassXC.BrowserServer");
-    let _ = std::fs::remove_file(&socket);
+    // The upstream proxy has this exact path compiled in (BrowserShared.cpp);
+    // it cannot be redirected with `FP_APP_SOCKET`. If it exists, KeePassXC's
+    // own browser integration is serving it, and the test must not remove it.
+    let socket =
+        friendlypass_browser::user_temp_dir().join("org.keepassxc.KeePassXC.BrowserServer");
+    if socket.exists() {
+        eprintln!(
+            "legacy KeePassXC browser socket is in use; skipping the upstream-proxy interop test"
+        );
+        return;
+    }
 
     let state: friendlypass_browser::SharedState =
         Arc::new(Mutex::new(test_service_state()));

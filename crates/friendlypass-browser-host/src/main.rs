@@ -1,10 +1,10 @@
 //! `friendlypass-browser-host` — the native-messaging host registered with
 //! Chrome/Firefox as `org.friendlypass.browser`.
 //!
-//! It is the drop-in replacement for KeePassXC's `keepassxc-proxy`. Unlike the
-//! proxy, it never exits when the app is down: it keeps the browser port open,
-//! answers host-level `ping`/`hello` locally, and reconnects to the app socket
-//! in the background. See `protocol/ACTIONS.md` for the frozen contract.
+//! It is the native-messaging host used by the friendlypass extension. It
+//! never exits when the app is down: it keeps the browser port open, answers
+//! host-level `ping`/`hello` locally, and reconnects to the app socket in the
+//! background. See `protocol/ACTIONS.md` for the frozen contract.
 //!
 //! stdout carries protocol frames only; all diagnostics go to stderr.
 

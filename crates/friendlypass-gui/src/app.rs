@@ -191,7 +191,7 @@ pub struct App {
     pub ssh_pool: Option<friendlypass_ssh_agent::server::IdentityPool>,
     /// Socket path for the SSH agent (editable before starting).
     pub ssh_socket: String,
-    /// The running browser-protocol server (KeePassXC-Browser integration).
+    /// The running browser-protocol server (friendlypass browser integration).
     pub browser_handle: Option<friendlypass_browser::ServerHandle>,
     pub browser_state: Option<friendlypass_browser::SharedState>,
     /// The GUI bridge the browser server calls back into (approval, writes).

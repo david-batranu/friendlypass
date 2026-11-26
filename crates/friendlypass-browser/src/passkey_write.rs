@@ -4,8 +4,8 @@
 //! `addPasskeyToEntry`:
 //!
 //! * a new entry goes into the passkey group (the extension's `groupName`, the
-//!   app's "Passkey default group" setting, or `KeePassXC-Browser Passkeys`,
-//!   created on demand like `createNewGroup(..., true)`);
+//!   app's "Passkey default group" setting, or `Passkeys`, created on demand
+//!   like `createNewGroup(..., true)`);
 //! * its title is `"<rp.name> (Passkey)"`, its user name `user.name`, its URL
 //!   the page origin, and it carries the tag `Passkey`;
 //! * the `KPEX_PASSKEY_*` attributes are written with the exact names, values

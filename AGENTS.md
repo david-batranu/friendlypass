@@ -10,9 +10,9 @@ friendlypass is a Rust port of KeePassXC: `friendlypass` is the KDBX engine and
 `keepassxc-cli`-compatible CLI, `friendlypass-gui` is the egui/eframe desktop
 app, and `friendlypass-ssh-agent` serves SSH keys from database attachments.
 It also ships its own browser integration: an MV3 extension hard-forked from
-keepassxc-browser, a native-messaging host, and a KeePassXC-compatible socket
-server in the GUI. Databases remain standard KDBX files and are cross-checked
-against KeePassXC 2.8.0 (`verify.sh`).
+keepassxc-browser, a native-messaging host, and a friendlypass-branded browser
+socket server in the GUI. Databases remain standard KDBX files and are
+cross-checked against KeePassXC 2.8.0 (`verify.sh`).
 
 ## Map
 
@@ -49,7 +49,7 @@ extension (MV3 SW) --native messaging (4-byte LE length + JSON)--> friendlypass-
                                                                         | app socket
                                                                         v
                                                           friendlypass GUI / friendlypass-browser
-                                                          <user temp>/org.keepassxc.KeePassXC.BrowserServer
+                                                          <user temp>/org.friendlypass.BrowserServer
 ```
 
 - The host answers host-level `ping`/`hello` locally, reconnects with backoff,
@@ -169,10 +169,11 @@ Debug-only extras and test hooks (never in release):
   `cargo test -p friendlypass-gui -- --skip wrong_password_shows_error` when
   reporting.
 - **`e2e_proxy` and the real KeePassXC:** `crates/friendlypass-browser/tests/e2e_proxy.rs`
-  uses the real user-temp socket path and removes/rebinds it. If KeePassXC's
-  browser integration is actively serving that path they race; quit KeePassXC
-  (or disable its browser integration) before running. It passed here with
-  KeePassXC.app running but its integration off.
+  drives the upstream `keepassxc-proxy`, which has the legacy
+  `org.keepassxc.KeePassXC.BrowserServer` path compiled in. The test skips when
+  that path already exists (KeePassXC's browser integration is serving it) and
+  otherwise removes the path when it is done. friendlypass itself always serves
+  `org.friendlypass.BrowserServer` (`FP_APP_SOCKET` overrides either).
 - **Extension deps:** `extension/node_modules` is git-ignored and required by
   every npm/vitest/Playwright command. Run `npm ci --prefer-offline` once.
 - **Firefox e2e is pinned:** the test browser version lives in

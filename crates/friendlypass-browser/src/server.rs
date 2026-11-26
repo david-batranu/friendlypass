@@ -1,8 +1,8 @@
-//! The BrowserServer socket: listens where KeePassXC's `BrowserHost` does
-//! (`<user temp dir>/org.keepassxc.KeePassXC.BrowserServer` on macOS), so the
-//! shipped `keepassxc-proxy` — and through it the real browser extension —
-//! can talk to this server. The socket carries raw compact JSON (one object
-//! per message, coalesced objects handled like the C++ parser).
+//! The friendlypass browser-integration socket
+//! (`<user temp dir>/org.friendlypass.BrowserServer` on macOS). It speaks the
+//! same raw compact-JSON framing the KeePassXC protocol uses (one object per
+//! message, coalesced objects handled like the C++ parser) so the friendlypass
+//! extension and host can talk to this server.
 //!
 //! Each connection has one reader loop and one worker thread that share a
 //! single writer, so frames never interleave. The reader answers host-level
@@ -47,7 +47,11 @@ pub struct ServerConfig {
 /// How often a connection checks for queued push messages.
 const PUSH_POLL: Duration = Duration::from_millis(200);
 
-/// The KeePassXC BrowserServer socket path (macOS form, like BrowserShared).
+/// File name of the friendlypass browser-integration socket in the user's
+/// temporary directory.
+pub const SOCKET_FILE_NAME: &str = "org.friendlypass.BrowserServer";
+
+/// The friendlypass browser-integration socket path.
 ///
 /// `FP_APP_SOCKET` overrides the path for tests and for a relocated app. The
 /// native host derives its app link from this same function, so setting the
@@ -59,8 +63,12 @@ pub fn browser_server_path() -> PathBuf {
             return PathBuf::from(path);
         }
     }
-    let temp = user_temp_dir();
-    temp.join("org.keepassxc.KeePassXC.BrowserServer")
+    default_browser_server_path()
+}
+
+/// The default path, ignoring `FP_APP_SOCKET`.
+fn default_browser_server_path() -> PathBuf {
+    user_temp_dir().join(SOCKET_FILE_NAME)
 }
 
 /// The per-user temporary directory, matching the C++ `getUserTemporaryDirectory`
@@ -434,6 +442,20 @@ mod tests {
     fn state_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<crate::service::ServiceState>();
+    }
+
+    #[test]
+    fn default_socket_path_is_friendlypass_branded() {
+        assert_eq!(SOCKET_FILE_NAME, "org.friendlypass.BrowserServer");
+        let path = default_browser_server_path();
+        assert_eq!(path.parent(), Some(user_temp_dir().as_path()));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(SOCKET_FILE_NAME)
+        );
+        let rendered = path.to_string_lossy().to_lowercase();
+        assert!(rendered.contains("friendlypass"), "{rendered}");
+        assert!(!rendered.contains("keepassxc"), "{rendered}");
     }
 
     mod auto_approve {

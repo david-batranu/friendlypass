@@ -57,7 +57,7 @@ export const ERROR_MESSAGES: Readonly<Record<number, string>> = Object.freeze({
   5: "Timed out or not connected",
   6: "Action cancelled or denied",
   7: "Message encryption failed.",
-  8: "KeePassXC association failed, try again",
+  8: "friendlypass association failed, try again",
   9: "Key change failed",
   10: "Encryption key is not recognized",
   11: "No saved databases found",
