@@ -86,9 +86,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-14 is Apple silicon; the -intel label is the x86_64 runner
-          # (macos-13 has been retired by GitHub).
-          - runner: macos-14
+          # macos-15 is the Apple silicon runner; the -intel label is the x86_64
+          # runner. macos-14 and macos-13 have been retired by GitHub.
+          - runner: macos-15
             arch: arm64
           - runner: macos-15-intel
             arch: x86_64
@@ -155,7 +155,8 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxinerama-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libwayland-dev libgl1-mesa-dev libegl1-mesa-dev libudev-dev
+            libwayland-dev libgl1-mesa-dev libegl1-mesa-dev libudev-dev \
+            libdbus-1-dev
 
       - name: Build the Linux tarball (GUI + browser host)
         run: ./packaging/linux/package.sh release
@@ -229,7 +230,13 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # Pass the packages explicitly: the action's default list no longer
+      # includes the obsolete `tools` package. platform-tools gives adb,
+      # platforms/android-36 matches compileSdk = 36 and build-tools;36.0.0
+      # provides aapt2 and apksigner (used by the verify step below).
       - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
 
       - name: Install Android NDK
         run: sdkmanager --install "ndk;${NDK_VERSION}"
