@@ -116,7 +116,7 @@ by `cargo-ndk`; `uniffi-bindgen` generates the Kotlin bindings into
 export PATH=/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH
 export ANDROID_HOME=$HOME/Library/Android/sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
 export CARGO_TARGET_DIR=/Users/david/Work/Projects/friendlypass/wt/_target-android
 ```
 

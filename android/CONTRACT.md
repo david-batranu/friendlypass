@@ -8,7 +8,7 @@ the closest working thing and explain it in your report; do not silently change 
 export PATH=/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH      # rustup toolchain with Android targets + cargo-ndk
 export ANDROID_HOME=$HOME/Library/Android/sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
 ```
 Rust targets installed: aarch64-linux-android, x86_64-linux-android. SDK platforms 34/35/36, build-tools 36.1.0.
 AVDs: `Pixel_9a` (API 36, Play image), `api30`. Android app id / Kotlin root package: `org.friendlypass.android`.
