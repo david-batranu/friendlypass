@@ -720,12 +720,22 @@ export interface ExtensionSettings {
   defaultGroupAlwaysAsk: boolean;
   /** Show diagnostics logging in the service worker console. */
   debugLogging: boolean;
-  /** Let this extension intercept WebAuthn passkey requests. Default false. */
+  /** Let this extension intercept WebAuthn passkey requests. Default true. */
   passkeys: boolean;
   /** If a passkey request fails, fall back to the browser's authenticator. */
   passkeysFallback: boolean;
   /** Group new passkey entries are saved to (empty = app default). */
   defaultPasskeyGroup: string;
+  /**
+   * Turn off the browser's own "offer to save passwords" while this extension
+   * is installed (`chrome.privacy.services.passwordSavingEnabled`). Default true.
+   */
+  disableBrowserPasswordManager: boolean;
+  /**
+   * Internal: which defaults migration the stored settings have seen. Not shown
+   * in the options page. See `SETTINGS_REVISION` in background/state.ts.
+   */
+  settingsRevision: number;
   /** Per-origin opt-outs. Default empty. */
   siteExceptions: SiteException[];
 }

@@ -65,7 +65,8 @@ type BooleanSettingKey =
   | "launchAppOnConnect"
   | "debugLogging"
   | "passkeys"
-  | "passkeysFallback";
+  | "passkeysFallback"
+  | "disableBrowserPasswordManager";
 
 // ---------------------------------------------------------------------------
 // State
@@ -137,6 +138,7 @@ bindCheckbox("opt-launchAppOnConnect", "launchAppOnConnect");
 bindCheckbox("opt-debugLogging", "debugLogging");
 bindCheckbox("opt-passkeys", "passkeys");
 bindCheckbox("opt-passkeysFallback", "passkeysFallback");
+bindCheckbox("opt-disableBrowserPasswordManager", "disableBrowserPasswordManager");
 
 const defaultGroupInput = byId<HTMLInputElement>("opt-defaultGroup");
 const defaultPasskeyGroupInput = byId<HTMLInputElement>("opt-defaultPasskeyGroup");
@@ -502,6 +504,8 @@ function applySettings(settings: ExtensionSettings): void {
   byId<HTMLInputElement>("opt-debugLogging").checked = settings.debugLogging;
   byId<HTMLInputElement>("opt-passkeys").checked = settings.passkeys;
   byId<HTMLInputElement>("opt-passkeysFallback").checked = settings.passkeysFallback;
+  byId<HTMLInputElement>("opt-disableBrowserPasswordManager").checked =
+    settings.disableBrowserPasswordManager;
   defaultGroupInput.value = settings.defaultGroup;
   defaultPasskeyGroupInput.value = settings.defaultPasskeyGroup;
   renderExceptions();

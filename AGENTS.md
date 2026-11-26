@@ -92,7 +92,7 @@ from `extension/`.
 | Frozen protocol fixtures (CI gate) | `cargo test -p friendlypass-browser --test fixtures_crypto` | ~5 s |
 | Installer tests | `./installer/tests/install.sh` | ~2 s |
 | Extension deps (first) | `npm ci --prefer-offline` | ~4 s |
-| Extension unit tests | `npx vitest run` (or `npm test`) | ~2 s, 198 tests |
+| Extension unit tests | `npx vitest run` (or `npm test`) | ~2 s, 213 tests |
 | Extension typecheck | `npm run typecheck` | ~4 s |
 | Extension build | `npm run build` (Firefox: `npm run build:firefox`) | <1 s |
 | Chromium e2e | `FP_SKIP_BROWSER_INSTALL=1 bash scripts/e2e.sh` | ~5 min 20 s |

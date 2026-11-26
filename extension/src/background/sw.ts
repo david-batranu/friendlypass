@@ -37,6 +37,7 @@ import {
 import { createNativeTransport } from "./transport";
 import type { NativeTransport, TransportStateEvent } from "./transport";
 import { ensureWatchdogAlarm, registerLifecycleListeners } from "./lifecycle";
+import { applyBrowserPasswordManager } from "./browser-passwords";
 import { createSession, sanitiseBrowserIdentity } from "./session";
 import type { ProtocolSession } from "./session";
 import { broadcastEvent } from "./broadcast";
@@ -859,6 +860,29 @@ void migrateHttpAuthAutoFill({
 }).catch((cause: unknown) => {
   debug("settings", `http-auth migration failed: ${messageOf(cause)}`);
 });
+
+// Keep the browser's own "offer to save passwords" off while the option is on
+// (see browser-passwords.ts). Applied at every worker start (the browser may
+// have been reset) and whenever the option changes.
+let browserPasswordsApplied: boolean | null = null;
+function syncBrowserPasswordManager(disable: boolean): void {
+  if (browserPasswordsApplied === disable) {
+    return;
+  }
+  browserPasswordsApplied = disable;
+  void applyBrowserPasswordManager(disable).then((result) => {
+    debug("browser-passwords", result);
+  });
+}
+wp6aSettingsStore.subscribeSettings((settings) =>
+  syncBrowserPasswordManager(settings.disableBrowserPasswordManager),
+);
+void wp6aSettingsStore
+  .getSettings()
+  .then((settings) => syncBrowserPasswordManager(settings.disableBrowserPasswordManager))
+  .catch((cause: unknown) => {
+    debug("browser-passwords", `cannot read settings: ${messageOf(cause)}`);
+  });
 
 // ---------------------------------------------------------------------------
 // Bootstrap
