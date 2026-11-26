@@ -28,8 +28,11 @@ use url::Url;
 
 use crate::protocol::*;
 
-/// KeePassXC's `PASSKEYS_DEFAULT_GROUP_NAME`.
-pub const PASSKEYS_DEFAULT_GROUP_NAME: &str = "KeePassXC-Browser Passkeys";
+/// Group created for passkey entries when no default group is configured.
+///
+/// Existing databases may still have the upstream `KeePassXC-Browser Passkeys`
+/// group; entries there are left untouched.
+pub const PASSKEYS_DEFAULT_GROUP_NAME: &str = "Passkeys";
 /// The tag KeePassXC adds to passkey entries.
 pub const PASSKEYS_TAG: &str = "Passkey";
 /// Minimum decoded challenge length (`PasskeyUtils::checkLimits`).

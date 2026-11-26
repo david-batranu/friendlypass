@@ -2,7 +2,7 @@
 //! app socket server. Shared by the WP1 fault tests.
 //!
 //! The mock socket path is derived by the host from `browser_server_path()`
-//! (`$TMPDIR/org.keepassxc.KeePassXC.BrowserServer` on macOS,
+//! (`$TMPDIR/org.friendlypass.BrowserServer` on macOS,
 //! `std::env::temp_dir()` elsewhere), so every test gets its own `TMPDIR`.
 //! That directory is deliberately short and lives under the platform's short
 //! temp root: macOS caps `sun_path` at 104 bytes and the default per-user
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-pub const SOCKET_NAME: &str = "org.keepassxc.KeePassXC.BrowserServer";
+pub const SOCKET_NAME: &str = "org.friendlypass.BrowserServer";
 
 /// The database hash the mock app reports for probes.
 const PROBE_DB_HASH: &str = "4265c37dbe9ad073ac19837734d54fdd7d7c30bd87322ba886da62b147d66fbb";

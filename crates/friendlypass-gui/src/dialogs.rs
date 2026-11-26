@@ -33,7 +33,7 @@ pub enum Dialog {
     BatchMove(Box<BatchMove>),
     /// SSH agent integration: serve the database's SSH keys.
     SshAgent,
-    /// KeePassXC-Browser protocol integration.
+    /// friendlypass browser integration.
     Browser,
     /// Browser passkey registration / sign-in confirmation.
     Passkey,
@@ -1570,7 +1570,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             let mut cancelled = false;
             open = modal_window(ctx, "upgrade-database-format", "Upgrade Database Format", 460.0, |ui| {
                     ui.label("This database uses the older KDBX 3.1 format.");
-                    ui.label("Saving requires upgrading it to KDBX 4.1 (KeePassXC's current format).");
+                    ui.label("Saving requires upgrading it to KDBX 4.1 (the current KeePass format).");
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
@@ -1849,7 +1849,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
                     ui.label(
                         "SSH keys attached to entries are served over the ssh-agent protocol, \
-                         like KeePassXC's SSH agent integration.",
+                         so SSH clients can use the keys stored in this database.",
                     );
                     ui.separator();
 
@@ -1941,7 +1941,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     app,
                     Dialog::Browser,
                     "Browser Integration",
-                    "Browser integration needs the KeePassXC-Browser app socket and \
+                    "Browser integration needs the friendlypass app socket and \
                      Unix peer verification. Both are macOS/Linux only today; a Windows \
                      named-pipe transport is planned, so this build cannot serve the \
                      extension or passkeys.",
@@ -2000,7 +2000,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         ui.label("Default group:");
                         let response = ui.add(
                             egui::TextEdit::singleline(&mut app.prefs.passkey_default_group)
-                                .hint_text("KeePassXC-Browser Passkeys")
+                                .hint_text("Passkeys")
                                 .desired_width(240.0),
                         );
                         if response.changed() {
@@ -2060,9 +2060,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                     ui.separator();
                     ui.label(
-                        "Serve the KeePassXC-Browser protocol on the same socket the shipped \
-                         keepassxc-proxy connects to, so the official extension and the \
-                         friendlypass extension can fill credentials from this database.",
+                        "Serve the friendlypass browser protocol on the friendlypass app \
+                         socket, so the friendlypass extension can fill credentials from \
+                         this database.",
                     );
                     ui.separator();
 

@@ -113,10 +113,11 @@ pub struct Preferences {
     /// Always show the approval dialog for a new browser association, even
     /// when the peer/host/browser trust chain verified (§5). Off by default.
     pub require_approval_for_new_browsers: bool,
-    /// KeePassXC's "Passkey default group": where browser passkeys are saved.
-    /// Empty means the `KeePassXC-Browser Passkeys` group.
+    /// The browser integration's "Passkey default group": where browser
+    /// passkeys are saved. Empty means the `Passkeys` group.
     pub passkey_default_group: String,
-    /// KeePassXC's "Allow localhost with passkeys" for development sites.
+    /// The browser integration's "Allow localhost with passkeys" setting for
+    /// development sites.
     pub allow_localhost_passkeys: bool,
     /// Per-browser native-messaging manifests (Chrome-family + Firefox).
     pub browser_chrome: bool,

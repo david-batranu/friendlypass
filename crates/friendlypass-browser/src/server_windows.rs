@@ -1,8 +1,8 @@
 //! Windows stub for the browser-protocol socket server.
 //!
-//! The real server (`server.rs`) listens on a Unix domain socket where
-//! KeePassXC's `BrowserHost` does and verifies the peer process through Unix
-//! credentials (`peer.rs`). Windows has neither, so this build exposes the
+//! The real server (`server.rs`) listens on the friendlypass browser socket
+//! and verifies the peer process through Unix credentials (`peer.rs`). Windows
+//! has neither, so this build exposes the
 //! same public surface with a [`start`] that always fails; the GUI disables the
 //! Browser Integration settings and never calls it.
 //!
@@ -29,15 +29,20 @@ pub struct ServerConfig {
     pub trusted_host_path: Option<PathBuf>,
 }
 
-/// The KeePassXC BrowserServer socket path, kept identical to the Unix form so
-/// diagnostics and the native host agree. `FP_APP_SOCKET` still overrides it.
+/// File name of the friendlypass browser-integration socket in the user's
+/// temporary directory (kept identical to the Unix form).
+pub const SOCKET_FILE_NAME: &str = "org.friendlypass.BrowserServer";
+
+/// The friendlypass browser-integration socket path, kept identical to the
+/// Unix form so diagnostics and the native host agree. `FP_APP_SOCKET` still
+/// overrides it.
 pub fn browser_server_path() -> PathBuf {
     if let Some(path) = std::env::var_os("FP_APP_SOCKET") {
         if !path.is_empty() {
             return PathBuf::from(path);
         }
     }
-    user_temp_dir().join("org.keepassxc.KeePassXC.BrowserServer")
+    user_temp_dir().join(SOCKET_FILE_NAME)
 }
 
 /// The per-user temporary directory (the Unix implementation uses the macOS

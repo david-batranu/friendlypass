@@ -28,8 +28,8 @@ pub struct DbArgs {
 #[command(
     name = "friendlypass",
     version,
-    about = "friendlypass core engine + CLI (KeePassXC-compatible commands)",
-    long_about = "A Rust migration of KeePassXC's headless core (keepassxc-cli functionality).\nBuilt on the `keepass` crate for KDBX parsing/writing."
+    about = "friendlypass core engine + CLI",
+    long_about = "A command-line interface for friendlypass KDBX databases.\nBuilt on the `keepass` crate for KDBX parsing/writing."
 )]
 pub struct Cli {
     #[command(subcommand)]

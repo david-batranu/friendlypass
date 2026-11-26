@@ -18,8 +18,10 @@ fn browser_window_serves_the_protocol() {
     let db_path = dir.path().join("sample4.kdbx");
     std::fs::copy(fixture("sample4.kdbx"), &db_path).unwrap();
 
-    let socket = friendlypass_browser::browser_server_path();
-    let _ = std::fs::remove_file(&socket);
+    // Serve on a temp socket so the test never touches a running friendlypass
+    // app's socket; the host honours the same override.
+    let socket = dir.path().join("org.friendlypass.BrowserServer");
+    std::env::set_var("FP_APP_SOCKET", &socket);
 
     let key = DatabaseKey::new().with_password("testpassword");
     let path_str = db_path.display().to_string();

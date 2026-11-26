@@ -116,7 +116,7 @@ here, except for these invariants (§1.1.1 records the Phase-1 decision):
 ### 1.1.1 App socket framing (decision, Phase 1) **[friendlypass]**
 
 The app socket is **not** native messaging. It is a Unix stream socket
-(`<user temp dir>/org.keepassxc.KeePassXC.BrowserServer` by default) on which
+(`<user temp dir>/org.friendlypass.BrowserServer` by default) on which
 both directions carry **raw, concatenated, compact JSON objects** — exactly what
 KeePassXC's `BrowserServer` and `crates/friendlypass-browser/src/server.rs`
 speak:
@@ -1566,3 +1566,4 @@ ID, database hash and nonce rule in each file.
 |---|---|---|
 | 1 | 2026-11-24 | Initial frozen contract: KeePassXC 2.8.0 actions, host `ping`/`hello`, push messages, state machine, fixtures |
 | 1 (note) | 2026-11-24 | Phase-1 integration: app-socket framing fixed to raw concatenated JSON (§1.1.1), `FP_APP_SOCKET` override, opt-in `hello.statusPush` app-status frames (§5.3/§5.4). Additive only; no KeePassXC-compatible field changed. |
+| 1 (note) | 2026-11-26 | App socket renamed to `<user temp dir>/org.friendlypass.BrowserServer` (§1.1.1), so friendlypass and KeePassXC can run side by side. `FP_APP_SOCKET` still overrides it. Framing, crypto, actions and golden fixtures are unchanged. |

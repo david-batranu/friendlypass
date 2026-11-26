@@ -1,8 +1,8 @@
-//! `friendlypass-browser` — friendlypass browser integration: the
-//! KeePassXC-Browser protocol server.
+//! `friendlypass-browser` — friendlypass browser integration: the browser
+//! protocol server.
 //!
-//! Implements the socket side of the protocol that KeePassXC's `BrowserHost`
-//! serves and the shipped `keepassxc-proxy` relays: the X25519
+//! Implements the socket side of the browser protocol that the friendlypass
+//! GUI serves and `friendlypass-browser-host` relays: the X25519
 //! `change-public-keys` handshake, encrypted actions (`get-databasehash`,
 //! `associate`, `test-associate`, `get-logins`, `set-login`, `get-totp`,
 //! `get-database-groups`, `generate-password`, `lock-database`) with
