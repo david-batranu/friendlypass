@@ -15,15 +15,20 @@
 //! The server is started automatically once a database is unlocked. It keeps
 //! answering `ping`/`hello` and returns error 1 while the database is locked.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use keepass::db::{CustomDataItem, CustomDataValue};
+use serde_json::Value;
 
-use friendlypass_browser::bridge::{AssociationRequest, BrowserBridge, SetLoginRequest};
-use friendlypass_browser::protocol::BrowserIdentity;
+use friendlypass_browser::bridge::{
+    AssociationRequest, BrowserBridge, PasskeyCandidate, PasskeyGetRequest, PasskeyRegisterRequest,
+    SetLoginRequest,
+};
+use friendlypass_browser::protocol::{BrowserIdentity, ERROR_PASSKEYS_REQUEST_CANCELED};
 use friendlypass_browser::service::lock_state;
 use friendlypass_browser::{
     associations_from_database, browser_server_path, database_hash, snapshot_from_database,
@@ -37,6 +42,9 @@ use crate::dialogs::Dialog;
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a `set-login` request waits for the GUI to write the entry.
 const SET_LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a passkey confirmation waits for the user. The page may ask for up
+/// to 120 s (`PASSKEYS_WAIT_FOR_LIFETIMER`); the bridge deadline is the same.
+const PASSKEY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Repaint interval while a browser request is waiting for the GUI.
 const PENDING_REPAINT: Duration = Duration::from_millis(100);
 
@@ -51,10 +59,28 @@ struct LoginJob {
     result: Option<bool>,
 }
 
+/// One queued passkey request. The server thread waits on `reply`; the GUI
+/// drains the queue one dialog at a time.
+#[derive(Clone)]
+pub enum PasskeyRequest {
+    Register(PasskeyRegisterRequest),
+    Get(PasskeyGetRequest),
+}
+
+struct PasskeyJob {
+    id: u64,
+    request: PasskeyRequest,
+    reply: Arc<(Mutex<Option<Result<Value, i32>>>, Condvar)>,
+}
+
 #[derive(Default)]
 struct BridgeState {
     approval: Option<ApprovalRequest>,
     login: Option<LoginJob>,
+    passkeys: VecDeque<PasskeyJob>,
+    /// Entry UUID selected in the current prompt (`None` = create new).
+    passkey_selection: Option<String>,
+    next_passkey_id: u64,
     unlock_requested: bool,
     lock_requested: bool,
 }
@@ -67,6 +93,30 @@ pub struct BrowserNotice {
     pub browser: String,
     /// The association the automatic approval created.
     pub association_id: String,
+}
+
+/// What the passkey dialog is asking. Contains no private key material.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PasskeyPromptKind {
+    Register {
+        rp_id: String,
+        rp_name: String,
+        username: String,
+        origin: String,
+        /// Same-RP/same-user-handle passkeys the user may update instead.
+        existing: Vec<PasskeyCandidate>,
+    },
+    Get {
+        rp_id: String,
+        candidates: Vec<PasskeyCandidate>,
+    },
+}
+
+/// A snapshot of the request the passkey dialog must render.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasskeyPrompt {
+    pub id: u64,
+    pub kind: PasskeyPromptKind,
 }
 
 /// The concrete [`BrowserBridge`] used by the GUI.
@@ -95,7 +145,11 @@ impl GuiBrowserBridge {
 
     fn has_work(&self) -> bool {
         let state = self.lock();
-        state.approval.is_some() || state.login.is_some() || state.unlock_requested || state.lock_requested
+        state.approval.is_some()
+            || state.login.is_some()
+            || !state.passkeys.is_empty()
+            || state.unlock_requested
+            || state.lock_requested
     }
 
     /// Follow the "Require approval for new browsers" preference.
@@ -144,6 +198,119 @@ impl GuiBrowserBridge {
             job.result = Some(result);
             self.cv.notify_all();
         }
+    }
+
+    /// Queue one passkey request and block the connection thread until the GUI
+    /// answers (or the deadline passes). One request is in front at a time.
+    fn enqueue_passkey(&self, request: PasskeyRequest) -> Result<Value, i32> {
+        let reply = Arc::new((Mutex::new(None), Condvar::new()));
+        let id = {
+            let mut state = self.lock();
+            state.next_passkey_id += 1;
+            let id = state.next_passkey_id;
+            state.passkey_selection = match &request {
+                PasskeyRequest::Get(request) => {
+                    request.candidates.first().map(|candidate| candidate.uuid.clone())
+                }
+                PasskeyRequest::Register(_) => None,
+            };
+            state.passkeys.push_back(PasskeyJob {
+                id,
+                request,
+                reply: Arc::clone(&reply),
+            });
+            id
+        };
+        self.cv.notify_all();
+
+        let deadline = Instant::now() + PASSKEY_TIMEOUT;
+        let (lock, cv) = &*reply;
+        let mut answer = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(result) = answer.take() {
+                return result;
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                // The GUI never answered: remove the job so a later pump does
+                // not open a stale dialog, and report a cancellation.
+                let mut state = self.lock();
+                state.passkeys.retain(|job| job.id != id);
+                return Err(ERROR_PASSKEYS_REQUEST_CANCELED);
+            };
+            let (next, _) = cv
+                .wait_timeout(answer, remaining)
+                .unwrap_or_else(PoisonError::into_inner);
+            answer = next;
+        }
+    }
+
+    /// The prompt the dialog should render, if any.
+    pub fn pending_passkey(&self) -> Option<PasskeyPrompt> {
+        let state = self.lock();
+        state.passkeys.front().map(|job| PasskeyPrompt {
+            id: job.id,
+            kind: match &job.request {
+                PasskeyRequest::Register(request) => PasskeyPromptKind::Register {
+                    rp_id: request.prepared.rp_id.clone(),
+                    rp_name: request.prepared.rp_name.clone(),
+                    username: request.prepared.username.clone(),
+                    origin: request.origin.clone(),
+                    existing: request.existing.clone(),
+                },
+                PasskeyRequest::Get(request) => PasskeyPromptKind::Get {
+                    rp_id: request.prepared.rp_id.clone(),
+                    candidates: request.candidates.clone(),
+                },
+            },
+        })
+    }
+
+    /// The request behind [`GuiBrowserBridge::pending_passkey`].
+    pub fn pending_passkey_request(&self) -> Option<(u64, PasskeyRequest)> {
+        let state = self.lock();
+        state
+            .passkeys
+            .front()
+            .map(|job| (job.id, job.request.clone()))
+    }
+
+    pub fn passkey_selection(&self) -> Option<String> {
+        self.lock().passkey_selection.clone()
+    }
+
+    pub fn select_passkey(&self, selection: Option<String>) {
+        self.lock().passkey_selection = selection;
+    }
+
+    /// Answer the request at the front of the queue.
+    fn finish_passkey(&self, id: u64, result: Result<Value, i32>) {
+        let job = {
+            let mut state = self.lock();
+            match state.passkeys.front() {
+                Some(job) if job.id == id => state.passkeys.pop_front(),
+                _ => None,
+            }
+        };
+        if let Some(job) = job {
+            let (lock, cv) = &*job.reply;
+            *lock.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+            cv.notify_all();
+            self.cv.notify_all();
+        }
+    }
+
+    fn cancel_all_passkeys(&self) {
+        let jobs: Vec<PasskeyJob> = {
+            let mut state = self.lock();
+            state.passkeys.drain(..).collect()
+        };
+        for job in jobs {
+            let (lock, cv) = &*job.reply;
+            *lock.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(Err(ERROR_PASSKEYS_REQUEST_CANCELED));
+            cv.notify_all();
+        }
+        self.cv.notify_all();
     }
 
     fn take_unlock_request(&self) -> bool {
@@ -270,6 +437,14 @@ impl BrowserBridge for GuiBrowserBridge {
             .and_then(|job| job.result)
             .unwrap_or(false)
     }
+
+    fn passkeys_register(&self, request: &PasskeyRegisterRequest) -> Result<Value, i32> {
+        self.enqueue_passkey(PasskeyRequest::Register(request.clone()))
+    }
+
+    fn passkeys_get(&self, request: &PasskeyGetRequest) -> Result<Value, i32> {
+        self.enqueue_passkey(PasskeyRequest::Get(request.clone()))
+    }
 }
 
 /// Start serving the browser protocol for the currently open database. Safe to
@@ -303,6 +478,7 @@ fn start_inner(app: &mut App, announce: bool) {
             ..Default::default()
         },
     };
+    state.allow_localhost_passkeys = app.prefs.allow_localhost_passkeys;
     state.set_bridge(bridge);
     let state: SharedState = Arc::new(Mutex::new(state));
     let path = browser_server_path();
@@ -334,6 +510,7 @@ pub fn stop(app: &mut App) {
             bridge.answer_approval(None);
         }
         bridge.finish_login(false);
+        bridge.cancel_all_passkeys();
     }
     if let Some(handle) = app.browser_handle.take() {
         handle.stop();
@@ -541,6 +718,17 @@ pub fn pump(app: &mut App, ctx: &egui::Context) {
         ctx.request_repaint_after(PENDING_REPAINT);
     }
 
+    // One passkey dialog at a time; an unrelated open dialog is not replaced.
+    let passkey_pending = bridge.pending_passkey().is_some();
+    if passkey_pending {
+        if matches!(app.dialog, Dialog::None | Dialog::Passkey) {
+            app.dialog = Dialog::Passkey;
+        }
+        ctx.request_repaint_after(PENDING_REPAINT);
+    } else if matches!(app.dialog, Dialog::Passkey) {
+        app.dialog = Dialog::None;
+    }
+
     if let Some(request) = bridge.take_login() {
         let accepted = apply_set_login(app, &request);
         bridge.finish_login(accepted);
@@ -626,9 +814,11 @@ fn sync(app: &mut App, push: &friendlypass_browser::PushHub) -> bool {
         {
             state.entries = snapshot.entries;
             state.groups = snapshot.groups;
+            state.passkeys = snapshot.passkeys;
         }
         state.snapshot_signature = signature;
         state.db_hash = snapshot.db_hash.clone();
+        state.allow_localhost_passkeys = app.prefs.allow_localhost_passkeys;
         if !switched {
             // Preserve a just-approved association that may have landed after
             // the snapshot was read; revocations were already removed.
@@ -739,6 +929,137 @@ fn save_associations_now(app: &mut App) {
             app.status = format!("cannot save browser association: {error:#}");
         }
     }
+}
+
+/// The passkey dialog's current request, if one is waiting.
+pub fn passkey_prompt(app: &App) -> Option<PasskeyPrompt> {
+    app.browser_bridge.as_ref()?.pending_passkey()
+}
+
+pub fn passkey_selection(app: &App) -> Option<String> {
+    app.browser_bridge.as_ref()?.passkey_selection()
+}
+
+pub fn select_passkey(app: &App, selection: Option<String>) {
+    if let Some(bridge) = app.browser_bridge.as_ref() {
+        bridge.select_passkey(selection);
+    }
+}
+
+/// Confirm the pending passkey request on the GUI thread and answer the
+/// waiting connection. The dialog's selection is read from the bridge.
+pub fn confirm_passkey(app: &mut App) {
+    let Some(bridge) = app.browser_bridge.clone() else {
+        return;
+    };
+    let Some((id, request)) = bridge.pending_passkey_request() else {
+        return;
+    };
+    let selection = bridge.passkey_selection();
+    let result = apply_passkey_request(app, &request, selection);
+    bridge.finish_passkey(id, result);
+    app.dialog = Dialog::None;
+}
+
+/// Deny/cancel the pending passkey request (error 22).
+pub fn deny_passkey(app: &mut App) {
+    let Some(bridge) = app.browser_bridge.clone() else {
+        return;
+    };
+    if let Some((id, _)) = bridge.pending_passkey_request() {
+        bridge.finish_passkey(id, Err(ERROR_PASSKEYS_REQUEST_CANCELED));
+    }
+    app.dialog = Dialog::None;
+}
+
+/// Build the credential/assertion and, for registration, write the entry.
+fn apply_passkey_request(
+    app: &mut App,
+    request: &PasskeyRequest,
+    selection: Option<String>,
+) -> Result<Value, i32> {
+    match request {
+        PasskeyRequest::Register(request) => {
+            let completed = request
+                .prepared
+                .complete()
+                .map_err(|_| friendlypass_browser::protocol::ERROR_PASSKEYS_UNKNOWN_ERROR)?;
+            let group = if request.group_name.trim().is_empty() {
+                app.prefs.passkey_default_group.trim().to_owned()
+            } else {
+                request.group_name.trim().to_owned()
+            };
+            let selected = selection.filter(|uuid| {
+                request.existing.iter().any(|candidate| &candidate.uuid == uuid)
+            });
+            let db = app.db.as_mut().ok_or(friendlypass_browser::protocol::ERROR_PASSKEYS_REQUEST_CANCELED)?;
+            let uuid = match selected {
+                Some(uuid) => {
+                    if !friendlypass_browser::passkey_write::update_passkey_entry(
+                        db,
+                        &uuid,
+                        &completed.passkey,
+                    ) {
+                        return Err(friendlypass_browser::protocol::ERROR_PASSKEYS_UNKNOWN_ERROR);
+                    }
+                    uuid
+                }
+                None => friendlypass_browser::passkey_write::create_passkey_entry(
+                    db,
+                    &completed.passkey,
+                    &request.prepared.rp_name,
+                    &request.origin,
+                    &group,
+                )
+                .ok_or(friendlypass_browser::protocol::ERROR_PASSKEYS_UNKNOWN_ERROR)?,
+            };
+            app.dirty = true;
+            app.status = format!("Saved a passkey for {}", request.prepared.rp_id);
+            let _ = uuid;
+            // A page may call `get` immediately after `create`; make the new
+            // passkey visible to the shared server state before answering, so
+            // the next request does not race the next pump.
+            refresh_served_snapshot(app);
+            Ok(completed.credential)
+        }
+        PasskeyRequest::Get(request) => {
+            let candidate = selection
+                .as_deref()
+                .and_then(|uuid| {
+                    request
+                        .candidates
+                        .iter()
+                        .find(|candidate| candidate.uuid == uuid)
+                })
+                .or_else(|| request.candidates.first())
+                .ok_or(friendlypass_browser::protocol::ERROR_NO_LOGINS_FOUND)?;
+            let db = app
+                .db
+                .as_ref()
+                .ok_or(friendlypass_browser::protocol::ERROR_DATABASE_NOT_OPENED)?;
+            let passkey = friendlypass_browser::passkey_write::entry_passkey(db, &candidate.uuid)
+                .ok_or(friendlypass_browser::protocol::ERROR_PASSKEYS_UNKNOWN_ERROR)?;
+            request
+                .prepared
+                .complete(&passkey)
+                .map_err(|_| friendlypass_browser::protocol::ERROR_PASSKEYS_UNKNOWN_ERROR)
+        }
+    }
+}
+
+/// Copy the current database into the served snapshot immediately. Used after
+/// an interactive write so a follow-up browser action never sees stale state.
+fn refresh_served_snapshot(app: &App) {
+    let (Some(db), Some(shared)) = (app.db.as_ref(), app.browser_state.as_ref()) else {
+        return;
+    };
+    let snapshot = friendlypass_browser::snapshot_from_database(db);
+    let mut state = lock_state(shared);
+    state.entries = snapshot.entries;
+    state.groups = snapshot.groups;
+    state.passkeys = snapshot.passkeys;
+    state.db_hash = snapshot.db_hash;
+    state.snapshot_signature = snapshot.snapshot_signature;
 }
 
 /// Apply a `set-login` request on the GUI thread.
@@ -866,7 +1187,215 @@ pub fn answer_approval(app: &App, name: Option<String>) {
 mod tests {
     use super::*;
     use friendlypass_browser::entry_write::title_for_url;
+    use friendlypass_browser::passkeys::{prepare_assertion, prepare_registration};
+    use friendlypass_passkey::ES256;
+    use keepass::Database;
+    use serde_json::json;
     use std::time::Duration;
+
+    fn wait_for_passkey(bridge: &GuiBrowserBridge) {
+        for _ in 0..200 {
+            if bridge.pending_passkey().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the passkey prompt never appeared");
+    }
+
+    fn registration_request() -> PasskeyRegisterRequest {
+        let options = json!({
+            "challenge": friendlypass_browser::b64(&[7u8; 32]),
+            "pubKeyCredParams": [{"type": "public-key", "alg": ES256}],
+            "rp": {"id": "example.com", "name": "Example"},
+            "user": {
+                "id": friendlypass_passkey::b64url_encode(b"user-1"),
+                "name": "alice@example.com",
+                "displayName": "Alice",
+            },
+            "timeout": 60000,
+        });
+        let prepared =
+            prepare_registration(&options, "https://example.com").expect("valid options");
+        PasskeyRegisterRequest {
+            acting_id: "client".into(),
+            prepared,
+            origin: "https://example.com".into(),
+            group_name: "Passkeys".into(),
+            existing: Vec::new(),
+        }
+    }
+
+    fn app_with_database() -> App {
+        let mut app = App::default();
+        app.db = Some(Database::new());
+        app
+    }
+
+    #[test]
+    fn passkey_registration_prompt_writes_a_keepassxc_entry() {
+        let bridge = Arc::new(GuiBrowserBridge::new(false));
+        let mut app = app_with_database();
+        app.browser_bridge = Some(Arc::clone(&bridge));
+        app.browser_state = Some(Arc::new(Mutex::new(
+            friendlypass_browser::ServiceState::default(),
+        )));
+        let request = registration_request();
+
+        let worker = {
+            let bridge = Arc::clone(&bridge);
+            std::thread::spawn(move || bridge.passkeys_register(&request))
+        };
+        wait_for_passkey(&bridge);
+        let prompt = bridge.pending_passkey().expect("prompt");
+        assert!(matches!(
+            prompt.kind,
+            PasskeyPromptKind::Register { .. }
+        ));
+        confirm_passkey(&mut app);
+
+        let credential = worker.join().unwrap().expect("credential");
+        assert!(credential["response"]["attestationObject"].is_string());
+        let db = app.db.as_ref().unwrap();
+        let entry = db
+            .iter_all_entries()
+            .find(|entry| entry.get("KPEX_PASSKEY_CREDENTIAL_ID").is_some())
+            .expect("passkey entry written");
+        assert_eq!(entry.get("KPEX_PASSKEY_RELYING_PARTY"), Some("example.com"));
+        assert_eq!(entry.get("UserName"), Some("alice@example.com"));
+        assert_eq!(entry.get("URL"), Some("https://example.com"));
+        assert_eq!(entry.parent().name, "Passkeys");
+        assert!(app.dirty);
+        // The shared server snapshot sees the passkey without waiting a frame.
+        let state = app.browser_state.as_ref().unwrap().lock().unwrap();
+        assert_eq!(state.passkeys.len(), 1);
+        assert_eq!(state.passkeys[0].uuid.len(), 32);
+    }
+
+    #[test]
+    fn passkey_registration_can_replace_an_existing_entry() {
+        let bridge = Arc::new(GuiBrowserBridge::new(false));
+        let mut app = app_with_database();
+        app.browser_bridge = Some(Arc::clone(&bridge));
+        let existing = friendlypass_passkey::register(
+            "example.com",
+            "alice@example.com",
+            b"user-1",
+            &[ES256],
+        )
+        .unwrap();
+        let uuid = friendlypass_browser::passkey_write::create_passkey_entry(
+            app.db.as_mut().unwrap(),
+            &existing.passkey,
+            "Example",
+            "https://example.com",
+            "",
+        )
+        .unwrap();
+
+        let mut request = registration_request();
+        request.existing = vec![PasskeyCandidate {
+            uuid: uuid.clone(),
+            title: "Example (Passkey)".into(),
+            username: "alice@example.com".into(),
+            credential_id: friendlypass_passkey::b64url_encode(&existing.credential_id),
+        }];
+        let worker = {
+            let bridge = Arc::clone(&bridge);
+            std::thread::spawn(move || bridge.passkeys_register(&request))
+        };
+        wait_for_passkey(&bridge);
+        bridge.select_passkey(Some(uuid.clone()));
+        confirm_passkey(&mut app);
+
+        let credential = worker.join().unwrap().expect("credential");
+        assert_eq!(app.db.as_ref().unwrap().iter_all_entries().count(), 1);
+        let stored = friendlypass_browser::passkey_write::entry_passkey(
+            app.db.as_ref().unwrap(),
+            &uuid,
+        )
+        .expect("passkey updated");
+        assert_eq!(
+            friendlypass_passkey::b64url_encode(&stored.credential_id),
+            credential["id"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn passkey_get_prompt_signs_with_the_selected_entry() {
+        let registration = friendlypass_passkey::register(
+            "example.com",
+            "alice@example.com",
+            b"user-1",
+            &[ES256],
+        )
+        .unwrap();
+        let mut app = app_with_database();
+        let credential_id = friendlypass_passkey::b64url_encode(&registration.credential_id);
+        let uuid = friendlypass_browser::passkey_write::create_passkey_entry(
+            app.db.as_mut().unwrap(),
+            &registration.passkey,
+            "Example",
+            "https://example.com",
+            "",
+        )
+        .unwrap();
+        let options = json!({
+            "challenge": friendlypass_browser::b64(&[5u8; 32]),
+            "rpId": "example.com",
+            "allowCredentials": [{
+                "type": "public-key",
+                "id": credential_id,
+                "transports": ["internal"],
+            }],
+        });
+        let prepared =
+            prepare_assertion(&options, "https://example.com").expect("valid options");
+        let request = PasskeyGetRequest {
+            acting_id: "client".into(),
+            prepared,
+            candidates: vec![PasskeyCandidate {
+                uuid: uuid.clone(),
+                title: "Example (Passkey)".into(),
+                username: "alice@example.com".into(),
+                credential_id,
+            }],
+        };
+        let bridge = Arc::new(GuiBrowserBridge::new(false));
+        app.browser_bridge = Some(Arc::clone(&bridge));
+
+        let worker = {
+            let bridge = Arc::clone(&bridge);
+            std::thread::spawn(move || bridge.passkeys_get(&request))
+        };
+        wait_for_passkey(&bridge);
+        assert_eq!(bridge.passkey_selection(), Some(uuid));
+        confirm_passkey(&mut app);
+
+        let assertion = worker.join().unwrap().expect("assertion");
+        assert!(assertion["response"]["signature"].is_string());
+        assert_eq!(
+            assertion["response"]["userHandle"],
+            friendlypass_passkey::b64url_encode(b"user-1")
+        );
+    }
+
+    #[test]
+    fn cancelling_a_passkey_prompt_returns_error_22() {
+        let bridge = Arc::new(GuiBrowserBridge::new(false));
+        let mut app = app_with_database();
+        app.browser_bridge = Some(Arc::clone(&bridge));
+        let request = registration_request();
+
+        let worker = {
+            let bridge = Arc::clone(&bridge);
+            std::thread::spawn(move || bridge.passkeys_register(&request))
+        };
+        wait_for_passkey(&bridge);
+        deny_passkey(&mut app);
+        assert_eq!(worker.join().unwrap(), Err(ERROR_PASSKEYS_REQUEST_CANCELED));
+        assert!(app.db.as_ref().unwrap().iter_all_entries().next().is_none());
+    }
 
     #[test]
     fn association_approval_round_trip() {

@@ -35,6 +35,8 @@ pub enum Dialog {
     SshAgent,
     /// KeePassXC-Browser protocol integration.
     Browser,
+    /// Browser passkey registration / sign-in confirmation.
+    Passkey,
     /// KeeShare: share a group via a container file.
     ShareGroup(Box<ShareDialog>),
     /// Keyboard shortcut reference.
@@ -1207,6 +1209,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let enter_key = dialog_open && enter_applies && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
 
     if dialog_open && escape_key {
+        if matches!(app.dialog, Dialog::Passkey) {
+            crate::browser_bridge::deny_passkey(app);
+            return;
+        }
         app.dialog = Dialog::None;
         app.status = "Cancelled".into();
         return;
@@ -1930,6 +1936,32 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     {
                         prefs_changed = true;
                     }
+                    ui.add_space(4.0);
+                    ui.label("Browser passkeys");
+                    ui.horizontal(|ui| {
+                        ui.label("Default group:");
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut app.prefs.passkey_default_group)
+                                .hint_text("KeePassXC-Browser Passkeys")
+                                .desired_width(240.0),
+                        );
+                        if response.changed() {
+                            prefs_changed = true;
+                        }
+                    });
+                    if ui
+                        .checkbox(
+                            &mut app.prefs.allow_localhost_passkeys,
+                            "Allow passkeys on localhost",
+                        )
+                        .on_hover_text(
+                            "Permit http://localhost development sites to use this app's \
+                             passkeys. WebAuthn normally requires HTTPS.",
+                        )
+                        .changed()
+                    {
+                        prefs_changed = true;
+                    }
                     let browsers_enabled = app.prefs.browser_integration;
                     ui.horizontal_wrapped(|ui| {
                         for browser in friendlypass_browser::native_messaging::Browser::ALL {
@@ -2084,6 +2116,125 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if !close_clicked && open {
                 app.dialog = Dialog::Browser;
+            }
+        }
+        Dialog::Passkey => {
+            let Some(prompt) = crate::browser_bridge::passkey_prompt(app) else {
+                app.dialog = Dialog::None;
+                return;
+            };
+            let mut selection = crate::browser_bridge::passkey_selection(app);
+            let mut confirm = false;
+            let mut cancel = false;
+            let (title, width) = match &prompt.kind {
+                crate::browser_bridge::PasskeyPromptKind::Register { .. } => {
+                    ("Save a passkey", 480.0)
+                }
+                crate::browser_bridge::PasskeyPromptKind::Get { .. } => {
+                    ("Sign in with a passkey", 460.0)
+                }
+            };
+            let open = modal_window(ctx, "browser-passkey", title, width, |ui| match &prompt.kind {
+                crate::browser_bridge::PasskeyPromptKind::Register {
+                    rp_id,
+                    rp_name,
+                    username,
+                    origin,
+                    existing,
+                } => {
+                    let name = if rp_name.is_empty() { rp_id } else { rp_name };
+                    ui.label(
+                        egui::RichText::new(format!("{name} wants to create a passkey"))
+                            .strong()
+                            .size(15.0),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(format!("Website: {origin}"));
+                    ui.label(format!("Relying party: {rp_id}"));
+                    ui.label(format!("Account: {username}"));
+                    ui.add_space(6.0);
+                    if ui
+                        .radio(selection.is_none(), "Create a new entry")
+                        .clicked()
+                    {
+                        selection = None;
+                    }
+                    for candidate in existing {
+                        let label = if candidate.username.is_empty() {
+                            candidate.title.clone()
+                        } else {
+                            format!("{} ({})", candidate.title, candidate.username)
+                        };
+                        if ui
+                            .radio(
+                                selection.as_deref() == Some(candidate.uuid.as_str()),
+                                format!("Replace the passkey in \u{201c}{label}\u{201d}"),
+                            )
+                            .clicked()
+                        {
+                            selection = Some(candidate.uuid.clone());
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save passkey").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                }
+                crate::browser_bridge::PasskeyPromptKind::Get { rp_id, candidates } => {
+                    if selection.is_none() {
+                        selection = candidates.first().map(|candidate| candidate.uuid.clone());
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("Sign in to {rp_id}"))
+                            .strong()
+                            .size(15.0),
+                    );
+                    ui.add_space(4.0);
+                    if candidates.len() > 1 {
+                        ui.label("Choose a passkey:");
+                    }
+                    for candidate in candidates {
+                        let label = if candidate.username.is_empty() {
+                            candidate.title.clone()
+                        } else {
+                            format!("{} ({})", candidate.title, candidate.username)
+                        };
+                        if ui
+                            .radio(
+                                selection.as_deref() == Some(candidate.uuid.as_str()),
+                                label,
+                            )
+                            .clicked()
+                        {
+                            selection = Some(candidate.uuid.clone());
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Sign in").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                }
+            });
+
+            if selection != crate::browser_bridge::passkey_selection(app) {
+                crate::browser_bridge::select_passkey(app, selection);
+            }
+            if confirm {
+                crate::browser_bridge::confirm_passkey(app);
+            } else if cancel || !open {
+                crate::browser_bridge::deny_passkey(app);
+            } else if open {
+                app.dialog = Dialog::Passkey;
             }
         }
         Dialog::ShareGroup(mut d) => {

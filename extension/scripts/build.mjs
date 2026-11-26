@@ -101,6 +101,31 @@ async function buildTarget(target) {
     logLevel: "info",
   });
 
+  // Passkeys: isolated-world coordinator (document_start) and the MAIN-world
+  // page wrapper injected through a web-accessible resource.
+  await build({
+    absWorkingDir: root,
+    entryPoints: ["src/content/passkeys.ts"],
+    outfile: chrome ? "dist/content/passkeys.js" : "dist-firefox/content/passkeys.js",
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: config.target,
+    sourcemap: true,
+    logLevel: "info",
+  });
+  await build({
+    absWorkingDir: root,
+    entryPoints: ["src/content/passkeys-page.ts"],
+    outfile: chrome ? "dist/content/passkeys-page.js" : "dist-firefox/content/passkeys-page.js",
+    bundle: true,
+    format: "iife",
+    platform: "browser",
+    target: config.target,
+    sourcemap: false,
+    logLevel: "info",
+  });
+
   // Field-detection API for Playwright tests. Pure DOM code, no chrome.* access.
   // WP6b adds the settings/icon/position/menu helper API to the same bundle.
   await build({

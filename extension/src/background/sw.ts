@@ -49,6 +49,8 @@ import {
   getLogins,
   getTotp,
   lockDatabase,
+  passkeysGet,
+  passkeysRegister,
   setLogin,
 } from "./actions";
 import type { ActionContext } from "./actions";
@@ -508,6 +510,25 @@ function buildBackgroundHandlers(): BackgroundHandlers {
     },
 
     "popup.open": async (_args, sender) => openPopupForTab(sender.tab?.id),
+
+    // Passkeys (ACTIONS.md §4.12). The content script turns the inner
+    // `response` (a credential or `{errorCode}`) back into a DOM event.
+    "passkeys.register": async (args) => {
+      const snapshot = await usableSnapshot();
+      return passkeysRegister(await actionContext(snapshot), {
+        publicKey: args.publicKey,
+        origin: args.origin,
+        ...(typeof args.groupName === "string" ? { groupName: args.groupName } : {}),
+      });
+    },
+
+    "passkeys.get": async (args) => {
+      const snapshot = await usableSnapshot();
+      return passkeysGet(await actionContext(snapshot), {
+        publicKey: args.publicKey,
+        origin: args.origin,
+      });
+    },
   };
 }
 

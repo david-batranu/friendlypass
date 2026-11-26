@@ -20,8 +20,12 @@ use std::time::Duration;
 use keepass::config::DatabaseVersion;
 use keepass::{Database, DatabaseKey};
 
-use crate::bridge::{AssociationRequest, BrowserBridge, SetLoginRequest};
+use crate::bridge::{
+    AssociationRequest, BrowserBridge, PasskeyGetRequest, PasskeyRegisterRequest, SetLoginRequest,
+};
 use crate::entry_write::apply_set_login;
+use crate::passkey_write;
+use crate::protocol::{ERROR_PASSKEYS_EMPTY_PUBLIC_KEY, ERROR_PASSKEYS_UNKNOWN_ERROR};
 
 /// Test hook: `approve_association` waits this long before approving, so
 /// integration tests can prove `ping` is answered while an approval is
@@ -148,7 +152,59 @@ impl BrowserBridge for FileBridge {
             self.record_error(None);
             return false;
         }
-        match self.save(&db) {
+        self.save_changed(&db)
+    }
+
+    fn passkeys_register(&self, request: &PasskeyRegisterRequest) -> Result<serde_json::Value, i32> {
+        let completed = request
+            .prepared
+            .complete()
+            .map_err(|_| ERROR_PASSKEYS_UNKNOWN_ERROR)?;
+        let mut db = self.lock_database();
+        let target = request
+            .existing
+            .first()
+            .map(|candidate| candidate.uuid.clone());
+        let written = match target {
+            Some(uuid) => passkey_write::update_passkey_entry(&mut db, &uuid, &completed.passkey),
+            None => passkey_write::create_passkey_entry(
+                &mut db,
+                &completed.passkey,
+                &request.prepared.rp_name,
+                &request.origin,
+                &request.group_name,
+            )
+            .is_some(),
+        };
+        if !written {
+            self.record_error(None);
+            return Err(ERROR_PASSKEYS_UNKNOWN_ERROR);
+        }
+        if !self.save_changed(&db) {
+            return Err(ERROR_PASSKEYS_UNKNOWN_ERROR);
+        }
+        Ok(completed.credential)
+    }
+
+    fn passkeys_get(&self, request: &PasskeyGetRequest) -> Result<serde_json::Value, i32> {
+        let candidate = request
+            .candidates
+            .first()
+            .ok_or(ERROR_PASSKEYS_EMPTY_PUBLIC_KEY)?;
+        let db = self.lock_database();
+        let passkey =
+            passkey_write::entry_passkey(&db, &candidate.uuid).ok_or(ERROR_PASSKEYS_UNKNOWN_ERROR)?;
+        request
+            .prepared
+            .complete(&passkey)
+            .map_err(|_| ERROR_PASSKEYS_UNKNOWN_ERROR)
+    }
+}
+
+impl FileBridge {
+    /// Save after a successful mutation and flag the served snapshot stale.
+    fn save_changed(&self, db: &Database) -> bool {
+        match self.save(db) {
             Ok(()) => {
                 self.record_error(None);
                 self.changed.store(true, Ordering::SeqCst);

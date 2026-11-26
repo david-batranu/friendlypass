@@ -453,9 +453,24 @@ Values are wire values. `errorCode` is serialised as a string.
 | 17 | `CANNOT_CREATE_NEW_GROUP` | Group creation failed/cancelled |
 | 18 | `NO_VALID_UUID_PROVIDED` | Malformed UUID |
 | 19 | `ACCESS_TO_ALL_ENTRIES_DENIED` | `get-database-entries` denied |
-| 20–33 | passkeys errors | Reserved; see `BrowserMessageBuilder.h` |
+| 20 | `PASSKEYS_ATTESTATION_NOT_SUPPORTED` | Attestation not supported |
+| 21 | `PASSKEYS_CREDENTIAL_IS_EXCLUDED` | `excludeCredentials` matched a stored passkey |
+| 22 | `PASSKEYS_REQUEST_CANCELED` | User cancelled / no GUI |
+| 23 | `PASSKEYS_INVALID_USER_VERIFICATION` | Unrecognised `userVerification` |
+| 24 | `PASSKEYS_EMPTY_PUBLIC_KEY` | `publicKey` missing or empty |
+| 25 | `PASSKEYS_INVALID_URL_PROVIDED` | Origin not permitted |
+| 26 | `PASSKEYS_ORIGIN_NOT_ALLOWED` | Empty/invalid origin |
+| 27 | `PASSKEYS_DOMAIN_IS_NOT_VALID` | Effective domain is not a valid domain |
+| 28 | `PASSKEYS_DOMAIN_RPID_MISMATCH` | Origin and RP ID do not match |
+| 29 | `PASSKEYS_NO_SUPPORTED_ALGORITHMS` | No offered algorithm is supported |
+| 30 | `PASSKEYS_WAIT_FOR_LIFETIMER` | Unsupported authenticator selection |
+| 31 | `PASSKEYS_UNKNOWN_ERROR` | Key creation/signing failed |
+| 32 | `PASSKEYS_INVALID_CHALLENGE` | Challenge shorter than 16 bytes |
+| 33 | `PASSKEYS_INVALID_USER_ID` | `user.id` empty or longer than 64 bytes |
 | 34 | `CANNOT_USE_REFERENCES` | `{REF:…}` in login/password on save |
-| 35–37 | passkeys evaluation errors | Reserved |
+| 35 | `PASSKEYS_EVAL_BY_CREDENTIAL_NOT_SUPPORTED` | Reserved (WebAuthn 3 evaluation) |
+| 36 | `PASSKEYS_EVAL_BY_CREDENTIAL_NOT_EMPTY` | Reserved (WebAuthn 3 evaluation) |
+| 37 | `PASSKEYS_EVAL_BY_CREDENTIAL_NOT_FOUND` | Reserved (WebAuthn 3 evaluation) |
 
 ---
 
@@ -920,7 +935,9 @@ remain harmless (KeePassXC returns error 12), and WP1/WP7a may add them later
 without a protocol version bump because they are additive:
 
 `create-new-group`, `get-database-entries`, `delete-entry`,
-`request-autotype`, `passkeys-get`, `passkeys-register`.
+`request-autotype`.
+
+`passkeys-get` and `passkeys-register` are now specified in §4.12.
 
 Note that keepassxc-browser's save dialog calls `get-database-groups` →
 `create-new-group` when the user picks a non-existent group. Phase 1 may omit
@@ -928,6 +945,136 @@ Note that keepassxc-browser's save dialog calls `get-database-groups` →
 `request-autotype` is special in KeePassXC: it is allowed while the database is
 closed and its inner `search` field is limited to 256 characters (error 14 if
 longer).
+
+### 4.12 `passkeys-register` and `passkeys-get` (implemented)
+
+KeePassXC 2.8's WebAuthn passkey actions. They are additive: no protocol
+version bump, and the existing fixtures are unchanged. Feature gate: clients
+enable them at inner `version >= 2.7.7`; `groupName` (the "Passkey default
+group") is honoured at `>= 2.7.10`. friendlypass reports `2.8.0`.
+
+Both actions require an unlocked database and an associated connection
+(outer error **1** / **8** respectively). Both use the normal encrypted
+envelope:
+
+```json
+{
+  "action": "passkeys-register",
+  "message": "<encrypted inner>",
+  "nonce": "<request nonce>",
+  "clientID": "<clientID>"
+}
+```
+
+`triggerUnlock` is accepted like any other action, but the official extension
+does not set it for passkeys; a locked database returns error 1 and the client
+falls back according to its setting.
+
+The inner request carries the page's options, the page origin, the group name
+and the extension's keyring:
+
+```json
+{
+  "action": "passkeys-register",
+  "publicKey": { "challenge": "…", "rp": { "id": "example.com", "name": "Example" },
+                 "user": { "id": "…", "name": "alice", "displayName": "Alice" },
+                 "pubKeyCredParams": [ { "type": "public-key", "alg": -7 } ],
+                 "excludeCredentials": [ { "type": "public-key", "id": "…" } ],
+                 "authenticatorSelection": { "residentKey": "preferred",
+                                             "userVerification": "preferred" },
+                 "attestation": "none", "timeout": 60000 },
+  "origin": "https://example.com",
+  "groupName": "Passwords",
+  "relatedOrigins": [],
+  "keys": [ { "id": "<association id>", "key": "<Base64>" } ]
+}
+```
+
+`passkeys-get` uses `publicKey` with `challenge`, optional `rpId`,
+`allowCredentials` and `userVerification` instead of an RP/user object.
+`origin` is `window.location.origin` (scheme + host + port). `relatedOrigins`
+and unknown extension fields are accepted and ignored. `keys` is the same
+keyring as `get-logins` and must authorise this association.
+
+Binary values (`challenge`, credential ids, `user.id`) are base64url without
+padding on the request; response blobs are standard Base64.
+
+The inner success response is always `{"version":"2.8.0","success":"true",
+"nonce":"…","response": <value>}`. `response` is either the standard
+`PublicKeyCredential` JSON the extension turns back into a credential, or a
+passkeys error object:
+
+```json
+{ "response": { "errorCode": 21 } }
+```
+
+**Register** `response` (success):
+
+```json
+{
+  "authenticatorAttachment": "platform",
+  "id": "<base64url credential id>",
+  "response": {
+    "attestationObject": "<Base64 CBOR {fmt:'none',attStmt:{},authData}>",
+    "clientDataJSON": "<Base64 webauthn.create client data>",
+    "clientExtensionResults": {},
+    "authenticatorData": "<Base64>",
+    "publicKey": "<Base64 SubjectPublicKeyInfo DER>",
+    "publicKeyAlgorithm": -7
+  },
+  "type": "public-key"
+}
+```
+
+**Get** `response` (success):
+
+```json
+{
+  "authenticatorAttachment": "platform",
+  "id": "<base64url credential id>",
+  "response": {
+    "authenticatorData": "<Base64 flags UP|UV|BE|BS, counter 0>",
+    "clientDataJSON": "<Base64 webauthn.get client data>",
+    "clientExtensionResults": {},
+    "signature": "<Base64>",
+    "userHandle": "<base64url user handle>"
+  },
+  "type": "public-key"
+}
+```
+
+Algorithms: ES256 (-7), EdDSA (-8), RS256 (-257), first supported in the
+page's order, falling back to ES256 when the page offered none. Attestation is
+always `fmt: "none"` (an all-zero AAGUID is valid for it). Signatures are
+DER for ES256, raw for EdDSA and PKCS#1 v1.5 for RS256. The signature counter is
+always 0.
+
+Server rules, matching `BrowserService`:
+
+- `origin` must be `https://`, or `localhost`/`*.localhost` (and `file://`)
+  when the app's "Allow localhost with passkeys" setting is on; otherwise the
+  outer error is **25**. Malformed origins/domains are **26**/**27** and an
+  RP id that is not the origin's registrable-domain suffix is **28**, both
+  nested in `response`.
+- Registration refuses with **21** when an existing passkey for the RP id is
+  listed in `excludeCredentials`. `user.id` must be 1–64 bytes (**33**), the
+  challenge at least 16 decoded bytes (**32**), and `pubKeyCredParams` must
+  contain a supported algorithm when non-empty (**29**).
+- Registration writes a KeePassXC passkey (`KPEX_PASSKEY_*`, protected flags,
+  `BE`/`BS` = `1`) with title `"<rp.name> (Passkey)"`, username `user.name`,
+  URL the page origin and the tag `Passkey` in the passkey group; the user may
+  instead replace the passkey of an existing same-RP/same-user-handle entry.
+- Get matches by RP id. With `allowCredentials`, only listed credential ids
+  whose transports are empty/`internal`/`nfc`/`usb` are eligible; without it,
+  only entries with a user handle (discoverable credentials). No match is
+  **15**.
+- A cancelled prompt is **22**. Errors **20–33** are always nested in
+  `response`; only **1**, **4**, **8**, **12**, **24** and **25** are outer
+  errors (as in `BrowserAction`).
+- An extension that gets an error and has "fall back to the browser's own
+  authenticator" enabled calls the original `navigator.credentials` API. With
+  fallback off it lets the page's `timeout` elapse and then rejects with the
+  matching `DOMException`. A cancelled/unavailable app never breaks the page.
 
 ---
 

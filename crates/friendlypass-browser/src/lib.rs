@@ -19,19 +19,36 @@ pub mod crypto;
 pub mod entry_write;
 pub mod file_bridge;
 pub mod native_messaging;
+pub mod passkey_write;
+pub mod passkeys;
 pub mod peer;
 pub mod protocol;
 pub mod push;
 pub mod server;
 pub mod service;
 
-pub use bridge::{AssociationRequest, AutoApproveBridge, BrowserBridge, DenyAllBridge, SetLoginRequest};
+pub use bridge::{
+    AssociationRequest, AutoApproveBridge, BrowserBridge, DenyAllBridge, PasskeyCandidate,
+    PasskeyGetRequest, PasskeyRegisterRequest, SetLoginRequest,
+};
 pub use file_bridge::FileBridge;
 pub use peer::{verify_peer, PeerInfo};
 pub use push::PushHub;
 pub use server::{browser_server_path, start, start_with_config, user_temp_dir, ServerConfig, ServerHandle};
 pub use service::SharedState;
-pub use service::{AssociationInfo, CredentialEntry, GroupNode, ServiceState};
+pub use service::{AssociationInfo, CredentialEntry, GroupNode, PasskeyRecord, ServiceState};
+
+use base64::Engine as _;
+
+/// Standard base64 with padding, as KeePassXC's `getBase64FromArray` emits it.
+pub fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// base64url without padding (KeePassXC's credential ids and user handles).
+pub fn b64url(bytes: &[u8]) -> String {
+    friendlypass_passkey::b64url_encode(bytes)
+}
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -116,6 +133,12 @@ pub fn snapshot_from_database(db: &Database) -> ServiceState {
         })
         .collect();
 
+    let passkeys = db
+        .iter_all_entries()
+        .filter(|entry| !recycle.contains(&entry.parent().id().uuid().simple().to_string()))
+        .filter_map(|entry| passkey_record(&entry))
+        .collect();
+
     let associations = db
         .meta
         .custom_data
@@ -132,6 +155,8 @@ pub fn snapshot_from_database(db: &Database) -> ServiceState {
         locked: false,
         entries,
         groups,
+        passkeys,
+        allow_localhost_passkeys: false,
         associations,
         associations_info: Default::default(),
         associations_changed: false,
@@ -140,6 +165,36 @@ pub fn snapshot_from_database(db: &Database) -> ServiceState {
         push: Default::default(),
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
     }
+}
+
+/// The passkey fields of one entry, read exactly like KeePassXC
+/// (`Entry::hasPasskey` + `KPEX_PASSKEY_*`, including the StrongBox alias).
+/// `None` when the entry has no passkey attributes.
+fn passkey_record(entry: &keepass::db::EntryRef<'_>) -> Option<PasskeyRecord> {
+    let get = |key: &str| entry.get(key).map(str::to_owned);
+    if !passkeys::has_passkey_fields(entry.fields.keys().map(String::as_str)) {
+        return None;
+    }
+    let rp_id = get(friendlypass_passkey::KPEX_PASSKEY_RELYING_PARTY).unwrap_or_default();
+    if rp_id.is_empty() {
+        return None;
+    }
+    let username = friendlypass_passkey::StoredPasskey::from_fields(|key| get(key))
+        .map(|passkey| passkey.username)
+        .unwrap_or_default();
+    let user_handle = get(friendlypass_passkey::KPEX_PASSKEY_USER_HANDLE)
+        .filter(|handle| !handle.is_empty())
+        .and_then(|handle| friendlypass_passkey::b64url_decode(&handle).ok())
+        .unwrap_or_default();
+    let credential_id = passkeys::credential_id_from_fields(get)?;
+    Some(PasskeyRecord {
+        uuid: entry.id().uuid().simple().to_string(),
+        title: entry.get("Title").unwrap_or_default().to_owned(),
+        username,
+        rp_id,
+        credential_id,
+        user_handle,
+    })
 }
 
 /// Browser associations stored in database metadata (`KPXC_BROWSER_<id>`).
