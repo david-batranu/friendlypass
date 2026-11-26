@@ -1175,6 +1175,32 @@ fn modal_window(
     open
 }
 
+/// Placeholder for a settings dialog whose feature needs Unix domain sockets.
+/// The menu entries stay visible so the limitation is discoverable; the dialog
+/// itself is replaced by this short note.
+#[cfg(windows)]
+fn unavailable_dialog(
+    ctx: &egui::Context,
+    app: &mut App,
+    dialog: Dialog,
+    title: &str,
+    message: &str,
+) {
+    let mut close_clicked = false;
+    let open = modal_window(ctx, "unavailable-feature", title, 460.0, |ui| {
+        ui.label(egui::RichText::new("Not available on Windows yet").strong());
+        ui.add_space(4.0);
+        ui.label(message);
+        ui.add_space(6.0);
+        if ui.button("Close").clicked() {
+            close_clicked = true;
+        }
+    });
+    if !close_clicked && open {
+        app.dialog = dialog;
+    }
+}
+
 /// Render whatever dialog is currently open.
 pub fn show(app: &mut App, ctx: &egui::Context) {
     // Universal dialog keys: Escape cancels, Enter confirms single-line
@@ -1793,6 +1819,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::SshAgent => {
+            #[cfg(windows)]
+            {
+                unavailable_dialog(
+                    ctx,
+                    app,
+                    Dialog::SshAgent,
+                    "SSH Agent",
+                    "The SSH agent serves keys over a Unix domain socket. A Windows \
+                     named-pipe transport is planned; this build does not provide the \
+                     agent yet.",
+                );
+            }
+            #[cfg(not(windows))]
+            {
+            // Unix: the real agent UI (keys, socket path, start/stop).
             let open: bool;
             let mut close_clicked = false;
             let mut start_clicked = false;
@@ -1890,8 +1931,25 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if !close_clicked && open {
                 app.dialog = Dialog::SshAgent;
             }
+            }
         }
         Dialog::Browser => {
+            #[cfg(windows)]
+            {
+                unavailable_dialog(
+                    ctx,
+                    app,
+                    Dialog::Browser,
+                    "Browser Integration",
+                    "Browser integration needs the KeePassXC-Browser app socket and \
+                     Unix peer verification. Both are macOS/Linux only today; a Windows \
+                     named-pipe transport is planned, so this build cannot serve the \
+                     extension or passkeys.",
+                );
+            }
+            #[cfg(not(windows))]
+            {
+            // Unix: the real browser-integration UI (manifests, approvals).
             let mut close_clicked = false;
             let mut start_clicked = false;
             let mut stop_clicked = false;
@@ -2116,6 +2174,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if !close_clicked && open {
                 app.dialog = Dialog::Browser;
+            }
             }
         }
         Dialog::Passkey => {

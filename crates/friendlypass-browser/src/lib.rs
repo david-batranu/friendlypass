@@ -24,6 +24,13 @@ pub mod passkeys;
 pub mod peer;
 pub mod protocol;
 pub mod push;
+// The server speaks over a Unix domain socket (app socket + peer checks).
+// Windows gets a stub with the same API so the GUI builds; browser
+// integration is disabled there until a named-pipe transport exists.
+#[cfg(unix)]
+pub mod server;
+#[cfg(not(unix))]
+#[path = "server_windows.rs"]
 pub mod server;
 pub mod service;
 

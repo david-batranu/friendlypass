@@ -11,6 +11,13 @@
 
 pub mod openssh;
 pub mod protocol;
+// The agent serves over a Unix domain socket. Windows has no Unix sockets, so
+// that build gets a stub that reports the feature as unavailable; the rest of
+// the crate (key parsing, the GUI) still compiles and links.
+#[cfg(unix)]
+pub mod server;
+#[cfg(not(unix))]
+#[path = "server_windows.rs"]
 pub mod server;
 
 use std::sync::{Arc, Mutex};
