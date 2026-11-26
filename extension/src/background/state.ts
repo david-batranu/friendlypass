@@ -51,9 +51,11 @@ export const DEFAULT_SETTINGS: Readonly<ExtensionSettings> = Object.freeze({
   defaultGroup: "",
   defaultGroupAlwaysAsk: false,
   debugLogging: false,
-  passkeys: false,
+  passkeys: true,
   passkeysFallback: true,
   defaultPasskeyGroup: "",
+  disableBrowserPasswordManager: true,
+  settingsRevision: 2,
   siteExceptions: Object.freeze([]) as unknown as SiteException[],
 });
 
@@ -68,7 +70,16 @@ const BOOLEAN_SETTINGS = [
   "debugLogging",
   "passkeys",
   "passkeysFallback",
+  "disableBrowserPasswordManager",
 ] as const;
+
+/**
+ * Current defaults revision. Stored settings older than this get the newer
+ * defaults applied once:
+ *  - 2: passkeys switched on by default (they were off in 0.1.0, when the
+ *    value was written as a default rather than chosen by the user).
+ */
+export const SETTINGS_REVISION = 2;
 
 /** Upper bound on the number of stored site exceptions. */
 export const MAX_SITE_EXCEPTIONS = 500;
@@ -364,6 +375,14 @@ export function sanitiseSettings(value: unknown): ExtensionSettings {
       .slice(0, MAX_DEFAULT_GROUP_LENGTH);
   }
   settings.siteExceptions = sanitiseSiteExceptions(value["siteExceptions"]);
+  const revision =
+    typeof value["settingsRevision"] === "number" && Number.isFinite(value["settingsRevision"])
+      ? value["settingsRevision"]
+      : 0;
+  if (revision < 2) {
+    settings.passkeys = DEFAULT_SETTINGS.passkeys;
+  }
+  settings.settingsRevision = SETTINGS_REVISION;
   return settings;
 }
 

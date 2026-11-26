@@ -76,9 +76,11 @@ describe("settings defaults", () => {
       defaultGroup: "",
       defaultGroupAlwaysAsk: false,
       debugLogging: false,
-      passkeys: false,
+      passkeys: true,
       passkeysFallback: true,
       defaultPasskeyGroup: "",
+      disableBrowserPasswordManager: true,
+      settingsRevision: 2,
       siteExceptions: [],
     });
     expect(Object.keys(defaultSettings()).sort()).toEqual(
@@ -89,10 +91,12 @@ describe("settings defaults", () => {
         "defaultGroup",
         "defaultGroupAlwaysAsk",
         "defaultPasskeyGroup",
+        "disableBrowserPasswordManager",
         "httpAuthAutoFill",
         "launchAppOnConnect",
         "passkeys",
         "passkeysFallback",
+        "settingsRevision",
         "showFieldIcons",
         "siteExceptions",
       ].sort(),
@@ -305,5 +309,42 @@ describe("http-auth settings migration", () => {
     await merged.setAutoFill(true);
     expect(target.writes).toEqual([true]);
     expect(legacyStore.setAutoFill).not.toHaveBeenCalled();
+  });
+});
+
+describe("settings revision 2 (passkeys on, browser password saving off)", () => {
+  it("turns passkeys on for settings stored before revision 2", () => {
+    const migrated = sanitiseSettings({ passkeys: false, debugLogging: true });
+    expect(migrated.passkeys).toBe(true);
+    expect(migrated.debugLogging).toBe(true);
+    expect(migrated.settingsRevision).toBe(2);
+    expect(migrated.disableBrowserPasswordManager).toBe(true);
+  });
+
+  it("keeps a user's choice made at revision 2", () => {
+    const kept = sanitiseSettings({
+      passkeys: false,
+      disableBrowserPasswordManager: false,
+      settingsRevision: 2,
+    });
+    expect(kept.passkeys).toBe(false);
+    expect(kept.disableBrowserPasswordManager).toBe(false);
+  });
+
+  it("persists an opt-out through the store, and the revision cannot be patched", async () => {
+    const storage = new MemoryStorageArea();
+    await storage.set({ "friendlypass.state.v1": { settings: { passkeys: false } } });
+    const store = createStateStore({ storage });
+    expect((await store.getSettings()).passkeys).toBe(true);
+    await store.setSettings({
+      passkeys: false,
+      disableBrowserPasswordManager: false,
+      settingsRevision: 0,
+    } as never);
+    const reopened = createStateStore({ storage });
+    const settings = await reopened.getSettings();
+    expect(settings.passkeys).toBe(false);
+    expect(settings.disableBrowserPasswordManager).toBe(false);
+    expect(settings.settingsRevision).toBe(2);
   });
 });

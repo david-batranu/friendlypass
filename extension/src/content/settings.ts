@@ -54,7 +54,7 @@ export const DEFAULT_CONTENT_SETTINGS: Readonly<ContentSettings> = Object.freeze
   defaultGroup: "",
   defaultGroupAlwaysAsk: false,
   debugLogging: false,
-  passkeys: false,
+  passkeys: true,
   passkeysFallback: true,
   defaultPasskeyGroup: "",
   siteExceptions: [],
