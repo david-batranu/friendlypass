@@ -2,14 +2,17 @@
 //!
 //! Every accepted connection is attributable to a process: macOS reports it
 //! with `getsockopt(SOL_LOCAL, LOCAL_PEERPID)`, Linux with
-//! `getsockopt(SOL_SOCKET, SO_PEERCRED)`. The process's executable is then
-//! resolved (`proc_pidpath` / `/proc/<pid>/exe`) and matched against the native
-//! host binary the app expects (`ServerConfig::trusted_host_path`).
+//! `getsockopt(SOL_SOCKET, SO_PEERCRED)`, and Windows with
+//! `GetNamedPipeClientProcessId`. The process's executable is then resolved
+//! (`proc_pidpath` / `/proc/<pid>/exe` / `QueryFullProcessImageNameW`) and
+//! matched against the native host binary the app expects
+//! (`ServerConfig::trusted_host_path`).
 //!
 //! macOS additionally compares code identities: the running process must be
 //! validly signed and its `cdhash` (`kSecCodeInfoUnique`) must equal the
 //! `cdhash` of the expected on-disk host. Ad-hoc signed developer builds have a
-//! cdhash too, so this works without a Developer ID.
+//! cdhash too, so this works without a Developer ID. Windows compares the
+//! resolved image paths case-insensitively.
 //!
 //! Every failure — unsupported platform, missing pid, unreadable executable,
 //! unsigned peer, Security framework error — yields `trusted: false`. This
@@ -52,12 +55,75 @@ pub fn verify_peer(stream: &UnixStream, expected_host: Option<&Path>) -> PeerInf
     }
 }
 
-/// Windows has no app socket yet, so no peer can ever be trusted. The generic
-/// parameter keeps the signature usable from code that will gain a Windows
-/// transport later.
-#[cfg(not(unix))]
+/// Windows: a named-pipe client is trusted only when its executable is the
+/// expected native host, resolved through the pipe client pid.
+#[cfg(windows)]
+pub fn verify_peer(stream: &crate::pipe::PipeStream, expected_host: Option<&Path>) -> PeerInfo {
+    let pid = stream
+        .client_process_id()
+        .and_then(|pid| i32::try_from(pid).ok());
+    let executable = pid.and_then(executable_for_pid);
+    let trusted = match (expected_host, executable.as_deref()) {
+        (Some(expected), Some(actual)) => peer_executable_is_trusted(expected, actual),
+        _ => false,
+    };
+    PeerInfo {
+        pid,
+        executable,
+        trusted,
+    }
+}
+
+/// Platforms without an app transport never trust a peer.
+#[cfg(not(any(unix, windows)))]
 pub fn verify_peer<S>(_stream: &S, _expected_host: Option<&Path>) -> PeerInfo {
     PeerInfo::default()
+}
+
+/// Windows peer trust rule: the client executable is the expected host binary.
+///
+/// Windows paths are case-insensitive, so the resolved paths are compared
+/// case-insensitively. A missing or unresolvable path is never trusted.
+#[cfg(windows)]
+pub fn peer_executable_is_trusted(expected: &Path, actual: &Path) -> bool {
+    let Ok(expected) = std::fs::canonicalize(expected) else {
+        return false;
+    };
+    let Ok(actual) = std::fs::canonicalize(actual) else {
+        return false;
+    };
+    expected
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&actual.to_string_lossy())
+}
+
+/// The executable path of `pid` on Windows.
+#[cfg(windows)]
+fn executable_for_pid(pid: i32) -> Option<PathBuf> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let pid = u32::try_from(pid).ok().filter(|pid| *pid != 0)?;
+    // SAFETY: OpenProcess has no out-parameters and the pid is validated.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let mut buffer = vec![0u16; 32_768];
+    let mut length = buffer.len() as u32;
+    // SAFETY: `buffer` is valid for `length` UTF-16 code units.
+    let ok = unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) };
+    // SAFETY: `process` was returned by OpenProcess and is owned here.
+    unsafe {
+        CloseHandle(process);
+    }
+    if ok == 0 || length == 0 {
+        return None;
+    }
+    let path = String::from_utf16_lossy(&buffer[..length as usize]);
+    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
 /// The pid of the process at the other end of `stream`.
@@ -211,7 +277,11 @@ extern "C" {
         flags: u32,
         guest: *mut *mut std::ffi::c_void,
     ) -> i32;
-    fn SecCodeCheckValidity(code: *mut std::ffi::c_void, flags: u32, requirement: *mut std::ffi::c_void) -> i32;
+    fn SecCodeCheckValidity(
+        code: *mut std::ffi::c_void,
+        flags: u32,
+        requirement: *mut std::ffi::c_void,
+    ) -> i32;
     fn SecCodeCopySigningInformation(
         code: *mut std::ffi::c_void,
         flags: u32,
@@ -253,11 +323,13 @@ fn running_cdhash(pid: i32) -> Option<Vec<u8>> {
         return None;
     }
     // A CFType guard releases the SecCodeRef when it goes out of scope.
-    let guest = unsafe { CFType::wrap_under_create_rule(guest as core_foundation::base::CFTypeRef) };
+    let guest =
+        unsafe { CFType::wrap_under_create_rule(guest as core_foundation::base::CFTypeRef) };
 
     // `NULL` requirement = check the signature's own validity (works for
     // ad-hoc signed developer builds too).
-    let valid = unsafe { SecCodeCheckValidity(guest.as_CFTypeRef() as *mut _, 0, std::ptr::null_mut()) };
+    let valid =
+        unsafe { SecCodeCheckValidity(guest.as_CFTypeRef() as *mut _, 0, std::ptr::null_mut()) };
     if valid != 0 {
         return None;
     }
@@ -283,11 +355,11 @@ fn disk_cdhash(path: &Path) -> Option<Vec<u8>> {
 /// Read `kSecCodeInfoUnique` (the cdhash, a `CFData`) from a code object.
 #[cfg(target_os = "macos")]
 fn signing_information(code: *mut std::ffi::c_void) -> Option<Vec<u8>> {
+    use core_foundation::base::TCFType;
     use core_foundation::base::{CFGetTypeID, CFRelease, CFTypeRef};
     use core_foundation::data::{CFData, CFDataGetTypeID, CFDataRef};
     use core_foundation::dictionary::{CFDictionaryGetValue, CFDictionaryRef};
     use core_foundation::string::CFString;
-    use core_foundation::base::TCFType;
 
     let mut information: CFDictionaryRef = std::ptr::null();
     let status = unsafe { SecCodeCopySigningInformation(code, 0, &mut information) };
@@ -296,7 +368,8 @@ fn signing_information(code: *mut std::ffi::c_void) -> Option<Vec<u8>> {
     }
     let key = unsafe { CFString::wrap_under_get_rule(kSecCodeInfoUnique) };
     let value = unsafe { CFDictionaryGetValue(information, key.as_CFTypeRef()) };
-    let cdhash = if value.is_null() || unsafe { CFGetTypeID(value) } != unsafe { CFDataGetTypeID() } {
+    let cdhash = if value.is_null() || unsafe { CFGetTypeID(value) } != unsafe { CFDataGetTypeID() }
+    {
         None
     } else {
         let data = unsafe { CFData::wrap_under_get_rule(value as CFDataRef) };
@@ -305,6 +378,38 @@ fn signing_information(code: *mut std::ffi::c_void) -> Option<Vec<u8>> {
     };
     unsafe { CFRelease(information as CFTypeRef) };
     cdhash
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn client_image_path_must_be_the_expected_host() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = dir.path().join("friendlypass-browser-host.exe");
+        let other = dir.path().join("not-our-host.exe");
+        std::fs::write(&host, b"host").expect("write host");
+        std::fs::write(&other, b"other").expect("write other");
+
+        assert!(peer_executable_is_trusted(&host, &host));
+        assert!(
+            peer_executable_is_trusted(
+                &PathBuf::from(host.to_string_lossy().to_uppercase()),
+                &host
+            ),
+            "Windows executable paths are case-insensitive"
+        );
+        assert!(!peer_executable_is_trusted(&host, &other));
+        assert!(!peer_executable_is_trusted(
+            &dir.path().join("missing.exe"),
+            &host
+        ));
+        assert!(!peer_executable_is_trusted(
+            &host,
+            &dir.path().join("missing.exe")
+        ));
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -344,7 +449,10 @@ mod tests {
                 return;
             }
         }
-        assert!(info.trusted, "our own executable is the expected host: {info:?}");
+        assert!(
+            info.trusted,
+            "our own executable is the expected host: {info:?}"
+        );
     }
 
     #[test]
@@ -352,7 +460,10 @@ mod tests {
         let (ours, _peer) = UnixStream::pair().expect("socketpair");
         let info = verify_peer(&ours, Some(Path::new("/bin/sh")));
         assert!(!info.trusted);
-        assert!(info.executable.is_some(), "the peer executable is still reported");
+        assert!(
+            info.executable.is_some(),
+            "the peer executable is still reported"
+        );
     }
 
     #[test]

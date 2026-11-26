@@ -240,7 +240,7 @@ expect_fail --platform linux --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
     --host-path "$HOST_BIN" --browsers ""
 ok "empty browser list is rejected"
 
-expect_fail --platform windows --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
+expect_fail --platform solaris --home "$LINUX_HOME" --extension-id "$CHROME_ID" \
     --host-path "$HOST_BIN"
 ok "unsupported platform is rejected"
 

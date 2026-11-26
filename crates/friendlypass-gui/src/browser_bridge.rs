@@ -555,7 +555,7 @@ fn manifest_platform(
 ) -> anyhow::Result<friendlypass_browser::native_messaging::Platform> {
     app.browser_install_platform
         .or_else(friendlypass_browser::native_messaging::Platform::current)
-        .ok_or_else(|| anyhow::anyhow!("browser integration is only supported on macOS and Linux"))
+        .ok_or_else(|| anyhow::anyhow!("browser integration is not supported on this platform"))
 }
 
 /// Options for removing manifests: no host binary is needed.
@@ -582,7 +582,7 @@ fn install_options(
     options.host_path = native_host_path(app).ok_or_else(|| {
         anyhow::anyhow!(
             "cannot find {} next to the app; reinstall the app or build the host",
-            friendlypass_browser::native_messaging::HOST_BINARY_NAME
+            friendlypass_browser::native_messaging::host_binary_file_name()
         )
     })?;
     Ok(options)

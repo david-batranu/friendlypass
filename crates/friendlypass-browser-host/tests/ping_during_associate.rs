@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Pairing contract §1 end-to-end: the REAL host binary against the headless
 //! `test_server` app, with `FP_TEST_APPROVAL_DELAY_MS=5000`.
 //!

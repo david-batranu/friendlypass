@@ -2352,6 +2352,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2364,6 +2365,8 @@ dependencies = [
  "friendlypass-browser",
  "libc",
  "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

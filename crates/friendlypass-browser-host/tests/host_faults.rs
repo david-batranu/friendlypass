@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! WP1 fault tests: spawn the real binary with piped stdio against a mock app
 //! socket. Every scenario from the brief is covered here:
 //!

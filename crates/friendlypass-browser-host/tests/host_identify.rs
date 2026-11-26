@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Contract §2 / §4: the host identifies its launching browser and sends
 //! `host-identify` as the first frame on every app-socket connection.
 //!

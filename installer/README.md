@@ -28,9 +28,10 @@ directories. Start the browser and reopen the dialog (or run the installer
 again) to register it; `--force` overrides the check explicitly.
 
 The app rewrites a stale manifest on every start (for example after the app is
-moved or updated) and removes the manifest when a browser is unticked. It only
-ever touches `org.friendlypass.browser.json`; other native hosts' manifests are
-left alone. Uninstall does not need the browser to still be installed: any
+moved or updated) and removes the manifest (and, on Windows, the `HKCU`
+registration) when a browser is unticked. It only ever touches
+`org.friendlypass.browser.json` and its own host key; other native hosts'
+manifests and registry entries are left alone. Uninstall does not need the browser to still be installed: any
 manifest of ours that exists is removed.
 
 ## Build the host first
@@ -76,7 +77,7 @@ Options (the script forwards them to the host CLI):
 | `--firefox-extension-id ID` | Firefox add-on id; default `friendlypass@friendlypass.org`. |
 | `--host-path PATH` | Override the host binary. |
 | `--home DIR` | Use `DIR` as `$HOME` (tests, alternate profiles). |
-| `--platform macos\|linux` | Override detection (tests). |
+| `--platform macos\|linux\|windows` | Override detection (tests). On Windows manifests go under `%LOCALAPPDATA%\\friendlypass` and are registered in `HKCU`. |
 | `--browsers LIST` | Comma list of `chrome,chromium,brave,edge,firefox`; default all. Missing browsers are skipped. |
 | `--force` | Register a selected browser even when its per-user config root does not exist (creates it). |
 | `--dry-run` | Print targets, write nothing. |
@@ -99,6 +100,13 @@ friendlypass-browser-host --uninstall --browser firefox --home /tmp/test-home
 | Brave | `Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts` | `.config/BraveSoftware/Brave-Browser/NativeMessagingHosts` |
 | Edge | `Library/Application Support/Microsoft Edge/NativeMessagingHosts` | `.config/microsoft-edge/NativeMessagingHosts` |
 | Firefox | `Library/Application Support/Mozilla/NativeMessagingHosts` | `.mozilla/native-messaging-hosts` |
+
+On Windows browsers do not read a per-profile manifest directory: the manifest
+lives under `%LOCALAPPDATA%\friendlypass\<browser>\org.friendlypass.browser.json`
+and the default value of
+`HKCU\Software\{Google\Chrome|Chromium|BraveSoftware\Brave-Browser|Microsoft\Edge|Mozilla}\NativeMessagingHosts\org.friendlypass.browser`
+points at it. The registry entry is what `--install`/`--uninstall` (and the
+GUI) update; the manifest content rules below are unchanged.
 
 The file name is always `org.friendlypass.browser.json`. Chrome-family manifests
 carry `allowed_origins: ["chrome-extension://<id>/"]`; Firefox manifests carry

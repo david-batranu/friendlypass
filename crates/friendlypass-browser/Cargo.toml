@@ -29,6 +29,19 @@ libc = "0.2"
 # (the Security framework calls themselves are declared in `src/peer.rs`).
 core-foundation = "0.10"
 
+[target.'cfg(windows)'.dependencies]
+# Named-pipe transport, Win32 peer verification and registry registration.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }

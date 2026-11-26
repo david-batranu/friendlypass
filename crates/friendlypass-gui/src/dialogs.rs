@@ -1934,22 +1934,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         }
         Dialog::Browser => {
-            #[cfg(windows)]
-            {
-                unavailable_dialog(
-                    ctx,
-                    app,
-                    Dialog::Browser,
-                    "Browser Integration",
-                    "Browser integration needs the friendlypass app socket and \
-                     Unix peer verification. Both are macOS/Linux only today; a Windows \
-                     named-pipe transport is planned, so this build cannot serve the \
-                     extension or passkeys.",
-                );
-            }
-            #[cfg(not(windows))]
-            {
-            // Unix: the real browser-integration UI (manifests, approvals).
+            // Browser integration UI (manifests, approvals, serving status).
             let mut close_clicked = false;
             let mut start_clicked = false;
             let mut stop_clicked = false;
@@ -2174,7 +2159,6 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if !close_clicked && open {
                 app.dialog = Dialog::Browser;
-            }
             }
         }
         Dialog::Passkey => {

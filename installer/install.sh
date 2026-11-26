@@ -24,7 +24,10 @@
 #                            of target/release, target/debug, the app bundles,
 #                            then $PATH.
 #   --home DIR               Use DIR as $HOME (for tests).
-#   --platform macos|linux   Override platform detection (for tests).
+#   --platform macos|linux|windows
+#                            Override platform detection (for tests). On Windows
+#                            manifests go under %LOCALAPPDATA%\friendlypass and
+#                            are registered in HKCU; install.sh itself is Unix.
 #   --browsers LIST          Comma list of chrome,chromium,brave,edge,firefox.
 #                            Default: all.
 #   --force                  Register a browser even when its per-user config

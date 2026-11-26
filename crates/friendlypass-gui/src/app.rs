@@ -280,8 +280,7 @@ impl Default for App {
             browser_handle: None,
             browser_state: None,
             browser_bridge: None,
-            browser_install_home: std::env::var_os("HOME")
-                .map(PathBuf::from)
+            browser_install_home: friendlypass_browser::native_messaging::user_home()
                 .unwrap_or_default(),
             browser_install_platform: None,
             browser_install_host: None,
@@ -319,11 +318,7 @@ impl App {
         // a locked app answers error 1 (rather than looking "not running").
         // Re-register the native host first: if the app moved or was updated,
         // the manifests still point at the previous location.
-        // Browser integration needs Unix domain sockets and is not available
-        // on Windows yet (the settings dialog says so).
-        #[cfg(unix)]
         crate::browser_bridge::refresh_native_messaging(&mut app);
-        #[cfg(unix)]
         crate::browser_bridge::start_background(&mut app);
         app
     }
@@ -413,7 +408,6 @@ impl App {
                 self.remember_unlock = true;
                 self.last_activity = std::time::Instant::now();
                 self.status = format!("Unlocked {path} automatically");
-                #[cfg(unix)]
                 crate::browser_bridge::start_background(self);
                 true
             }
@@ -547,7 +541,6 @@ impl App {
                 self.record_recent_database(&opened);
                 self.update_saved_secret(&opened);
                 self.password.clear();
-                #[cfg(unix)]
                 crate::browser_bridge::start_background(self);
             }
             Err(e) => {

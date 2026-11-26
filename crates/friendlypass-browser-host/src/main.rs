@@ -14,6 +14,7 @@ mod dispatch;
 mod errors;
 mod framing;
 mod install_cli;
+mod socket;
 mod status;
 mod writer;
 
@@ -38,7 +39,7 @@ fn main() {
 
     let socket_path = friendlypass_browser::browser_server_path();
     eprintln!(
-        "{} {} (protocol {}, pid {}, app socket {})",
+        "{} {} (protocol {}, pid {}, app link {})",
         dispatch::HOST_NAME,
         dispatch::HOST_VERSION,
         dispatch::PROTOCOL_VERSION,
