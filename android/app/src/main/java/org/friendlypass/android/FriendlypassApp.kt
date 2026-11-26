@@ -9,6 +9,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.friendlypass.android.autofill.AutofillRecents
@@ -18,6 +19,7 @@ import org.friendlypass.android.storage.DatabaseStore
 import org.friendlypass.android.storage.PrefsRecentStore
 import org.friendlypass.android.storage.SafDatabaseStore
 import org.friendlypass.android.unlock.BiometricUnlock
+import org.friendlypass.android.unlock.BiometricUnlockCoordinator
 import org.friendlypass.android.vault.RustVaultRepository
 import org.friendlypass.android.vault.VaultRepository
 
@@ -42,6 +44,16 @@ class FriendlypassApp : Application() {
     lateinit var biometric: BiometricUnlock
         private set
 
+    /**
+     * Runs the post-prompt half of a biometric unlock on [appScope]: the `BiometricPrompt` callback may
+     * arrive after the unlock screen was recreated, and a composition-scoped launch would be dropped.
+     */
+    internal lateinit var biometricUnlocker: BiometricUnlockCoordinator
+        private set
+
+    /** Biometric unlock failures shown by whichever unlock screen instance is currently visible. */
+    val biometricError = MutableStateFlow<String?>(null)
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val screenOffReceiver = object : BroadcastReceiver() {
@@ -59,6 +71,7 @@ class FriendlypassApp : Application() {
         vault = RustVaultRepository(store, this)
         autoLock = AutoLockController(vault, timeoutMillis = { settings.lockTimeoutMillis })
         biometric = BiometricUnlock(this)
+        biometricUnlocker = BiometricUnlockCoordinator(appScope, vault, biometricError)
         ContextCompat.registerReceiver(
             this,
             screenOffReceiver,

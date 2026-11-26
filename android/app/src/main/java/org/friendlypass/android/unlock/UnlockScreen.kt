@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import org.friendlypass.android.FriendlypassApp
 import org.friendlypass.android.storage.SafDocuments
@@ -73,6 +74,9 @@ fun UnlockScreen(
     var keyfileName by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // Biometric failures live at app level: the prompt's result may arrive after this screen instance
+    // was recreated, and a state write into the dead composition would never be seen.
+    val biometricError by app.biometricError.collectAsStateWithLifecycle()
 
     DisposableEffect(Unit) {
         onDispose { keyfile?.fill(0) }
@@ -128,20 +132,16 @@ fun UnlockScreen(
     fun unlockWithBiometrics() {
         if (activity == null) return
         error = null
+        app.biometricUnlocker.begin()
         app.biometric.authenticate(
             activity = activity,
             db = db,
             onCredentials = { passwordChars, keyfileBytes ->
-                scope.launch {
-                    try {
-                        app.vault.unlock(passwordChars, keyfileBytes)
-                        onUnlocked(null, null)
-                    } catch (e: VaultException) {
-                        error = e.message ?: "Could not unlock the database"
-                    }
-                }
+                // Never launch on this composition's scope: after an activity recreation the callback
+                // belongs to a dead composition and the coroutine would be dropped without a trace.
+                app.biometricUnlocker.onCredentials(passwordChars, keyfileBytes)
             },
-            onError = { message -> error = message },
+            onError = { message -> app.biometricUnlocker.onError(message) },
         )
     }
 
@@ -215,10 +215,11 @@ fun UnlockScreen(
             }
         }
 
-        if (error != null) {
+        val shownError = error ?: biometricError
+        if (shownError != null) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = error!!,
+                text = shownError,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
