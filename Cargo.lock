@@ -2338,15 +2338,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "chrono",
  "core-foundation 0.10.1",
  "crypto_box",
  "friendlypass",
+ "friendlypass-passkey",
  "getrandom 0.4.3",
  "keepass",
  "libc",
+ "p256",
+ "pkcs8",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "url",
 ]
 
 [[package]]
@@ -2376,6 +2381,7 @@ dependencies = [
  "enigo",
  "friendlypass",
  "friendlypass-browser",
+ "friendlypass-passkey",
  "friendlypass-ssh-agent",
  "image",
  "keepass",

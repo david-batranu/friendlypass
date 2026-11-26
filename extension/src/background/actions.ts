@@ -22,6 +22,8 @@ import {
   buildGetTotpInner,
   buildLockDatabaseInner,
   buildGeneratePasswordInner,
+  buildPasskeysGetInner,
+  buildPasskeysRegisterInner,
   buildSetLoginInner,
   isHexUuid,
 } from "./session";
@@ -38,10 +40,14 @@ import {
   type GetLoginsResponse,
   type GetTotpResponse,
   type HexUuid,
+  type PasskeysResponse,
   type SaveLoginArgs,
   type SaveLoginResult,
   type SetLoginResponse,
 } from "../common/types";
+
+/** A passkey prompt can wait for the user for up to two minutes. */
+const PASSKEYS_REQUEST_TIMEOUT_MS = 120_000;
 
 export interface ActionContext {
   /** Live protocol session (authoritative for clientID/association/hash). */
@@ -254,6 +260,51 @@ export async function generatePassword(ctx: ActionContext): Promise<string> {
   }
   // Legacy servers return the password in `entries`.
   return typeof response.entries === "string" ? response.entries : "";
+}
+
+export interface PasskeyArgs {
+  publicKey: Record<string, unknown>;
+  origin: string;
+  groupName?: string;
+}
+
+/** `passkeys-register` (ACTIONS.md §4.12). Errors are typed protocol errors. */
+export async function passkeysRegister(
+  ctx: ActionContext,
+  args: PasskeyArgs,
+): Promise<PasskeysResponse> {
+  const keys = await ctx.session.connectionKeys();
+  return ctx.session.request<PasskeysResponse>({
+    action: KpxcAction.PASSKEYS_REGISTER,
+    requiresAssociation: true,
+    timeoutMs: PASSKEYS_REQUEST_TIMEOUT_MS,
+    buildInner: () =>
+      buildPasskeysRegisterInner({
+        publicKey: args.publicKey,
+        origin: args.origin,
+        groupName: args.groupName,
+        keys,
+      }),
+  });
+}
+
+/** `passkeys-get` (ACTIONS.md §4.12). */
+export async function passkeysGet(
+  ctx: ActionContext,
+  args: PasskeyArgs,
+): Promise<PasskeysResponse> {
+  const keys = await ctx.session.connectionKeys();
+  return ctx.session.request<PasskeysResponse>({
+    action: KpxcAction.PASSKEYS_GET,
+    requiresAssociation: true,
+    timeoutMs: PASSKEYS_REQUEST_TIMEOUT_MS,
+    buildInner: () =>
+      buildPasskeysGetInner({
+        publicKey: args.publicKey,
+        origin: args.origin,
+        keys,
+      }),
+  });
 }
 
 export async function lockDatabase(ctx: ActionContext): Promise<void> {

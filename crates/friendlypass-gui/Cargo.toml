@@ -38,6 +38,7 @@ windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Wi
 keyring = { version = "3.6", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
+friendlypass-passkey = { path = "../friendlypass-passkey" }
 accesskit = "0.25.0"
 ed25519-dalek = "3.0.0"
 egui_kittest = { version = "0.37.0", features = ["eframe", "wgpu", "snapshot"] }

@@ -76,6 +76,9 @@ describe("settings defaults", () => {
       defaultGroup: "",
       defaultGroupAlwaysAsk: false,
       debugLogging: false,
+      passkeys: false,
+      passkeysFallback: true,
+      defaultPasskeyGroup: "",
       siteExceptions: [],
     });
     expect(Object.keys(defaultSettings()).sort()).toEqual(
@@ -85,8 +88,11 @@ describe("settings defaults", () => {
         "debugLogging",
         "defaultGroup",
         "defaultGroupAlwaysAsk",
+        "defaultPasskeyGroup",
         "httpAuthAutoFill",
         "launchAppOnConnect",
+        "passkeys",
+        "passkeysFallback",
         "showFieldIcons",
         "siteExceptions",
       ].sort(),

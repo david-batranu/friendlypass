@@ -12,6 +12,9 @@ serde_json = "1"
 sha2 = "0.10"
 base64 = "0.22"
 anyhow = "1"
+url = "2"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+friendlypass-passkey = { path = "../friendlypass-passkey" }
 libc = "0.2"
 keepass = { version = "0.17.0", features = ["totp", "save_kdbx4"] }
 # URL/app matching is shared with the Android vault (`friendlypass::matching`).
@@ -25,6 +28,8 @@ core-foundation = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+pkcs8 = { version = "0.10", features = ["pem", "std"] }
 
 [[example]]
 name = "test_server"

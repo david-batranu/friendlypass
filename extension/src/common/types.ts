@@ -145,6 +145,8 @@ export const KpxcAction = {
   GET_DATABASE_GROUPS: "get-database-groups",
   LOCK_DATABASE: "lock-database",
   GENERATE_PASSWORD: "generate-password",
+  PASSKEYS_REGISTER: "passkeys-register",
+  PASSKEYS_GET: "passkeys-get",
 } as const;
 
 export type KpxcActionName = (typeof KpxcAction)[keyof typeof KpxcAction];
@@ -450,6 +452,28 @@ export interface GeneratePasswordRequest {
   requestID?: string;
 }
 
+/**
+ * Passkey options as the content script serialises them: binary values are
+ * base64url without padding, objects/arrays pass through unchanged
+ * (ACTIONS.md §4.12).
+ */
+export interface PasskeysRegisterRequest {
+  action: typeof KpxcAction.PASSKEYS_REGISTER;
+  publicKey: Record<string, unknown>;
+  origin: string;
+  groupName?: string;
+  relatedOrigins?: string[];
+  keys?: ConnectionKey[];
+}
+
+export interface PasskeysGetRequest {
+  action: typeof KpxcAction.PASSKEYS_GET;
+  publicKey: Record<string, unknown>;
+  origin: string;
+  relatedOrigins?: string[];
+  keys?: ConnectionKey[];
+}
+
 export type KpxcInnerRequest =
   | GetDatabaseHashRequest
   | AssociateRequest
@@ -459,7 +483,9 @@ export type KpxcInnerRequest =
   | GetTotpRequest
   | GetDatabaseGroupsRequest
   | LockDatabaseRequest
-  | GeneratePasswordRequest;
+  | GeneratePasswordRequest
+  | PasskeysRegisterRequest
+  | PasskeysGetRequest;
 
 // --- responses -------------------------------------------------------------
 
@@ -547,6 +573,21 @@ export interface GeneratePasswordResponse extends InnerSuccessBase {
   entries?: string;
 }
 
+/**
+ * Passkey response. `response` is a `PublicKeyCredential` JSON object on
+ * success, or `{errorCode}` for a passkey-level failure (ACTIONS.md §4.12).
+ */
+export interface PasskeysResponse extends InnerSuccessBase {
+  response:
+    | {
+        authenticatorAttachment?: string;
+        id?: string;
+        type?: string;
+        response?: Record<string, unknown>;
+      }
+    | { errorCode: number };
+}
+
 export type KpxcInnerResponse =
   | DatabaseHashResponse
   | AssociateResponse
@@ -556,7 +597,8 @@ export type KpxcInnerResponse =
   | GetTotpResponse
   | GetDatabaseGroupsResponse
   | LockDatabaseResponse
-  | GeneratePasswordResponse;
+  | GeneratePasswordResponse
+  | PasskeysResponse;
 
 // ---------------------------------------------------------------------------
 // Extension connection state machine (protocol/ACTIONS.md §6)
@@ -678,6 +720,12 @@ export interface ExtensionSettings {
   defaultGroupAlwaysAsk: boolean;
   /** Show diagnostics logging in the service worker console. */
   debugLogging: boolean;
+  /** Let this extension intercept WebAuthn passkey requests. Default false. */
+  passkeys: boolean;
+  /** If a passkey request fails, fall back to the browser's authenticator. */
+  passkeysFallback: boolean;
+  /** Group new passkey entries are saved to (empty = app default). */
+  defaultPasskeyGroup: string;
   /** Per-origin opt-outs. Default empty. */
   siteExceptions: SiteException[];
 }
@@ -860,6 +908,15 @@ export interface BackgroundRequestMap {
   "popup.open": {
     args: void;
     result: { opened: boolean; via: "action" | "fallback" };
+  };
+  /** Passkey registration/assertion through the app (ACTIONS.md §4.12). */
+  "passkeys.register": {
+    args: { publicKey: Record<string, unknown>; origin: string; groupName?: string };
+    result: PasskeysResponse;
+  };
+  "passkeys.get": {
+    args: { publicKey: Record<string, unknown>; origin: string };
+    result: PasskeysResponse;
   };
 }
 

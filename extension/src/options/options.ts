@@ -63,7 +63,9 @@ type BooleanSettingKey =
   | "defaultGroupAlwaysAsk"
   | "httpAuthAutoFill"
   | "launchAppOnConnect"
-  | "debugLogging";
+  | "debugLogging"
+  | "passkeys"
+  | "passkeysFallback";
 
 // ---------------------------------------------------------------------------
 // State
@@ -133,8 +135,31 @@ bindCheckbox("opt-defaultGroupAlwaysAsk", "defaultGroupAlwaysAsk");
 bindCheckbox("opt-httpAuthAutoFill", "httpAuthAutoFill");
 bindCheckbox("opt-launchAppOnConnect", "launchAppOnConnect");
 bindCheckbox("opt-debugLogging", "debugLogging");
+bindCheckbox("opt-passkeys", "passkeys");
+bindCheckbox("opt-passkeysFallback", "passkeysFallback");
 
 const defaultGroupInput = byId<HTMLInputElement>("opt-defaultGroup");
+const defaultPasskeyGroupInput = byId<HTMLInputElement>("opt-defaultPasskeyGroup");
+let defaultPasskeyGroupTimer: number | null = null;
+
+function scheduleDefaultPasskeyGroupSave(): void {
+  if (defaultPasskeyGroupTimer !== null) {
+    window.clearTimeout(defaultPasskeyGroupTimer);
+  }
+  defaultPasskeyGroupTimer = window.setTimeout(() => {
+    defaultPasskeyGroupTimer = null;
+    void saveSettings({ defaultPasskeyGroup: defaultPasskeyGroupInput.value });
+  }, 350);
+}
+
+defaultPasskeyGroupInput.addEventListener("input", scheduleDefaultPasskeyGroupSave);
+defaultPasskeyGroupInput.addEventListener("change", () => {
+  if (defaultPasskeyGroupTimer !== null) {
+    window.clearTimeout(defaultPasskeyGroupTimer);
+    defaultPasskeyGroupTimer = null;
+  }
+  void saveSettings({ defaultPasskeyGroup: defaultPasskeyGroupInput.value });
+});
 let defaultGroupTimer: number | null = null;
 
 function scheduleDefaultGroupSave(): void {
@@ -475,7 +500,10 @@ function applySettings(settings: ExtensionSettings): void {
   byId<HTMLInputElement>("opt-httpAuthAutoFill").checked = settings.httpAuthAutoFill;
   byId<HTMLInputElement>("opt-launchAppOnConnect").checked = settings.launchAppOnConnect;
   byId<HTMLInputElement>("opt-debugLogging").checked = settings.debugLogging;
+  byId<HTMLInputElement>("opt-passkeys").checked = settings.passkeys;
+  byId<HTMLInputElement>("opt-passkeysFallback").checked = settings.passkeysFallback;
   defaultGroupInput.value = settings.defaultGroup;
+  defaultPasskeyGroupInput.value = settings.defaultPasskeyGroup;
   renderExceptions();
 }
 

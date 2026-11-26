@@ -51,6 +51,9 @@ export const DEFAULT_SETTINGS: Readonly<ExtensionSettings> = Object.freeze({
   defaultGroup: "",
   defaultGroupAlwaysAsk: false,
   debugLogging: false,
+  passkeys: false,
+  passkeysFallback: true,
+  defaultPasskeyGroup: "",
   siteExceptions: Object.freeze([]) as unknown as SiteException[],
 });
 
@@ -63,6 +66,8 @@ const BOOLEAN_SETTINGS = [
   "launchAppOnConnect",
   "defaultGroupAlwaysAsk",
   "debugLogging",
+  "passkeys",
+  "passkeysFallback",
 ] as const;
 
 /** Upper bound on the number of stored site exceptions. */
@@ -352,6 +357,12 @@ export function sanitiseSettings(value: unknown): ExtensionSettings {
       .trim()
       .slice(0, MAX_DEFAULT_GROUP_LENGTH);
   }
+  if (typeof value["defaultPasskeyGroup"] === "string") {
+    settings.defaultPasskeyGroup = value["defaultPasskeyGroup"]
+      .replace(/[\u0000-\u001f\u007f]/g, "")
+      .trim()
+      .slice(0, MAX_DEFAULT_GROUP_LENGTH);
+  }
   settings.siteExceptions = sanitiseSiteExceptions(value["siteExceptions"]);
   return settings;
 }
@@ -372,6 +383,9 @@ function validSettingsPatch(partial: Partial<ExtensionSettings>): Partial<Extens
   }
   if (typeof partial.defaultGroup === "string") {
     out.defaultGroup = partial.defaultGroup;
+  }
+  if (typeof partial.defaultPasskeyGroup === "string") {
+    out.defaultPasskeyGroup = partial.defaultPasskeyGroup;
   }
   if (Array.isArray(partial.siteExceptions)) {
     out.siteExceptions = partial.siteExceptions;

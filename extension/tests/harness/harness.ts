@@ -57,6 +57,8 @@ export interface HarnessOptions {
   appMode?: "mock" | "rust";
   /** Built `test_server` example; defaults to target/debug/examples/test_server. */
   testServerBinary?: string;
+  /** Create a fresh writable KDBX4 instead of copying `fixtures/sample4.kdbx`. */
+  createRustDatabase?: boolean;
   /**
    * Start the Node app mock with `associate` denied (error 6). Only meaningful
    * with `appMode: "mock"`; the real Rust test server auto-approves.
@@ -157,6 +159,7 @@ export class Harness {
             process.env.FP_TEST_SERVER_BINARY ??
             path.join(REPO_ROOT, "target/debug/examples/test_server"),
           fixtureDatabase: path.join(REPO_ROOT, "fixtures/sample4.kdbx"),
+          createDatabase: options.createRustDatabase === true,
           root: paths.root,
           logPath: path.join(paths.root, "app-server.jsonl"),
         });

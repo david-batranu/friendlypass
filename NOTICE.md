@@ -66,7 +66,9 @@ GPL-3.0-only.
 friendlypass is a modified version of the two projects above, not a verbatim
 copy. The modifications are: the C++ KeePassXC core and GUI were reimplemented
 in Rust; the browser extension was rebranded and its background/session layer
-rewritten, while its content scripts were ported to TypeScript; the KeePassXC
+rewritten, while its content scripts were ported to TypeScript; WebAuthn
+passkeys (registration, sign-in, `KPEX_PASSKEY_*` storage, page interception)
+were ported from KeePassXC 2.8 and keepassxc-browser; the KeePassXC
 database icon set is not used (entries show website favicons or letter
 avatars instead); and the application artwork was replaced with friendlypass
 branding. The upstream snapshots used are
@@ -82,6 +84,9 @@ detailed modification history is recorded in this repository's commits.
 | `fixtures/keepass1.kdb` | `keepassxc/tests/data/basic.kdb` | GPL-2 or GPL-3 | Byte-identical (MD5 `72abd1f353ca233f2f02278d36a05a17`); renamed for its KDB/AES content. |
 | `fixtures/keepass1-twofish.kdb` | `keepassxc/tests/data/Twofish.kdb` | GPL-2 or GPL-3 | Byte-identical (MD5 `c11b93fe3510dea2d6c3193531c974d2`); renamed for its KDB/Twofish content. |
 | `extension/src/content/*.ts` (see above) | `keepassxc-browser/content/*.js` | GPL-3.0 | Copyright KeePassXC Team; ported functions and constants, marked "ported from upstream" in each file header. |
+| `extension/src/content/passkeys.ts`, `extension/src/content/passkeys-page.ts` | `keepassxc-browser/content/passkeys-inject.js`, `passkeys-utils.js`, `passkeys.js` | GPL-3.0 | Copyright KeePassXC Team; ported WebAuthn option serialisation, page wrapper and fallback rules. |
+| `crates/friendlypass-browser/src/passkeys.rs`, `passkey_write.rs` | `keepassxc/src/browser/BrowserPasskeys*`, `PasskeyUtils.*`, `BrowserService.cpp` | GPL-2 or GPL-3 | Behavioural port of credential creation/assertion, RP/origin validation and the `KPEX_PASSKEY_*` entry write. |
+| `crates/friendlypass-passkey/` | `keepassxc/src/browser/BrowserPasskeys*`, `PasskeyUtils.*`, `BrowserCbor*` | GPL-2 or GPL-3 | Behavioural port of the WebAuthn authenticator and KeePassXC field format (also used by the Android app). |
 | `vendor/challenge-response/` | `challenge-response` crate (vendored patch; see `Cargo.toml`) | MIT OR Apache-2.0 | Copyright (c) 2016 Flavio Oliveira, (c) 2018 Pierre-Étienne Meunier, (c) 2024 Ashutosh Varma, (c) 2024 louib. The vendored `LICENSE` file carries the dual-licence statement; friendlypass relies on the MIT option. |
 | `fixtures/sample4.kdbx`, `sample4_argon2.kdbx`, `sample4_keyfile.kdbx`, `sample4.keyx` | none — generated for this project with `keepassxc-cli` 2.8.0 | GPL-3.0-only (project test data) | Documented in `README.md` ("Fixture passwords"); not copied from upstream. |
 | `extension/src/icons/*.png`, `crates/friendlypass-gui/assets/app-icon.png`, `packaging/linux/icons/**`, `packaging/macos/AppIcon.icns`, `branding/**` | none — friendlypass artwork | GPL-3.0-only (project artwork) | All derived from `branding/friendlypass-logo.jpg` by `branding/generate-icons.sh`. |

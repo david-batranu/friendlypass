@@ -36,6 +36,12 @@ export interface ContentSettings {
   defaultGroup: string;
   defaultGroupAlwaysAsk: boolean;
   debugLogging: boolean;
+  /** Intercept WebAuthn passkey requests. */
+  passkeys: boolean;
+  /** Fall back to the browser's authenticator on a passkey failure. */
+  passkeysFallback: boolean;
+  /** Group new passkey entries are saved to (empty = app default). */
+  defaultPasskeyGroup: string;
   siteExceptions: SiteException[];
 }
 
@@ -48,6 +54,9 @@ export const DEFAULT_CONTENT_SETTINGS: Readonly<ContentSettings> = Object.freeze
   defaultGroup: "",
   defaultGroupAlwaysAsk: false,
   debugLogging: false,
+  passkeys: false,
+  passkeysFallback: true,
+  defaultPasskeyGroup: "",
   siteExceptions: [],
 });
 
@@ -141,6 +150,12 @@ export function normaliseSettings(raw: unknown): ContentSettings {
       defaults.defaultGroupAlwaysAsk,
     ),
     debugLogging: bool(source["debugLogging"], defaults.debugLogging),
+    passkeys: bool(source["passkeys"], defaults.passkeys),
+    passkeysFallback: bool(source["passkeysFallback"], defaults.passkeysFallback),
+    defaultPasskeyGroup: text(
+      source["defaultPasskeyGroup"],
+      defaults.defaultPasskeyGroup,
+    ),
     siteExceptions: sanitiseSiteExceptions(source["siteExceptions"]),
   };
 }

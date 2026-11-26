@@ -24,6 +24,8 @@ export interface RustAppOptions {
   binaryPath: string;
   /** Fixture database copied into the temp root before the first start. */
   fixtureDatabase: string;
+  /** Ask `test_server` to create a fresh KDBX4 instead of copying the fixture. */
+  createDatabase?: boolean;
   /** Working root for the copied DB and the associations sidecar. */
   root: string;
   /** JSONL lifecycle log (listening/client-count). */
@@ -47,7 +49,9 @@ export class RustApp {
     this.logPath = options.logPath;
     this.databasePath = path.join(options.root, "app-db.kdbx");
     this.associationsPath = path.join(options.root, "app-associations.json");
-    if (!fs.existsSync(this.databasePath)) {
+    if (options.createDatabase === true) {
+      fs.rmSync(this.databasePath, { force: true });
+    } else if (!fs.existsSync(this.databasePath)) {
       fs.copyFileSync(options.fixtureDatabase, this.databasePath);
     }
   }
@@ -176,6 +180,26 @@ export class RustApp {
       if (Date.now() > deadline) {
         throw new Error(
           `test_server did not persist an association within ${timeoutMs} ms`,
+        );
+      }
+      await sleep(25);
+    }
+  }
+
+  /**
+   * Wait until a lifecycle event (for example `database-saved`, emitted after
+   * the served snapshot has been refreshed) appears at least `count` times.
+   */
+  async waitForEvent(event: string, count = 1, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const seen = this.lifecycle().filter((entry) => entry.event === event).length;
+      if (seen >= count) return;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `test_server never emitted ${event} ${count} time(s); events: ${JSON.stringify(
+            this.lifecycle().slice(-10),
+          )}`,
         );
       }
       await sleep(25);

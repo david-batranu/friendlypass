@@ -75,6 +75,8 @@ import {
   type NativeSuccessFrame,
   type PairingState,
   type ProtocolError,
+  type PasskeysGetRequest,
+  type PasskeysRegisterRequest,
   type SetLoginRequest,
   type TestAssociateRequest,
   type AssociationRecord,
@@ -432,6 +434,42 @@ export function buildGetDatabaseGroupsInner(): GetDatabaseGroupsRequest {
 
 export function buildLockDatabaseInner(): LockDatabaseRequest {
   return { action: KpxcAction.LOCK_DATABASE };
+}
+
+export function buildPasskeysRegisterInner(input: {
+  publicKey: Record<string, unknown>;
+  origin: string;
+  groupName?: string;
+  relatedOrigins?: string[];
+  keys?: ConnectionKey[];
+}): PasskeysRegisterRequest {
+  return {
+    action: KpxcAction.PASSKEYS_REGISTER,
+    publicKey: input.publicKey,
+    origin: input.origin,
+    ...(input.relatedOrigins !== undefined
+      ? { relatedOrigins: input.relatedOrigins }
+      : {}),
+    ...(input.groupName !== undefined ? { groupName: input.groupName } : {}),
+    ...(input.keys !== undefined ? { keys: input.keys } : {}),
+  };
+}
+
+export function buildPasskeysGetInner(input: {
+  publicKey: Record<string, unknown>;
+  origin: string;
+  relatedOrigins?: string[];
+  keys?: ConnectionKey[];
+}): PasskeysGetRequest {
+  return {
+    action: KpxcAction.PASSKEYS_GET,
+    publicKey: input.publicKey,
+    origin: input.origin,
+    ...(input.relatedOrigins !== undefined
+      ? { relatedOrigins: input.relatedOrigins }
+      : {}),
+    ...(input.keys !== undefined ? { keys: input.keys } : {}),
+  };
 }
 
 export function buildGeneratePasswordInner(input: {

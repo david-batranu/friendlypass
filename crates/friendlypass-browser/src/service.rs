@@ -15,7 +15,10 @@ use base64::Engine;
 use friendlypass::matching::{self, MatchCandidate, MatchTarget};
 use serde_json::{json, Value};
 
-use crate::bridge::{AssociationRequest, BrowserBridge, DenyAllBridge, SetLoginRequest};
+use crate::bridge::{
+    AssociationRequest, BrowserBridge, DenyAllBridge, PasskeyCandidate, PasskeyGetRequest,
+    PasskeyRegisterRequest, SetLoginRequest,
+};
 use crate::crypto::{increment_nonce, open, seal, KeyPair};
 use crate::peer::PeerInfo;
 use crate::protocol::*;
@@ -66,6 +69,18 @@ impl GroupNode {
     }
 }
 
+/// One stored passkey as the server needs it for matching (no key material).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PasskeyRecord {
+    /// Entry UUID (dashless 32-hex).
+    pub uuid: String,
+    pub title: String,
+    pub username: String,
+    pub rp_id: String,
+    pub credential_id: Vec<u8>,
+    pub user_handle: Vec<u8>,
+}
+
 /// What the Browser Integration dialog shows for one association.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AssociationInfo {
@@ -87,6 +102,10 @@ pub struct ServiceState {
     pub locked: bool,
     pub entries: Vec<CredentialEntry>,
     pub groups: Vec<GroupNode>,
+    /// Stored passkeys, for RP/credential matching (no private keys).
+    pub passkeys: Vec<PasskeyRecord>,
+    /// KeePassXC's "Allow localhost with passkeys" browser setting.
+    pub allow_localhost_passkeys: bool,
     /// association id -> browser identification public key (Base64).
     pub associations: HashMap<String, String>,
     /// Per-association display metadata captured while the browser is
@@ -324,6 +343,8 @@ impl ClientSession {
             ACTION_GET_TOTP => self.get_totp(state, &inner),
             ACTION_GET_DATABASE_GROUPS => self.get_database_groups(state),
             ACTION_GENERATE_PASSWORD => self.generate_password(state),
+            ACTION_PASSKEYS_REGISTER => self.passkeys_register(state, &inner),
+            ACTION_PASSKEYS_GET => self.passkeys_get(state, &inner),
             ACTION_LOCK_DATABASE => Self::lock_database(state),
             _ => Err(ERROR_INCORRECT_ACTION),
         };
@@ -746,6 +767,126 @@ impl ClientSession {
         ])
     }
 
+    /// `passkeys-register` (ACTIONS.md §4.12). Validation errors that KeePassXC
+    /// produces inside `BrowserService::showPasskeysRegisterPrompt` are nested
+    /// in the inner `{"response":{"errorCode":…}}`; empty `publicKey` and a
+    /// disallowed origin stay outer errors, exactly like `BrowserAction`.
+    fn passkeys_register(
+        &self,
+        state: &SharedState,
+        inner: &Value,
+    ) -> Result<Vec<(&'static str, Value)>, i32> {
+        if !self.associated || !self.still_associated(state) {
+            return Err(ERROR_ASSOCIATION_FAILED);
+        }
+        let Some(public_key) = inner.get("publicKey").filter(|value| is_nonempty_object(value))
+        else {
+            return Err(ERROR_PASSKEYS_EMPTY_PUBLIC_KEY);
+        };
+        let origin = get_str(inner, "origin").unwrap_or_default();
+        let (bridge, allow_localhost, records) = {
+            let guard = lock_state(state);
+            (
+                guard.bridge(),
+                guard.allow_localhost_passkeys,
+                guard.passkeys.clone(),
+            )
+        };
+        if !crate::passkeys::origin_allowed(&origin, allow_localhost) {
+            return Err(ERROR_PASSKEYS_INVALID_URL_PROVIDED);
+        }
+
+        let prepared = match crate::passkeys::prepare_registration(public_key, &origin) {
+            Ok(prepared) => prepared,
+            Err(code) => return Ok(passkey_error_response(code)),
+        };
+
+        if records.iter().any(|record| {
+            record.rp_id == prepared.rp_id
+                && prepared
+                    .exclude_credentials
+                    .iter()
+                    .any(|excluded| excluded == &record.credential_id)
+        }) {
+            return Ok(passkey_error_response(
+                ERROR_PASSKEYS_CREDENTIAL_IS_EXCLUDED,
+            ));
+        }
+
+        let existing: Vec<PasskeyCandidate> = records
+            .iter()
+            .filter(|record| {
+                record.rp_id == prepared.rp_id && record.user_handle == prepared.user_handle
+            })
+            .map(candidate)
+            .collect();
+
+        let request = PasskeyRegisterRequest {
+            acting_id: get_str(inner, "id").unwrap_or_else(|| self.client_id.clone()),
+            prepared,
+            origin,
+            group_name: get_str(inner, "groupName").unwrap_or_default(),
+            existing,
+        };
+        match bridge.passkeys_register(&request) {
+            Ok(credential) => Ok(vec![("response", credential)]),
+            Err(code) => Ok(passkey_error_response(code)),
+        }
+    }
+
+    /// `passkeys-get` (ACTIONS.md §4.12).
+    fn passkeys_get(
+        &self,
+        state: &SharedState,
+        inner: &Value,
+    ) -> Result<Vec<(&'static str, Value)>, i32> {
+        if !self.associated || !self.still_associated(state) {
+            return Err(ERROR_ASSOCIATION_FAILED);
+        }
+        let Some(public_key) = inner.get("publicKey").filter(|value| is_nonempty_object(value))
+        else {
+            return Err(ERROR_PASSKEYS_EMPTY_PUBLIC_KEY);
+        };
+        let origin = get_str(inner, "origin").unwrap_or_default();
+        let (bridge, allow_localhost, records) = {
+            let guard = lock_state(state);
+            (
+                guard.bridge(),
+                guard.allow_localhost_passkeys,
+                guard.passkeys.clone(),
+            )
+        };
+        if !crate::passkeys::origin_allowed(&origin, allow_localhost) {
+            return Err(ERROR_PASSKEYS_INVALID_URL_PROVIDED);
+        }
+
+        let prepared = match crate::passkeys::prepare_assertion(public_key, &origin) {
+            Ok(prepared) => prepared,
+            Err(code) => return Ok(passkey_error_response(code)),
+        };
+        let candidates: Vec<PasskeyCandidate> = records
+            .iter()
+            .filter(|record| record.rp_id == prepared.rp_id)
+            .filter(|record| {
+                prepared.matches_credential(&record.credential_id, !record.user_handle.is_empty())
+            })
+            .map(candidate)
+            .collect();
+        if candidates.is_empty() {
+            return Ok(passkey_error_response(ERROR_NO_LOGINS_FOUND));
+        }
+
+        let request = PasskeyGetRequest {
+            acting_id: get_str(inner, "id").unwrap_or_else(|| self.client_id.clone()),
+            prepared,
+            candidates,
+        };
+        match bridge.passkeys_get(&request) {
+            Ok(credential) => Ok(vec![("response", credential)]),
+            Err(code) => Ok(passkey_error_response(code)),
+        }
+    }
+
     fn lock_database(state: &SharedState) -> Result<Vec<(&'static str, Value)>, i32> {
         let (bridge, push) = {
             let guard = lock_state(state);
@@ -799,6 +940,25 @@ fn keys_authorised(state: &ServiceState, inner: &Value) -> bool {
                 .get(id)
                 .is_some_and(|stored| stored == key)
     })
+}
+
+fn is_nonempty_object(value: &Value) -> bool {
+    matches!(value, Value::Object(map) if !map.is_empty())
+}
+
+/// The inner `{"response": {"errorCode": …}}` shape KeePassXC returns for
+/// passkey failures (`BrowserService::getPasskeyError`).
+fn passkey_error_response(code: i32) -> Vec<(&'static str, Value)> {
+    vec![("response", crate::passkeys::passkey_error(code))]
+}
+
+fn candidate(record: &PasskeyRecord) -> PasskeyCandidate {
+    PasskeyCandidate {
+        uuid: record.uuid.clone(),
+        title: record.title.clone(),
+        username: record.username.clone(),
+        credential_id: friendlypass_passkey::b64url_encode(&record.credential_id),
+    }
 }
 
 fn entry_to_json(entry: &CredentialEntry) -> Value {

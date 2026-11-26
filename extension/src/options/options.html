@@ -72,6 +72,46 @@
         </div>
       </section>
 
+      <section class="fp-card group" aria-labelledby="group-passkeys">
+        <h2 id="group-passkeys">Passkeys</h2>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-passkeys">Use friendlypass for passkeys</label>
+            <p class="fp-muted">
+              Create and sign in with WebAuthn passkeys stored in your database.
+            </p>
+          </div>
+          <input id="opt-passkeys" type="checkbox" />
+        </div>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-passkeysFallback">Fall back to the browser's authenticator</label>
+            <p class="fp-muted">
+              When friendlypass cannot answer (locked, cancelled, no matching
+              passkey), let the browser handle the request instead.
+            </p>
+          </div>
+          <input id="opt-passkeysFallback" type="checkbox" />
+        </div>
+
+        <div class="setting">
+          <div class="setting-copy">
+            <label for="opt-defaultPasskeyGroup">Default group for saved passkeys</label>
+            <p class="fp-muted">Leave empty to use the group friendlypass suggests.</p>
+          </div>
+          <input
+            class="fp-input setting-input"
+            id="opt-defaultPasskeyGroup"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="KeePassXC-Browser Passkeys"
+          />
+        </div>
+      </section>
+
       <section class="fp-card group" aria-labelledby="group-http-auth">
         <h2 id="group-http-auth">HTTP authentication</h2>
 

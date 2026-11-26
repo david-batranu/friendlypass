@@ -78,11 +78,36 @@ fn main() -> anyhow::Result<()> {
     };
 
     let key = DatabaseKey::new().with_password(&password);
+    if !db_path.exists() {
+        // `--db` may name a fresh database (the e2e passkey page needs a
+        // writable KDBX4 file; the sample fixtures are KDBX3).
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut database = Database::new();
+        {
+            let mut root = database.root_mut();
+            let mut entry = root.add_entry();
+            entry.set_unprotected("Title", "Sample Entry");
+            entry.set_unprotected("UserName", "user@example.com");
+            entry.set_protected("Password", "password");
+            entry.set_unprotected("URL", "https://example.com");
+        }
+        let file = std::fs::File::create(&db_path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        database.save(&mut writer, key.clone())?;
+        use std::io::Write as _;
+        writer.flush()?;
+    }
     let database = friendlypass::saveutil::open(&db_path, key.clone())?;
     let database: Arc<Mutex<Database>> = Arc::new(Mutex::new(database));
     let mut state = {
         let guard = database.lock().expect("test database");
-        snapshot_from_database(&guard)
+        let mut state = snapshot_from_database(&guard);
+        // The e2e passkeys page runs on http://localhost; KeePassXC's setting
+        // is an explicit opt-in, and the headless server opts in for tests.
+        state.allow_localhost_passkeys = true;
+        state
     };
     // Auto-approve associations and persist every `set-login` with the same
     // entry-writing code path the GUI uses, then save the KDBX file.
@@ -155,6 +180,7 @@ fn main() -> anyhow::Result<()> {
                 let mut guard = lock_state(&state);
                 guard.entries = snapshot.entries;
                 guard.groups = snapshot.groups;
+                guard.passkeys = snapshot.passkeys;
                 guard.db_hash = snapshot.db_hash;
                 guard.snapshot_signature = snapshot.snapshot_signature;
                 guard.push.send_changed(None);

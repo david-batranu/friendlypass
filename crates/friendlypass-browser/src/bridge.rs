@@ -9,9 +9,11 @@
 //! thread but must eventually return. The GUI bridge enforces deadlines; the
 //! server treats a missing/denied answer as error 6 and never waits forever.
 
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::protocol::BrowserIdentity;
+use crate::passkeys::{PreparedAssertion, PreparedRegistration};
+use crate::protocol::{BrowserIdentity, ERROR_PASSKEYS_REQUEST_CANCELED};
 
 /// A request to approve (or name) a new browser association.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -112,6 +114,69 @@ pub trait BrowserBridge: Send + Sync {
     /// Returns `false` when the write was declined or failed; the server then
     /// reports the operation result through the inner `error` field.
     fn apply_set_login(&self, request: &SetLoginRequest) -> bool;
+
+    /// Confirm and register a passkey (`passkeys-register`, §4.12).
+    ///
+    /// Returns the `publicKeyCredential` object KeePassXC puts in the inner
+    /// `response`, or a KeePassXC passkeys error code (20–33) that the server
+    /// nests in `{"response":{"errorCode":…}}`. The default refuses with 22,
+    /// so a bridge without a GUI behaves like a cancelled prompt.
+    fn passkeys_register(&self, request: &PasskeyRegisterRequest) -> Result<Value, i32> {
+        let _ = request;
+        Err(ERROR_PASSKEYS_REQUEST_CANCELED)
+    }
+
+    /// Pick/confirm an entry and produce an assertion (`passkeys-get`, §4.12).
+    ///
+    /// Same return shape as [`BrowserBridge::passkeys_register`].
+    fn passkeys_get(&self, request: &PasskeyGetRequest) -> Result<Value, i32> {
+        let _ = request;
+        Err(ERROR_PASSKEYS_REQUEST_CANCELED)
+    }
+}
+
+/// A request to register a passkey (`passkeys-register`, §4.12).
+///
+/// The request carries only what the page asked for plus the validated
+/// options; the private key is created inside the bridge and never leaves the
+/// database write.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasskeyRegisterRequest {
+    /// The association that asked (for "who is this" in the dialog).
+    pub acting_id: String,
+    pub prepared: PreparedRegistration,
+    /// Page origin the extension reported, stored as the entry URL.
+    pub origin: String,
+    /// Group name the extension asked for (`groupName`), empty = app default.
+    pub group_name: String,
+    /// Existing passkeys with the same RP id and user handle. KeePassXC offers
+    /// them for an in-place update; an empty list means "create a new entry".
+    pub existing: Vec<PasskeyCandidate>,
+}
+
+/// One stored passkey that matches a sign-in or registration request.
+///
+/// `uuid` names the entry; `credential_id` is base64url for diagnostics and
+/// matching only. The private key stays in the database and is read by the
+/// bridge when an assertion is built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasskeyCandidate {
+    /// Entry UUID (dashless 32-hex).
+    pub uuid: String,
+    pub title: String,
+    pub username: String,
+    /// base64url credential id.
+    pub credential_id: String,
+}
+
+/// A request to sign in with a passkey (`passkeys-get`, §4.12).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasskeyGetRequest {
+    pub acting_id: String,
+    /// The validated assertion request (RP id, allow list, client data).
+    pub prepared: PreparedAssertion,
+    /// Matching entries. Never empty: the server returns error 15 first.
+    pub candidates: Vec<PasskeyCandidate>,
 }
 
 /// A bridge that refuses every interactive operation. Used as the default so a
