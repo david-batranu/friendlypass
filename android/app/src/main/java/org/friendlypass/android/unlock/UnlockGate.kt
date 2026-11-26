@@ -10,6 +10,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.friendlypass.android.FriendlypassApp
+import org.friendlypass.android.MainActivity
 import org.friendlypass.android.ui.DatabasePickerScreen
 import org.friendlypass.android.vault.model.DatabaseRef
 import org.friendlypass.android.vault.model.VaultState
@@ -38,13 +39,19 @@ fun UnlockGate(onUnlocked: () -> Unit, onCancel: () -> Unit) {
     val activity = context as? FragmentActivity
     var biometricOffer by remember { mutableStateOf<BiometricOffer?>(null) }
 
+    // The enable offer belongs to the app's own screen ("...before the browser opens"). Autofill and
+    // credential flows must answer the framework immediately; a modal nag there would stall the fill.
+    val offersBiometric = activity is MainActivity
+
     when (val current = state) {
         VaultState.NoDatabase -> DatabasePickerScreen(onCancel = onCancel)
 
         is VaultState.Locked -> UnlockScreen(
             db = current.db,
             onUnlocked = { password, keyfile ->
-                if (activity != null && app.biometric.canAuthenticate() && !app.biometric.isEnabled(current.db)) {
+                if (offersBiometric && activity != null && app.biometric.canAuthenticate() &&
+                    !app.biometric.isEnabled(current.db)
+                ) {
                     biometricOffer = BiometricOffer(current.db, password, keyfile)
                 } else {
                     password?.fill('\u0000')

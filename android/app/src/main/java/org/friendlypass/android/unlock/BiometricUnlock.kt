@@ -2,6 +2,7 @@ package org.friendlypass.android.unlock
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
@@ -81,8 +82,10 @@ class BiometricUnlock(context: Context) {
                         val blob = Base64.getEncoder().encodeToString(authenticated.iv) + ":" +
                             Base64.getEncoder().encodeToString(ciphertext)
                         prefs.edit().putString(blobKey(db), blob).apply()
+                        Log.d(TAG, "enable: blob stored")
                         onEnabled()
                     } catch (e: Exception) {
+                        Log.d(TAG, "enable: encrypt failed: ${e::class.java.simpleName}")
                         deleteKey(hash)
                         onError("Could not store the biometric key")
                     } finally {
@@ -137,10 +140,12 @@ class BiometricUnlock(context: Context) {
             }
         } catch (e: KeyPermanentlyInvalidatedException) {
             // New enrolment (or the key was otherwise invalidated): forget the blob, use the password.
+            Log.d(TAG, "authenticate: key permanently invalidated (new biometric enrolment)")
             disable(db)
             onError("Biometric unlock was reset because your biometrics changed. Enter your password.")
             return
         } catch (e: Exception) {
+            Log.d(TAG, "authenticate: decrypt cipher init failed: ${e::class.java.simpleName}")
             disable(db)
             onError("Biometric unlock is no longer available. Enter your password.")
             return
@@ -151,12 +156,14 @@ class BiometricUnlock(context: Context) {
             title = "Unlock database",
             subtitle = db.displayName,
             onSuccess = { authenticated ->
+                Log.d(TAG, "unlock: prompt succeeded")
                 try {
                     val plaintext = authenticated.doFinal(ciphertext)
                     val credentials = decodeCredentials(plaintext)
                     plaintext.fill(0)
                     onCredentials(credentials.first, credentials.second)
                 } catch (e: Exception) {
+                    Log.d(TAG, "unlock: decrypt failed: ${e::class.java.simpleName}")
                     disable(db)
                     onError("Biometric unlock is no longer available. Enter your password.")
                 }
@@ -187,6 +194,7 @@ class BiometricUnlock(context: Context) {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     val authenticated = result.cryptoObject?.cipher
                     if (authenticated == null) {
+                        Log.d(TAG, "prompt succeeded but returned no cipher")
                         onError("Biometric authentication returned no cipher")
                     } else {
                         onSuccess(authenticated)
@@ -194,6 +202,7 @@ class BiometricUnlock(context: Context) {
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    Log.d(TAG, "prompt error code=$errorCode")
                     onError(errString.toString())
                 }
             },
@@ -206,8 +215,10 @@ class BiometricUnlock(context: Context) {
             .setConfirmationRequired(false)
             .build()
         try {
+            Log.d(TAG, "prompt: starting")
             prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
         } catch (e: Exception) {
+            Log.d(TAG, "prompt: could not start: ${e::class.java.simpleName}")
             onError("Biometric prompt is not available")
         }
     }
@@ -292,5 +303,6 @@ class BiometricUnlock(context: Context) {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val PREFS_NAME = "friendlypass.biometric"
         private const val KEY_ALIAS_PREFIX = "friendlypass.bio."
+        private const val TAG = "friendlypass.biometric"
     }
 }
