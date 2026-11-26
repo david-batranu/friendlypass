@@ -35,7 +35,7 @@ against KeePassXC 2.8.0 (`verify.sh`).
 | `vendor/challenge-response/` | Local platform shim for `challenge_response` 0.5.46 (its nusb backend does not build on macOS). | `Cargo.toml`, `src/` |
 | `docs/` | Screenshots referenced by the README. | `screenshots/details.png` |
 | `scripts/` | Browser e2e entry point. | `e2e.sh` |
-| `.github/` | CI for the extension + browser crates + installer. | `workflows/browser-ext.yml` |
+| `.github/` | CI for the extension + browser crates + installer. `release.yml` builds every platform and the extension on a `vX.Y.Z` tag and publishes one GitHub Release (`workflow_dispatch` = dry run). | `workflows/browser-ext.yml`, `workflows/release.yml` |
 | `verify.sh` | Cross-verification of Rust ↔ real KeePassXC 2.8.0 (release build; slow). | whole file |
 
 Also at the root: `LICENSE` (GPL-3.0-only), `NOTICE.md` (upstream provenance),
@@ -101,6 +101,9 @@ from `extension/`.
 | macOS app bundle | `packaging/macos/package.sh` | slow, not run (release build) |
 | Full KeePassXC cross-check | `./verify.sh` | slow, not run (release build + KeePassXC) |
 | Clean clippy (browser + host) | `cargo clippy -p friendlypass-browser -p friendlypass-browser-host --all-targets --no-deps -- -D warnings` | ~5 s warm |
+| Release workflow lint | `actionlint .github/workflows/release.yml` | ~1 s |
+| Windows build (CI) | `cargo build --release -p friendlypass -p friendlypass-gui` on `windows-latest` | GitHub Actions only |
+| Full release build | push tag `vX.Y.Z` or run the `release` workflow manually | GitHub Actions only |
 
 `friendlypass-gui` and the core `friendlypass` crate have pre-existing clippy
 findings. Do not add new ones, and do not run `-D warnings` on them expecting a
@@ -183,6 +186,15 @@ Debug-only extras and test hooks (never in release):
   association keys or decrypted frames in logs/stdout. The host's stdout is a
   protocol channel; use stderr for diagnostics. Test fixture passwords are the
   public values documented in `README.md`.
+- **Windows is Unix-feature-free:** browser integration (`friendlypass-browser`'s
+  app socket + peer checks, the `friendlypass-browser-host` binary) and the SSH
+  agent need Unix domain sockets. The browser crate and the SSH agent get
+  `server_windows.rs` stubs so the GUI builds and starts without those features;
+  their dialogs say "not available on Windows yet". The native-messaging host
+  binary itself stays Unix-only and is not built or shipped on Windows. A
+  named-pipe port is a known gap. `cargo check --target x86_64-pc-windows-msvc -p
+  friendlypass -p friendlypass-gui` is blocked by the C build scripts here (no
+  Windows SDK); the `windows-latest` CI job is the final proof.
 - **Licence:** GPL-3.0-only (`LICENSE`, workspace `license`). When copying
   third-party code or assets, record provenance and licences in `NOTICE.md` and
   `LICENSES/`; the extension and app bundle must keep the notices.

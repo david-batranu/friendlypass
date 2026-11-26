@@ -62,7 +62,10 @@ Release builds carry `#![cfg_attr(not(debug_assertions), windows_subsystem =
 it opens no console. Debug builds keep the console for diagnostics.
 
 Browser integration is currently macOS/Linux only (the manifest directory
-layout is Unix-specific); the app says so if the platform is unsupported.
+layout and the app socket are Unix-specific), and the SSH agent serves over a
+Unix domain socket as well. On Windows the GUI starts without either feature;
+the Settings menu explains "not available on Windows yet" instead of showing
+unusable controls. A named-pipe transport is a known follow-up.
 
 ## Linux
 
@@ -114,6 +117,71 @@ install -Dm644 packaging/linux/icons/hicolor/256x256/apps/friendlypass.png \
 The window itself also carries the icon (`brand::window_icon` in
 `crates/friendlypass-gui/src/brand.rs`), which is what most window managers
 use when the app is started from a terminal.
+
+## Releases
+
+`.github/workflows/release.yml` builds every artifact and publishes one GitHub
+Release. Push a version tag:
+
+```sh
+# 1. All four version fields must agree (the workflow's `version` job fails
+#    otherwise): Cargo.toml [workspace.package].version, extension/package.json,
+#    extension/src/manifest.json, android/app/build.gradle.kts appVersionName.
+# 2. Tag and push.
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release is titled `friendlypass 0.1.0` and contains:
+
+| File | Contents |
+|---|---|
+| `friendlypass-0.1.0-macos-arm64.zip` | `friendlypass.app` (GUI + browser host) for Apple silicon, ad-hoc signed, not notarized |
+| `friendlypass-0.1.0-macos-x86_64.zip` | the same bundle for Intel Macs |
+| `friendlypass-0.1.0-linux-x86_64.tar.gz` | the `packaging/linux/package.sh release` tarball (GUI + browser host) |
+| `friendlypass-0.1.0-linux-aarch64.tar.gz` | the same tarball for arm64 |
+| `friendlypass-0.1.0-windows-x86_64.zip` | `friendlypass-gui.exe`, `friendlypass.exe` (CLI), `LICENSE` and `NOTICE.md` |
+| `friendlypass-0.1.0-android.apk` | signed release APK |
+| `friendlypass-chrome-0.1.0.zip` | unpacked Chrome extension build |
+| `friendlypass-firefox-0.1.0.zip` | unpacked Firefox extension build |
+| `SHA256SUMS` | checksums of the files above |
+
+Run **Actions → release → Run workflow** (`workflow_dispatch`) for a dry run:
+the same builds run and are uploaded as run artifacts, but no release is
+created. Android is unsigned in that mode unless the secrets below are set.
+
+### Android signing secrets
+
+The release APK is signed from four repository secrets; no keystore or
+password is ever committed to the repository.
+
+| Secret | Value |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | base64 of the `.jks`/`.p12` keystore |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | key alias |
+| `ANDROID_KEY_PASSWORD` | key password |
+
+A tag build requires all four (it fails otherwise) and verifies the APK with
+`apksigner verify --print-certs` before upload. A `workflow_dispatch` run with
+no secrets builds an unsigned APK and prints a warning; a partially configured
+set is an error in both modes. The decoded keystore's format (JKS or PKCS#12)
+is detected automatically.
+
+Create the base64 value and store the keystore somewhere safe outside the
+repository:
+
+```sh
+# macOS
+base64 -i release.jks | pbcopy
+# Linux
+base64 -w0 release.jks
+```
+
+`versionName` comes from `appVersionName` in
+`android/app/build.gradle.kts`; `versionCode` is derived from it as
+`major*10000 + minor*100 + patch` (0.1.0 → 100), so it grows with every
+release.
 
 ## Icon artwork
 

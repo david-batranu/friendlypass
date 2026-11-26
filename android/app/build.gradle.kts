@@ -7,6 +7,53 @@ plugins {
 }
 
 // ---------------------------------------------------------------------------
+// App version
+//
+// `appVersionName` is the single source of truth for the Android version; the
+// release workflow checks it against the git tag, the Cargo workspace version
+// and the extension manifests. `appVersionCode` is derived from it so it grows
+// monotonically with every release (0.1.0 -> 100) instead of being a
+// hand-maintained constant.
+// ---------------------------------------------------------------------------
+
+val appVersionName = "0.1.0"
+
+val appVersionCode: Int = run {
+    val parts = appVersionName.split('.')
+    require(parts.size == 3 && parts.all { it.toIntOrNull() != null }) {
+        "appVersionName must be MAJOR.MINOR.PATCH, got '$appVersionName'"
+    }
+    parts[0].toInt() * 10_000 + parts[1].toInt() * 100 + parts[2].toInt()
+}
+
+// ---------------------------------------------------------------------------
+// Release signing
+//
+// Signing is opt-in through environment variables so local builds and dry runs
+// keep producing an unsigned APK exactly as before:
+//
+//   FP_ANDROID_KEYSTORE          path to the .jks/.p12 keystore
+//   FP_ANDROID_KEYSTORE_PASSWORD
+//   FP_ANDROID_KEY_ALIAS
+//   FP_ANDROID_KEY_PASSWORD
+//
+// CI decodes the keystore from repository secrets into a temporary file. Never
+// commit a keystore or a password.
+// ---------------------------------------------------------------------------
+
+val releaseKeystorePath = System.getenv("FP_ANDROID_KEYSTORE")?.takeIf { it.isNotBlank() }
+
+// AGP needs the right KeyStore implementation: PKCS#12 (JDK's default) or the
+// legacy JKS format. The workflow keeps the decoded file's real extension.
+val releaseKeystoreType = when {
+    releaseKeystorePath == null -> null
+    releaseKeystorePath.endsWith(".p12", ignoreCase = true) ||
+        releaseKeystorePath.endsWith(".pfx", ignoreCase = true) ||
+        releaseKeystorePath.endsWith(".pkcs12", ignoreCase = true) -> "PKCS12"
+    else -> "JKS"
+}
+
+// ---------------------------------------------------------------------------
 // Rust / UniFFI wiring
 //
 // The workspace Cargo.toml is one level above this Gradle project. `cargo ndk`
@@ -140,10 +187,28 @@ android {
         applicationId = "org.friendlypass.android"
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (releaseKeystorePath != null) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storeType = releaseKeystoreType
+                storePassword = requireNotNull(System.getenv("FP_ANDROID_KEYSTORE_PASSWORD")) {
+                    "FP_ANDROID_KEYSTORE_PASSWORD must be set when FP_ANDROID_KEYSTORE is set"
+                }
+                keyAlias = requireNotNull(System.getenv("FP_ANDROID_KEY_ALIAS")) {
+                    "FP_ANDROID_KEY_ALIAS must be set when FP_ANDROID_KEYSTORE is set"
+                }
+                keyPassword = requireNotNull(System.getenv("FP_ANDROID_KEY_PASSWORD")) {
+                    "FP_ANDROID_KEY_PASSWORD must be set when FP_ANDROID_KEYSTORE is set"
+                }
+            }
+        }
     }
 
     buildFeatures {
@@ -156,6 +221,9 @@ android {
             // R8: the release build is the only place the shrinker + UniFFI/JNA keep rules are exercised.
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseKeystorePath != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

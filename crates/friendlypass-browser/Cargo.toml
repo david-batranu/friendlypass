@@ -15,11 +15,14 @@ anyhow = "1"
 url = "2"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 friendlypass-passkey = { path = "../friendlypass-passkey" }
-libc = "0.2"
 keepass = { version = "0.17.0", features = ["totp", "save_kdbx4"] }
 # URL/app matching is shared with the Android vault (`friendlypass::matching`).
 # The browser only needs the dependency-free part of the core crate.
 friendlypass = { path = "../friendlypass", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+# Peer verification: getsockopt(SOL_LOCAL/SO_PEERCRED) on the app socket.
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # App-side peer verification: cdhash comparison needs CoreFoundation types

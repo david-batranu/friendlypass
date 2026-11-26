@@ -15,7 +15,9 @@
 //! unsigned peer, Security framework error — yields `trusted: false`. This
 //! module never panics.
 
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +37,7 @@ pub struct PeerInfo {
 ///
 /// `expected_host` of `None` never trusts anything: the auto-approve path is
 /// opt-in and requires a configured host path.
+#[cfg(unix)]
 pub fn verify_peer(stream: &UnixStream, expected_host: Option<&Path>) -> PeerInfo {
     let pid = peer_pid(stream);
     let executable = pid.and_then(executable_for_pid);
@@ -49,12 +52,21 @@ pub fn verify_peer(stream: &UnixStream, expected_host: Option<&Path>) -> PeerInf
     }
 }
 
+/// Windows has no app socket yet, so no peer can ever be trusted. The generic
+/// parameter keeps the signature usable from code that will gain a Windows
+/// transport later.
+#[cfg(not(unix))]
+pub fn verify_peer<S>(_stream: &S, _expected_host: Option<&Path>) -> PeerInfo {
+    PeerInfo::default()
+}
+
 /// The pid of the process at the other end of `stream`.
+#[cfg(unix)]
 fn peer_pid(stream: &UnixStream) -> Option<i32> {
     peer_pid_impl(stream.as_raw_fd())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(unix, target_os = "macos"))]
 fn peer_pid_impl(fd: std::os::unix::io::RawFd) -> Option<i32> {
     let mut pid: libc::pid_t = 0;
     let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
@@ -71,7 +83,7 @@ fn peer_pid_impl(fd: std::os::unix::io::RawFd) -> Option<i32> {
     (result == 0 && pid > 0).then_some(pid)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(unix, target_os = "linux"))]
 fn peer_pid_impl(fd: std::os::unix::io::RawFd) -> Option<i32> {
     // `struct ucred` is not exported for every libc target; its layout is
     // stable across Linux architectures.
@@ -102,17 +114,18 @@ fn peer_pid_impl(fd: std::os::unix::io::RawFd) -> Option<i32> {
     (result == 0 && cred.pid > 0).then_some(cred.pid)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 fn peer_pid_impl(_fd: std::os::unix::io::RawFd) -> Option<i32> {
     None
 }
 
 /// The executable path of `pid`.
+#[cfg(unix)]
 fn executable_for_pid(pid: i32) -> Option<PathBuf> {
     executable_for_pid_impl(pid)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(unix, target_os = "macos"))]
 fn executable_for_pid_impl(pid: i32) -> Option<PathBuf> {
     let mut buffer = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     // SAFETY: the buffer is valid for `buffer.len()` writable bytes.
@@ -130,19 +143,20 @@ fn executable_for_pid_impl(pid: i32) -> Option<PathBuf> {
     (!text.is_empty()).then(|| PathBuf::from(text))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(unix, target_os = "linux"))]
 fn executable_for_pid_impl(pid: i32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/exe"))
         .ok()
         .filter(|path| !path.as_os_str().is_empty())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 fn executable_for_pid_impl(_pid: i32) -> Option<PathBuf> {
     None
 }
 
 /// Canonical path equality plus, on macOS, a code-identity comparison.
+#[cfg(unix)]
 fn verify_identity(pid: Option<i32>, expected: &Path, actual: &Path) -> bool {
     if !same_file(expected, actual) {
         return false;
@@ -161,6 +175,7 @@ fn verify_identity(pid: Option<i32>, expected: &Path, actual: &Path) -> bool {
 
 /// Compare two paths after resolving symlinks and `..`; a missing path never
 /// matches.
+#[cfg(unix)]
 fn same_file(left: &Path, right: &Path) -> bool {
     let Ok(left) = std::fs::canonicalize(left) else {
         return false;
@@ -292,7 +307,7 @@ fn signing_information(code: *mut std::ffi::c_void) -> Option<Vec<u8>> {
     cdhash
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
