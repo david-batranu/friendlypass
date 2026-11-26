@@ -59,12 +59,11 @@ key in `extension/src/manifest.json`, and the installer's default id
 temporary unpacked build loaded without the key). Firefox uses
 `browser_specific_settings.gecko.id` (`friendlypass@friendlypass.org`).
 
-The private key lives outside the repository at
-`/Users/david/Work/Projects/friendlypass/secrets/extension-key.pem` (never
-commit or ship it). Recompute the id with:
+The private key is kept outside the repository and is never committed or
+shipped. Recompute the id from your copy of it (`path/to/extension-key.pem`) with:
 
 ```sh
-openssl pkey -in secrets/extension-key.pem -pubout -outform DER |
+openssl pkey -in path/to/extension-key.pem -pubout -outform DER |
   openssl dgst -sha256 -binary | xxd -p -c 256 | cut -c1-32 |
   tr '0-9a-f' 'a-p'
 ```

@@ -1,7 +1,7 @@
 # AGENTS.md — friendlypass project map
 
 This file is the fast path into the repository. Read it before exploring; a
-task brief normally names the files you may change, and this map tells you what
+task description normally names the files you may change, and this map tells you what
 everything else is and how to prove a change.
 
 ## What the project is
@@ -39,8 +39,7 @@ cross-checked against KeePassXC 2.8.0 (`verify.sh`).
 | `verify.sh` | Cross-verification of Rust ↔ real KeePassXC 2.8.0 (release build; slow). | whole file |
 
 Also at the root: `LICENSE` (GPL-3.0-only), `NOTICE.md` (upstream provenance),
-`opencode.json` (agent permissions, including denied git commands), `Cargo.toml`
-(workspace + local `challenge_response` patch).
+and `Cargo.toml` (workspace + local `challenge_response` patch).
 
 ## Browser integration architecture
 
@@ -131,12 +130,25 @@ Run every `./gradlew` command from `android/`. The Rust half is cross-compiled
 by `cargo-ndk`; `uniffi-bindgen` generates the Kotlin bindings into
 `app/build/generated/uniffi` before `compileDebugKotlin`.
 
+Requirements (set these up for your own machine; nothing here is fixed to one
+layout):
+
+- A rustup toolchain with the Android targets (`aarch64-linux-android`,
+  `x86_64-linux-android`) and `cargo-ndk`, with `cargo` and `cargo-ndk` on `PATH`
+  (`$HOME/.cargo/bin` is the usual location).
+- `ANDROID_HOME` = your Android SDK root (Android Studio default:
+  `~/Library/Android/sdk` on macOS, `~/Android/Sdk` on Linux).
+- `ANDROID_NDK_HOME` = the NDK `28.2.13676358` inside that SDK
+  (`$ANDROID_HOME/ndk/28.2.13676358`).
+- `JAVA_HOME` = a JDK 21 installation.
+- Optional: `CARGO_TARGET_DIR` set to a directory outside the repository to keep
+  Android build objects separate from the desktop `target/`.
+
 ```sh
-export PATH=/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH
-export ANDROID_HOME=$HOME/Library/Android/sdk
+export ANDROID_HOME=/path/to/Android/sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
-export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
-export CARGO_TARGET_DIR=/Users/david/Work/Projects/friendlypass/wt/_target-android
+export JAVA_HOME=/path/to/jdk-21
+export CARGO_TARGET_DIR=/path/to/android-target   # optional
 ```
 
 | Area | Command | Notes |
@@ -149,7 +161,8 @@ export CARGO_TARGET_DIR=/Users/david/Work/Projects/friendlypass/wt/_target-andro
 
 Emulators: use the assigned port only and always pass `-s emulator-<port>` to
 adb; run read-only so instances do not collide:
-`$ANDROID_HOME/emulator/emulator -avd Pixel_9a -read-only -no-window -no-audio -no-snapshot-save -port <port>`
+`$ANDROID_HOME/emulator/emulator -avd <your-avd> -read-only -no-window -no-audio -no-snapshot-save -port <port>`
+(use an AVD of your choice; API 36 is recommended)
 (then `adb -s emulator-<port> wait-for-device` and poll
 `getprop sys.boot_completed`). Kill only your own with
 `adb -s emulator-<port> emu kill`.
@@ -180,8 +193,9 @@ Debug-only extras and test hooks (never in release):
 - **GUI snapshot in worktrees:** `cargo test -p friendlypass-gui` fails
   `wrong_password_shows_error` because `tests/snapshots/gui_unlock_error.png`
   renders the absolute fixture path, which differs in
-  `wt/agents-md`. It passes in the primary checkout. Do not run
-  `UPDATE_SNAPSHOTS=1` from a worktree; run the remaining GUI tests with
+  a checkout at a different path. It passes in the checkout the snapshot was
+  rendered in. Do not run `UPDATE_SNAPSHOTS=1` from a checkout at a different
+  path; run the remaining GUI tests with
   `cargo test -p friendlypass-gui -- --skip wrong_password_shows_error` when
   reporting.
 - **`e2e_proxy` and the real KeePassXC:** `crates/friendlypass-browser/tests/e2e_proxy.rs`
@@ -221,9 +235,9 @@ Debug-only extras and test hooks (never in release):
 
 ## Working rules
 
-- Never commit, push, merge, rebase or tag. `opencode.json` denies those
-  commands; the manager commits. Do not create or move worktrees.
-- Stay inside the files named by your brief. Read anything, edit only your
+- Do not commit, push, merge, rebase or tag unless the person coordinating the
+  change asks for it.
+- Stay inside the files named by the task. Read anything, edit only your
   scope; if a shared/frozen file (`protocol/*`, generated fixtures, build
   plumbing) must change, stop and report it.
 - Do not weaken, delete or skip tests, and do not raise timeouts to hide a

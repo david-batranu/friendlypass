@@ -65,14 +65,17 @@ val releaseKeystoreType = when {
 //   sdk.dir=...            (Android SDK, already used by AGP)
 //   rust.cargoDir=...      directory containing `cargo` and `cargo-ndk`
 //
-// PATH still includes the rustup shim and ~/.cargo/bin as fallbacks. The Rust
+// RUSTUP_BIN_DIR (environment variable, optional) names a directory holding the
+// rustup-managed `cargo`. Without it, PATH and ~/.cargo/bin are searched. The Rust
 // source tree is declared as task input, so an unchanged checkout skips both
 // tasks and the Gradle build is up to date.
 // ---------------------------------------------------------------------------
 
 val repoRoot: File = rootProject.projectDir.parentFile
 val homeDir: File = File(System.getProperty("user.home"))
-val rustupBinDir = File("/opt/homebrew/opt/rustup/bin")
+val rustupBinDir: File? = System.getenv("RUSTUP_BIN_DIR")
+    ?.takeIf { it.isNotBlank() }
+    ?.let(::File)
 val defaultCargoBinDir = File(homeDir, ".cargo/bin")
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
@@ -92,6 +95,10 @@ val rustPath = rustPathDirs.joinToString(File.pathSeparator)
 val cargoExecutable = listOfNotNull(configuredCargoDir, rustupBinDir, defaultCargoBinDir)
     .map { File(it, "cargo") }
     .firstOrNull { it.canExecute() }
+    ?: (System.getenv("PATH") ?: "").split(File.pathSeparator)
+        .filter { it.isNotBlank() }
+        .map { File(it, "cargo") }
+        .firstOrNull { it.canExecute() }
     ?: File("cargo")
 val cargoTargetDir = System.getenv("CARGO_TARGET_DIR")
 val rustProfileIsRelease = gradle.startParameter.taskNames.any {

@@ -3,16 +3,18 @@
 Read this before writing code. It is frozen: implement exactly your part. If something here is impossible, implement
 the closest working thing and explain it in your report; do not silently change the shapes below.
 
-## Environment (every agent)
+## Environment
+Set up as described in `AGENTS.md` ("Android"): rustup with the Android targets and `cargo-ndk` on `PATH`,
+`ANDROID_HOME` = your SDK, `ANDROID_NDK_HOME` = NDK 28.2.13676358 inside it, `JAVA_HOME` = a JDK 21.
 ```sh
-export PATH=/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH      # rustup toolchain with Android targets + cargo-ndk
-export ANDROID_HOME=$HOME/Library/Android/sdk
+export PATH="$HOME/.cargo/bin:$PATH"
+export ANDROID_HOME=/path/to/Android/sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
-export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
+export JAVA_HOME=/path/to/jdk-21
 ```
 Rust targets installed: aarch64-linux-android, x86_64-linux-android. SDK platforms 34/35/36, build-tools 36.1.0.
-AVDs: `Pixel_9a` (API 36, Play image), `api30`. Android app id / Kotlin root package: `org.friendlypass.android`.
-Disk is limited (~20 GB free): no release builds unless needed, never `cargo clean` / delete caches outside your worktree.
+Emulator: any AVD you create (API 36 recommended). Android app id / Kotlin root package: `org.friendlypass.android`.
+Disk space is limited: no release builds unless needed, never `cargo clean` / delete caches outside your checkout.
 
 ## Layout
 ```
@@ -87,8 +89,8 @@ pub enum VaultError { InvalidCredentials, Corrupt { msg: String }, Unsupported {
 `Vault` uses interior mutability (`Mutex`). Passwords/keyfiles are zeroized after use; nothing is logged.
 
 ## Rust: `friendlypass-passkey` (no keepass dependency; works on a field map)
-Storage = KeePassXC format exactly (verify against ../keepassxc/src/browser/BrowserPasskeys.cpp, BrowserService.cpp,
-PasskeyUtils.cpp, core/EntryAttributes.cpp): KPEX_PASSKEY_USERNAME, KPEX_PASSKEY_CREDENTIAL_ID (base64url, protected),
+Storage = KeePassXC format exactly (verify against KeePassXC's src/browser/BrowserPasskeys.cpp, src/browser/BrowserService.cpp,
+src/browser/PasskeyUtils.cpp and src/core/EntryAttributes.cpp in the upstream KeePassXC repository): KPEX_PASSKEY_USERNAME, KPEX_PASSKEY_CREDENTIAL_ID (base64url, protected),
 KPEX_PASSKEY_PRIVATE_KEY_PEM (PKCS#8 PEM, protected), KPEX_PASSKEY_RELYING_PARTY, KPEX_PASSKEY_USER_HANDLE
 (base64url, protected), KPEX_PASSKEY_FLAG_BE="1", KPEX_PASSKEY_FLAG_BS="1". Signature counter always 0, as KeePassXC.
 AAGUID: all zeros. Attestation format "none".

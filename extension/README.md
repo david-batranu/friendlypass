@@ -83,8 +83,8 @@ Firefox build has manifest errors.
 `src/manifest.json` pins an RSA public `key`; Chrome therefore derives the same
 32-character id for every load path: `pfdmagadklmhbghfipamhfbphcljdkbi`. The
 installer defaults to that id, so `installer/install.sh` needs no
-`--extension-id`. The private key lives outside the repository at
-`../secrets/extension-key.pem` and must never be committed or shipped.
+`--extension-id`. The private key is kept outside the repository and must never be committed
+or shipped.
 `browser_specific_settings.gecko.id` (`friendlypass@friendlypass.org`) is the
 Firefox equivalent; Chrome warns about the unknown key but loads the extension
 (the e2e harness proves it).
