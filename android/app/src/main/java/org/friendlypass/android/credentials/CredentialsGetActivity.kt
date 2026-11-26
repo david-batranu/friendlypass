@@ -39,12 +39,15 @@ class CredentialsGetActivity : FragmentActivity() {
 
         setContent {
             FriendlypassTheme {
-                CredentialGate(onUnlocked = { CredentialSession.markUnlocked() }) {
-                    if (!handled) {
-                        handled = true
-                        handle()
-                    }
-                }
+                CredentialGate(
+                    onUnlocked = { CredentialSession.markUnlocked() },
+                    onReady = {
+                        if (!handled) {
+                            handled = true
+                            handle()
+                        }
+                    },
+                )
             }
         }
     }
@@ -111,11 +114,14 @@ class CredentialsGetActivity : FragmentActivity() {
                 this,
                 GetCredentialUnknownException("missing public key option"),
             )
-        val options = runCatching { RequestJson.parseGet(option.requestJson) }.getOrNull()
+        val options = runCatching { RequestJson.parseGet(option.requestJson) }
+            .onFailure { CredentialLog.failure("parse-get-options", it) }
+            .getOrNull()
             ?: return CredentialResults.finishWithGetException(
                 this,
                 GetCredentialUnknownException("invalid public key request"),
             )
+        CredentialLog.optionsShape("get", option.requestJson)
         val rpId = options.rpId
             ?: return CredentialResults.finishWithGetException(
                 this,
@@ -139,7 +145,8 @@ class CredentialsGetActivity : FragmentActivity() {
         val passkey = try {
             app.vault.passkeysForRp(rpId, options.allowCredentialIds)
                 .firstOrNull { it.entryUuid == uuid }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            CredentialLog.failure("passkeys-for-rp", error)
             null
         } ?: return CredentialResults.finishWithGetException(
             this,
@@ -176,7 +183,8 @@ class CredentialsGetActivity : FragmentActivity() {
                         ),
                     ),
                 )
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                CredentialLog.failure("assert-passkey", error)
                 CredentialResults.finishWithGetException(
                     this,
                     NoCredentialException("passkey assertion failed"),

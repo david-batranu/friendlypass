@@ -16,7 +16,11 @@ import org.friendlypass.android.vault.model.VaultState
  * so an entry selected while the vault auto-locked still works: the user unlocks and the flow continues.
  */
 @Composable
-internal fun CredentialGate(onUnlocked: () -> Unit, onReady: () -> Unit) {
+internal fun CredentialGate(
+    onUnlocked: () -> Unit,
+    onReady: () -> Unit,
+    content: @Composable () -> Unit = {},
+) {
     val context = LocalContext.current
     val app = context.applicationContext as FriendlypassApp
     var unlocked by remember {
@@ -25,6 +29,7 @@ internal fun CredentialGate(onUnlocked: () -> Unit, onReady: () -> Unit) {
 
     if (unlocked) {
         LaunchedEffect(Unit) { onReady() }
+        content()
     } else {
         UnlockGate(
             onUnlocked = {

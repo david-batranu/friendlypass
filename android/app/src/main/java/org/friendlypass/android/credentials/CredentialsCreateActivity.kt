@@ -3,16 +3,35 @@ package org.friendlypass.android.credentials
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.credentials.CreatePasswordRequest
 import androidx.credentials.CreatePasswordResponse
 import androidx.credentials.CreatePublicKeyCredentialRequest
 import androidx.credentials.CreatePublicKeyCredentialResponse
 import androidx.credentials.exceptions.CreateCredentialCancellationException
+import androidx.credentials.exceptions.CreateCredentialException
 import androidx.credentials.exceptions.CreateCredentialUnknownException
 import androidx.credentials.provider.PendingIntentHandler
 import androidx.credentials.provider.ProviderCreateCredentialRequest
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.friendlypass.android.BuildConfig
 import org.friendlypass.android.FriendlypassApp
@@ -29,6 +48,10 @@ class CredentialsCreateActivity : FragmentActivity() {
     private val app: FriendlypassApp get() = application as FriendlypassApp
     private var handled = false
 
+    /** Non-null while the UI should show progress or a final error instead of a blank screen. */
+    private var status by mutableStateOf<String?>(null)
+    private var failed by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!BuildConfig.DEBUG) {
@@ -38,11 +61,16 @@ class CredentialsCreateActivity : FragmentActivity() {
 
         setContent {
             FriendlypassTheme {
-                CredentialGate(onUnlocked = { CredentialSession.markUnlocked() }) {
-                    if (!handled) {
-                        handled = true
-                        handle()
-                    }
+                CredentialGate(
+                    onUnlocked = { CredentialSession.markUnlocked() },
+                    onReady = {
+                        if (!handled) {
+                            handled = true
+                            handle()
+                        }
+                    },
+                ) {
+                    CredentialStatus(status, failed)
                 }
             }
         }
@@ -63,15 +91,16 @@ class CredentialsCreateActivity : FragmentActivity() {
         request: ProviderCreateCredentialRequest,
         calling: CreatePasswordRequest,
     ) {
-        val origin = OriginInfoResolver.resolve(this, request.callingAppInfo)
-        val web = OriginPolicy.isWebOrigin(origin.origin)
-        val title = if (web) {
-            OriginPolicy.hostOf(origin.origin!!) ?: origin.packageName
-        } else {
-            origin.packageName
-        }
+        status = "Saving password…"
         lifecycleScope.launch {
             try {
+                val origin = OriginInfoResolver.resolve(this@CredentialsCreateActivity, request.callingAppInfo)
+                val web = OriginPolicy.isWebOrigin(origin.origin)
+                val title = if (web) {
+                    OriginPolicy.hostOf(origin.origin!!) ?: origin.packageName
+                } else {
+                    origin.packageName
+                }
                 app.vault.addLogin(
                     NewLogin(
                         title = title,
@@ -82,11 +111,9 @@ class CredentialsCreateActivity : FragmentActivity() {
                     ),
                 )
                 CredentialResults.finishWithCreateResponse(this@CredentialsCreateActivity, CreatePasswordResponse())
-            } catch (_: Exception) {
-                CredentialResults.finishWithCreateException(
-                    this@CredentialsCreateActivity,
-                    CreateCredentialUnknownException("could not save the password"),
-                )
+            } catch (error: Exception) {
+                CredentialLog.failure("save-password", error)
+                finishWithError(CreateCredentialUnknownException("could not save the password"), error)
             }
         }
     }
@@ -95,38 +122,48 @@ class CredentialsCreateActivity : FragmentActivity() {
         request: ProviderCreateCredentialRequest,
         calling: CreatePublicKeyCredentialRequest,
     ) {
-        val options = runCatching { RequestJson.parseCreate(calling.requestJson) }.getOrNull()
-            ?: return CredentialResults.finishWithCreateException(
-                this,
-                CreateCredentialUnknownException("invalid passkey request"),
-            )
-        val origin = OriginInfoResolver.resolve(this, request.callingAppInfo)
-        val allowed = OriginPolicy.isPasskeyRpAllowed(
-            rpId = options.rpId,
-            origin = origin.origin,
-            privileged = origin.isPrivileged,
-            callingPackage = origin.packageName,
-            isDebugBuild = origin.isDebugBuild,
-            entryHasAndroidApp = runCatching { app.vault.matchApp(options.rpId).isNotEmpty() }.getOrDefault(false),
-        )
-        if (!allowed) {
-            return CredentialResults.finishWithCreateException(
-                this,
-                CreateCredentialCancellationException("origin is not allowed for this relying party"),
-            )
-        }
-
+        status = "Registering passkey…"
+        CredentialLog.optionsShape("create", calling.requestJson)
         lifecycleScope.launch {
+            var step = "parse-create-options"
             try {
+                val options = RequestJson.parseCreate(calling.requestJson)
+                step = "resolve-origin"
+                val origin = OriginInfoResolver.resolve(this@CredentialsCreateActivity, request.callingAppInfo)
+                step = "origin-check"
+                val allowed = OriginPolicy.isPasskeyRpAllowed(
+                    rpId = options.rpId,
+                    origin = origin.origin,
+                    privileged = origin.isPrivileged,
+                    callingPackage = origin.packageName,
+                    isDebugBuild = origin.isDebugBuild,
+                    entryHasAndroidApp = runCatching { app.vault.matchApp(options.rpId).isNotEmpty() }
+                        .getOrDefault(false),
+                )
+                if (!allowed) {
+                    CredentialLog.warning(
+                        "origin-check",
+                        "rpId=\"${options.rpId}\" rejected for package=\"${origin.packageName}\" " +
+                            "privileged=${origin.isPrivileged} webOrigin=${OriginPolicy.isWebOrigin(origin.origin)}",
+                    )
+                    return@launch CredentialResults.finishWithCreateException(
+                        this@CredentialsCreateActivity,
+                        CreateCredentialCancellationException("origin is not allowed for this relying party"),
+                    )
+                }
+
+                step = "exclude-credentials"
                 if (options.excludeCredentialIds.isNotEmpty() &&
                     app.vault.passkeysForRp(options.rpId, options.excludeCredentialIds).isNotEmpty()
                 ) {
-                    CredentialResults.finishWithCreateException(
+                    return@launch CredentialResults.finishWithCreateException(
                         this@CredentialsCreateActivity,
                         CreateCredentialCancellationException("a passkey for this account already exists"),
                     )
-                    return@launch
                 }
+
+                step = "register-passkey"
+                status = "Registering passkey for ${options.rpId}…"
                 val registration = app.vault.registerPasskey(
                     PasskeyCreateRequest(
                         rpId = options.rpId,
@@ -138,6 +175,8 @@ class CredentialsCreateActivity : FragmentActivity() {
                         excludeCredentialIds = options.excludeCredentialIds,
                     ),
                 )
+
+                step = "client-data-json"
                 val clientDataJson = if (calling.clientDataHash == null) {
                     CredentialJson.clientDataJson(
                         type = CredentialJson.TYPE_CREATE,
@@ -149,23 +188,68 @@ class CredentialsCreateActivity : FragmentActivity() {
                 } else {
                     null
                 }
-                CredentialResults.finishWithCreateResponse(
-                    this@CredentialsCreateActivity,
-                    CreatePublicKeyCredentialResponse(
-                        CredentialJson.registration(
-                            credentialId = registration.credentialId,
-                            clientDataJson = clientDataJson,
-                            attestationObject = registration.attestationObject,
-                            authenticatorData = registration.authenticatorData,
-                            publicKeySpkiDer = registration.publicKeySpkiDer,
-                            publicKeyAlgorithm = registration.algorithm,
-                        ),
+
+                step = "build-response"
+                val response = CreatePublicKeyCredentialResponse(
+                    CredentialJson.registration(
+                        credentialId = registration.credentialId,
+                        clientDataJson = clientDataJson,
+                        attestationObject = registration.attestationObject,
+                        authenticatorData = registration.authenticatorData,
+                        publicKeySpkiDer = registration.publicKeySpkiDer,
+                        publicKeyAlgorithm = registration.algorithm,
                     ),
                 )
-            } catch (_: Exception) {
-                CredentialResults.finishWithCreateException(
-                    this@CredentialsCreateActivity,
-                    CreateCredentialUnknownException("could not register the passkey"),
+
+                step = "deliver-response"
+                CredentialResults.finishWithCreateResponse(this@CredentialsCreateActivity, response)
+            } catch (error: Exception) {
+                CredentialLog.failure(step, error)
+                finishWithError(CreateCredentialUnknownException("could not register the passkey"), error)
+            }
+        }
+    }
+
+    /** Shows a short, useful error before answering the caller with [exception]. */
+    private fun finishWithError(exception: CreateCredentialException, cause: Throwable? = null) {
+        // VaultException messages are contract-defined and secret-free (for example "Could not save X: …").
+        val detail = (cause as? org.friendlypass.android.vault.model.VaultException)
+            ?.message
+            ?.takeIf { it.isNotBlank() }
+        val headline = exception.errorMessage?.toString().orEmpty().ifBlank {
+            "Could not complete the request"
+        }
+        failed = true
+        status = if (detail == null) headline else "$headline\n$detail"
+        lifecycleScope.launch {
+            delay(ERROR_VISIBLE_MS)
+            CredentialResults.finishWithCreateException(this@CredentialsCreateActivity, exception)
+        }
+    }
+
+    companion object {
+        private const val ERROR_VISIBLE_MS = 1_200L
+    }
+}
+
+/** Progress/error surface: never leave the credential sheet showing a blank white activity. */
+@Composable
+private fun CredentialStatus(status: String?, failed: Boolean) {
+    val text = status ?: return
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                if (!failed) {
+                    CircularProgressIndicator()
+                }
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
                 )
             }
         }

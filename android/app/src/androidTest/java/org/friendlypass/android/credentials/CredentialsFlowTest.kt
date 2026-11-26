@@ -153,6 +153,76 @@ class CredentialsFlowTest {
     }
 
     @Test
+    fun realWorldPasskeysIoRequestShapeRegistersAndSignsIn() {
+        launchCredtest()
+
+        // Creation options copied from what Chrome sent to passkeys.io on an API 37 emulator (see
+        // RealWorldRequestTest): attestation direct, residentKey required, ten algorithms, 16-byte user id.
+        click(By.text("CREATE REAL PASSKEY"))
+        assertNotNull(
+            "the system sheet did not ask to create a passkey",
+            device.wait(Until.findObject(By.textContains("Create passkey to sign in")), 15_000),
+        )
+        assertNotNull(
+            "the sheet did not show the passkeys.io username from the real request",
+            device.wait(Until.findObject(By.text("fp-real-shape@example.com")), 10_000),
+        )
+        if (device.wait(Until.hasObject(By.text("Save another way")), 3_000)) {
+            click(By.text("Save another way"))
+            assertNotNull(
+                "the provider picker did not list friendlypass",
+                device.wait(Until.findObject(By.text("friendlypass")), 10_000),
+            )
+            click(By.text("friendlypass"))
+            device.waitForIdle()
+        }
+        click(By.text("Continue"))
+        assertTrue(
+            "credtest did not report a successful registration with the real request shape",
+            waitForUiText("\"publicKey\"", timeoutMs = 30_000),
+        )
+
+        val afterCreate = reopen()
+        try {
+            val passkeys = afterCreate.allEntries().filter { it.hasPasskey }
+            assertEquals("exactly one passkey entry must be stored", 1, passkeys.size)
+            val detail = afterCreate.entry(passkeys.single().uuid)
+            assertEquals("www.passkeys.io", detail.summary.title)
+            assertEquals("fp-real-shape@example.com", detail.summary.username)
+            val fields = detail.customFields.associate { it.name to it.value }
+            for (name in PASSKEY_FIELDS) {
+                assertTrue("stored KDBX is missing $name", fields.containsKey(name))
+            }
+            assertEquals("www.passkeys.io", fields["KPEX_PASSKEY_RELYING_PARTY"])
+            assertEquals("1", fields["KPEX_PASSKEY_FLAG_BE"])
+            assertEquals("1", fields["KPEX_PASSKEY_FLAG_BS"])
+            assertEquals(
+                "the real request's 16-byte user id must be stored verbatim",
+                16,
+                java.util.Base64.getUrlDecoder().decode(fields["KPEX_PASSKEY_USER_HANDLE"]).size,
+            )
+        } finally {
+            afterCreate.destroy()
+        }
+
+        // Sign-in for the same relying party: the sheet lists the entry by rp id, and credtest verifies the
+        // ES256 signature against the public key it captured from the registration response.
+        click(By.text("SIGN IN WITH PASSKEY"))
+        assertNotNull(
+            "the system sheet did not offer the stored passkeys.io passkey",
+            device.wait(Until.findObject(By.text("www.passkeys.io")), 20_000),
+        )
+        click(By.text("www.passkeys.io"))
+        if (device.wait(Until.hasObject(By.text("Continue")), 2_000)) {
+            click(By.text("Continue"))
+        }
+        assertTrue(
+            "credtest could not verify the ES256 assertion for the real request shape",
+            waitForUiText("signature: VALID (SHA256withECDSA)", timeoutMs = 30_000),
+        )
+    }
+
+    @Test
     fun lockedSheetShowsUnlockAndUnlockingContinuesTheFlow() {
         runBlocking {
             app.vault.addLogin(
