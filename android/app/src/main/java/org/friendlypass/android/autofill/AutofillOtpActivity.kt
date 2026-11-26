@@ -19,6 +19,10 @@ import org.friendlypass.android.vault.model.VaultException
  * The code is generated at tap time, not when the [android.service.autofill.FillResponse] was built, and
  * the activity waits for the next step when the current one has less than
  * [AutofillOtp.MIN_REMAINING_SECS] seconds left.
+ *
+ * The result dataset is returned as an ephemeral authentication result (API 31+, see
+ * [AutofillUi.otpFilledDataset]): the authenticated chip stays in the framework's cached response, so a
+ * field the user clears shows the chip again and every tap computes a fresh code.
  */
 class AutofillOtpActivity : FragmentActivity() {
 
@@ -65,7 +69,7 @@ class AutofillOtpActivity : FragmentActivity() {
             AutofillRecents.record(target, candidate.entryUuid)
             setResult(
                 RESULT_OK,
-                Intent().putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT, dataset),
+                AutofillUi(this@AutofillOtpActivity).authenticationResultIntent(dataset),
             )
             finish()
         }
@@ -85,9 +89,11 @@ class AutofillOtpActivity : FragmentActivity() {
             target: AutofillTarget,
             callingPackage: String?,
             entryUuid: String?,
+            spec: InlinePresentationSpec?,
         ): Intent = Intent(context, AutofillOtpActivity::class.java).apply {
             AutofillExtras.putFieldIds(this, fields)
             AutofillExtras.putTarget(this, target, callingPackage)
+            AutofillExtras.putInlineSpec(this, spec)
             if (!entryUuid.isNullOrBlank()) putExtra(AutofillExtras.EXTRA_ENTRY_UUID, entryUuid)
         }
     }

@@ -93,7 +93,8 @@ class AutofillPickActivity : FragmentActivity() {
                     hasTotp = entry.hasTotp,
                 )
                 val ui = AutofillUi(this@AutofillPickActivity)
-                val dataset = if (fields.hasOtp) {
+                val isOtp = fields.hasOtp
+                val dataset = if (isOtp) {
                     val code = AutofillOtp.freshCode(app.vault, entry.uuid) ?: run {
                         finishCancelled()
                         return@launch
@@ -112,7 +113,14 @@ class AutofillPickActivity : FragmentActivity() {
                     AutofillRecents.record(resolvedTarget, entry.uuid)
                     ui.pickedDataset(fields, candidate, spec)
                 }
-                setResult(RESULT_OK, Intent().putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT, dataset))
+                // OTP: fill once and keep the search chip (ephemeral result, see AutofillUi). Username:
+                // replace the search dataset so the picked entry stays in this session's response.
+                val result =
+                    if (isOtp) ui.authenticationResultIntent(dataset) else Intent().putExtra(
+                        AutofillManager.EXTRA_AUTHENTICATION_RESULT,
+                        dataset,
+                    )
+                setResult(RESULT_OK, result)
                 finish()
             } catch (e: VaultException) {
                 finishCancelled()
