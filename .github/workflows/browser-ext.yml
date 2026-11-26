@@ -111,6 +111,27 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  windows:
+    name: browser-ext (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # Proves the named-pipe transport, Windows peer verification, browser
+      # identity and registry registration paths that cannot run on macOS/Linux.
+      - name: Cargo protocol conformance (frozen fixture test)
+        run: cargo test -p friendlypass-browser --test fixtures_crypto
+
+      - name: Cargo protocol + native-host tests (Windows named pipe)
+        run: cargo test -p friendlypass-browser -p friendlypass-browser-host
+
   firefox-e2e:
     name: firefox-e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

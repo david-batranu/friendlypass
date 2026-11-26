@@ -8,7 +8,7 @@
  *
  * States covered: Connected, Locked, App not running, Not connected to this
  * database, Connecting. Every visual state is captured in light and dark mode
- * under `briefs/shots/wp6a-popup/`.
+ * under `extension/test-results/shots/wp6a-popup/` (or `$FP_SHOTS_DIR`).
  */
 
 import { expect, test as base } from "@playwright/test";
@@ -19,13 +19,14 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { AppMock } from "../harness/app-mock";
 import { Harness } from "../harness/harness";
+import { shotsDir } from "../harness/shots";
 import { sleep } from "../harness/frames.mjs";
 
 // ---------------------------------------------------------------------------
-// Screenshots (outside the repo)
+// Screenshots
 // ---------------------------------------------------------------------------
 
-const SHOTS = "/Users/david/Work/Projects/friendlypass/briefs/shots/wp6a-popup";
+const SHOTS = shotsDir("wp6a-popup");
 
 /** Capture one state in light and dark mode, cropped to the popup body. */
 async function capture(page: Page, name: string): Promise<void> {

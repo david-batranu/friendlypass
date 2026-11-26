@@ -16,3 +16,22 @@ license = "GPL-3.0-only"
 
 [profile.release]
 lto = "thin"
+
+# Test fixtures (fixtures/sample4.kdbx) use KDBX3 AES-KDF with ~14M rounds.
+# Unoptimised dev builds spent ~5.7 s in that loop before the test_server
+# example could bind its socket, against a 10 s readiness wait in the
+# browser-host tests. Optimising the KDF crates keeps dev/test builds fast.
+[profile.dev.package.aes]
+opt-level = 3
+
+[profile.dev.package.cipher]
+opt-level = 3
+
+[profile.dev.package.generic-array]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.keepass]
+opt-level = 3

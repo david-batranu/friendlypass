@@ -30,8 +30,9 @@ Options:
   --uninstall                     Remove this host's manifests.
   --browser NAME                  chrome, chromium, brave, edge or firefox.
                                   Repeatable; default: all.
-  --home DIR                      Use DIR as $HOME (default: $HOME).
-  --platform macos|linux          Override platform detection (tests).
+  --home DIR                      Use DIR as $HOME (default: $HOME or
+                                  %USERPROFILE% on Windows).
+  --platform macos|linux|windows  Override platform detection (tests).
   --host-path PATH                Host binary to register. Default: this
                                   executable.
   --extension-id ID               Chrome-family extension id (32 chars a-p).
@@ -82,11 +83,11 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     };
 
     let platform = parsed.platform.or_else(Platform::current).ok_or_else(|| {
-        anyhow::anyhow!("unsupported platform (only macOS and Linux are supported)")
+        anyhow::anyhow!("unsupported platform (only macOS, Linux and Windows are supported)")
     })?;
     let home = parsed
         .home
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(native_messaging::user_home)
         .filter(|path| !path.as_os_str().is_empty())
         .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --home DIR"))?;
 
@@ -306,10 +307,10 @@ mod tests {
             "firefox",
             "--browser=chrome",
             "--home",
-            "/tmp/home",
+            "home-dir",
             "--platform=linux",
             "--host-path",
-            "/tmp/host",
+            "host-bin",
             "--extension-id=abcdefghijklmnopabcdefghijklmnop",
             "--force",
             "--dry-run",
@@ -317,9 +318,10 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.mode, Some(Mode::Install));
         assert_eq!(parsed.browsers, vec![Browser::Chrome, Browser::Firefox]);
-        assert_eq!(parsed.home, Some(PathBuf::from("/tmp/home")));
+        // Parsed as opaque paths only; nothing touches the filesystem here.
+        assert_eq!(parsed.home, Some(PathBuf::from("home-dir")));
         assert_eq!(parsed.platform, Some(Platform::Linux));
-        assert_eq!(parsed.host_path, Some(PathBuf::from("/tmp/host")));
+        assert_eq!(parsed.host_path, Some(PathBuf::from("host-bin")));
         assert!(parsed.force);
         assert!(parsed.dry_run);
     }
@@ -334,10 +336,16 @@ mod tests {
     #[test]
     fn bad_arguments_are_rejected() {
         assert!(parse(&["--install", "--browser", "netscape"]).is_err());
-        assert!(parse(&["--install", "--platform", "windows"]).is_err());
+        assert!(parse(&["--install", "--platform", "solaris"]).is_err());
         assert!(parse(&["--install", "--extension-id"]).is_err());
         assert!(parse(&["--install", "--uninstall"]).is_err());
         assert!(parse(&["--install", "--nonsense"]).is_err());
         assert!(parse(&["--install", "--browser", ""]).is_err());
+    }
+
+    #[test]
+    fn windows_platform_is_accepted() {
+        let parsed = parse(&["--install", "--platform", "windows"]).unwrap();
+        assert_eq!(parsed.platform, Some(Platform::Windows));
     }
 }

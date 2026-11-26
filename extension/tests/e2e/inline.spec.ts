@@ -5,8 +5,8 @@
  * The app adds what the WP6b flows need over the WP8 mock: `generate-password`,
  * a lock/unlock push, and group persistence on `set-login`.
  *
- * Every visual state is captured as a PNG (light and dark) outside the repo in
- * `/Users/david/Work/Projects/friendlypass/briefs/shots/wp6b-inline/`.
+ * Every visual state is captured as a PNG (light and dark) under
+ * `extension/test-results/shots/wp6b-inline/` (or `$FP_SHOTS_DIR`).
  */
 
 import { expect, test as base } from "@playwright/test";
@@ -18,6 +18,7 @@ import net from "node:net";
 import type { AddressInfo } from "node:net";
 import nacl from "tweetnacl";
 import { Harness } from "../harness/harness";
+import { shotsDir } from "../harness/shots";
 import {
   ObjectStreamDecoder,
   encodeObject,
@@ -772,8 +773,7 @@ const stackTest = base.extend<{ stack: Stack }>({
 // Helpers
 // ---------------------------------------------------------------------------
 
-const SHOTS_DIR =
-  "/Users/david/Work/Projects/friendlypass/briefs/shots/wp6b-inline";
+const SHOTS_DIR = shotsDir("wp6b-inline");
 
 base.beforeAll(() => {
   fs.mkdirSync(SHOTS_DIR, { recursive: true });

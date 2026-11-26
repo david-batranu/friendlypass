@@ -188,10 +188,10 @@ jobs:
         with:
           workspaces: ". -> target"
 
-      # Browser integration and the SSH agent are Unix-socket features and are
-      # cfg-gated off on Windows; the GUI builds and starts without them.
-      - name: Build GUI and CLI
-        run: cargo build --release -p friendlypass -p friendlypass-gui
+      # Browser integration now serves its app link over a per-user named pipe
+      # on Windows; only the SSH agent remains Unix-only.
+      - name: Build GUI, CLI and browser host
+        run: cargo build --release -p friendlypass -p friendlypass-gui -p friendlypass-browser-host
 
       - name: Package the executables
         shell: pwsh
@@ -200,6 +200,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/friendlypass-gui.exe dist/
           Copy-Item target/release/friendlypass.exe dist/
+          Copy-Item target/release/friendlypass-browser-host.exe dist/
           # GPL-3.0: ship the licence and notices with the binaries.
           Copy-Item LICENSE dist/
           Copy-Item NOTICE.md dist/

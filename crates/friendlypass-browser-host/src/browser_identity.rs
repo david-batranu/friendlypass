@@ -16,6 +16,11 @@
 //! - Linux: the parent is *verified* iff `/proc/<pid>/exe` is owned by root, is
 //!   not writable by group/other, lives under a system prefix and its file name
 //!   is a known browser binary.
+//! - Windows: the parent is *verified* iff `WinVerifyTrust` accepts its
+//!   Authenticode signature and the signer's certificate subject is the vendor
+//!   expected for the browser family (Google LLC, Microsoft Corporation,
+//!   Brave Software, Mozilla Corporation). Chromium and unsigned builds are
+//!   named from the image path but stay unverified.
 //!
 //! Verification is best effort and **never** fails the host: every error path
 //! degrades to `kind: unknown` / `verified: false`. The split between pure
@@ -77,9 +82,13 @@ impl BrowserIdentity {
 }
 
 /// Team IDs accepted as proof of a genuine browser build (contract §4).
+#[cfg(any(target_os = "macos", test))]
 pub const TEAM_GOOGLE: &str = "EQHXZ8M8AV";
+#[cfg(any(target_os = "macos", test))]
 pub const TEAM_MOZILLA: &str = "43AQ936H96";
+#[cfg(any(target_os = "macos", test))]
 pub const TEAM_BRAVE: &str = "KL8N8XSYF4";
+#[cfg(any(target_os = "macos", test))]
 pub const TEAM_MICROSOFT: &str = "UBF8T346G9";
 
 /// The team identifiers accepted as proof of a genuine browser build.
@@ -88,6 +97,7 @@ pub const KNOWN_TEAMS: &[&str] = &[TEAM_GOOGLE, TEAM_MOZILLA, TEAM_BRAVE, TEAM_M
 
 /// Map an Apple team identifier to a browser kind. Exact match only: a
 /// non-canonical spelling is a different value, not a friendly variant.
+#[cfg(any(target_os = "macos", test))]
 pub fn kind_from_team_id(team_id: &str) -> Option<BrowserKind> {
     match team_id {
         TEAM_GOOGLE => Some(BrowserKind::Chrome),
@@ -136,14 +146,14 @@ pub fn executable_name(executable: &str) -> &str {
 /// code signature. Only such a match makes the identity verified; an
 /// unrecognised value (which cannot come from our known-requirement loop, but
 /// keeps the function total) still names the browser yet stays unverified.
-pub fn classify_signed(
-    matched_team: Option<&str>,
-    executable: Option<&str>,
-) -> BrowserIdentity {
+#[cfg(any(target_os = "macos", test))]
+pub fn classify_signed(matched_team: Option<&str>, executable: Option<&str>) -> BrowserIdentity {
     let matched_kind = matched_team.and_then(kind_from_team_id);
     let kind = matched_kind
         .or_else(|| {
-            executable.map(executable_name).map(kind_from_executable_name)
+            executable
+                .map(executable_name)
+                .map(kind_from_executable_name)
         })
         .unwrap_or(BrowserKind::Unknown);
     BrowserIdentity {
@@ -223,12 +233,67 @@ pub fn classify_linux(executable: Option<&str>, trusted: bool) -> BrowserIdentit
     }
 }
 
+/// Windows vendor names accepted as proof of a genuine browser build.
+#[cfg(windows)]
+pub const VENDOR_GOOGLE: &str = "Google LLC";
+#[cfg(windows)]
+pub const VENDOR_MICROSOFT: &str = "Microsoft Corporation";
+#[cfg(windows)]
+pub const VENDOR_BRAVE: &str = "Brave Software";
+#[cfg(windows)]
+pub const VENDOR_MOZILLA: &str = "Mozilla Corporation";
+
+/// The Authenticode signer expected for a browser family on Windows.
+/// Chromium (open-source builds) has no single vendor, so it is never
+/// signature-verified.
+#[cfg(windows)]
+pub fn expected_windows_vendor(kind: BrowserKind) -> Option<&'static str> {
+    match kind {
+        BrowserKind::Chrome => Some(VENDOR_GOOGLE),
+        BrowserKind::Edge => Some(VENDOR_MICROSOFT),
+        BrowserKind::Brave => Some(VENDOR_BRAVE),
+        BrowserKind::Firefox => Some(VENDOR_MOZILLA),
+        BrowserKind::Chromium | BrowserKind::Unknown => None,
+    }
+}
+
+/// Windows rule, pure: executable path + Authenticode signer → identity.
+///
+/// `signature_vendor` is the signer certificate's simple display name after a
+/// successful `WinVerifyTrust`. The browser is verified only when that vendor
+/// is the one expected for the family named by the executable.
+#[cfg(windows)]
+pub fn classify_windows(
+    executable: Option<&str>,
+    signature_vendor: Option<&str>,
+) -> BrowserIdentity {
+    let kind = executable
+        .map(executable_name)
+        .map(kind_from_executable_name)
+        .unwrap_or(BrowserKind::Unknown);
+    let verified = match (expected_windows_vendor(kind), signature_vendor) {
+        (Some(expected), Some(actual)) => actual
+            .to_ascii_lowercase()
+            .contains(&expected.to_ascii_lowercase()),
+        _ => false,
+    };
+    BrowserIdentity {
+        kind,
+        verified,
+        executable: executable.map(str::to_owned),
+        // Windows has no Apple team identifier; the contract allows null.
+        team_id: None,
+    }
+}
+
 /// Identify the parent process. Never panics, never blocks for long: every OS
 /// failure degrades to [`BrowserIdentity::unknown`] or a name-only kind.
 pub fn identify_parent() -> BrowserIdentity {
     #[cfg(unix)]
     let pid = unsafe { libc::getppid() };
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let pid = platform::parent_pid();
+    #[cfg(not(any(unix, windows)))]
     let pid: i32 = -1;
     identify_process(pid)
 }
@@ -249,7 +314,11 @@ pub fn identify_process(pid: i32) -> BrowserIdentity {
     {
         platform::identify(u32::try_from(pid).unwrap_or(0))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        platform::identify(pid)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         BrowserIdentity::unknown()
     }
@@ -375,7 +444,11 @@ mod platform {
     fn executable_path(pid: i32) -> Option<String> {
         let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
         let length = unsafe {
-            libc::proc_pidpath(pid, buffer.as_mut_ptr().cast::<c_void>(), buffer.len() as u32)
+            libc::proc_pidpath(
+                pid,
+                buffer.as_mut_ptr().cast::<c_void>(),
+                buffer.len() as u32,
+            )
         };
         if length <= 0 {
             return None;
@@ -470,6 +543,213 @@ mod platform {
             Some(trimmed) => std::path::PathBuf::from(trimmed),
             None => path.to_path_buf(),
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod platform {
+    //! Windows: Toolhelp parent pid + `QueryFullProcessImageNameW` +
+    //! Authenticode (`WinVerifyTrust`) signer check.
+    //!
+    //! Unlike the macOS path, which pins a team ID in an Apple-anchored
+    //! requirement, the Windows verdict is "the signature is valid and the
+    //! signer's certificate subject is the vendor expected for this browser
+    //! family". A self-signed binary cannot pass `WinVerifyTrust`; a valid
+    //! but unrelated vendor is rejected by the expected-vendor comparison.
+
+    use std::ffi::{c_void, OsStr};
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::Cryptography::{
+        CertGetNameStringW, CERT_NAME_SIMPLE_DISPLAY_TYPE,
+    };
+    use windows_sys::Win32::Security::WinTrust::{
+        WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain,
+        WTHelperProvDataFromStateData, WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2,
+        WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
+        WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY,
+        WTD_UI_NONE,
+    };
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    use super::{classify_windows, BrowserIdentity};
+
+    pub fn identify(pid: i32) -> BrowserIdentity {
+        let Some(pid) = u32::try_from(pid).ok().filter(|pid| *pid != 0) else {
+            return BrowserIdentity::unknown();
+        };
+        let executable = executable_path(pid);
+        let vendor = executable
+            .as_deref()
+            .and_then(|path| signature_vendor(Path::new(path)));
+        classify_windows(executable.as_deref(), vendor.as_deref())
+    }
+
+    /// The parent pid of this process (the browser for a native-messaging
+    /// host), from a Toolhelp process snapshot.
+    pub fn parent_pid() -> i32 {
+        let own = unsafe { GetCurrentProcessId() };
+        // SAFETY: TH32CS_SNAPPROCESS takes no process handle and needs no
+        // cleanup beyond CloseHandle.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+            return -1;
+        }
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut parent = -1;
+        // SAFETY: `entry` is valid and sized as required.
+        let mut found = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while found {
+            if entry.th32ProcessID == own {
+                parent = i32::try_from(entry.th32ParentProcessID).unwrap_or(-1);
+                break;
+            }
+            // SAFETY: `entry` remains valid for the next call.
+            found = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        unsafe {
+            CloseHandle(snapshot);
+        }
+        parent
+    }
+
+    /// Full image path of a running process.
+    fn executable_path(pid: u32) -> Option<String> {
+        // SAFETY: OpenProcess has no out-parameters and the pid is validated.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return None;
+        }
+        let mut buffer = vec![0u16; 32_768];
+        let mut length = buffer.len() as u32;
+        // SAFETY: `buffer` is valid for `length` UTF-16 code units.
+        let ok =
+            unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) };
+        unsafe {
+            CloseHandle(process);
+        }
+        if ok == 0 || length == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buffer[..length as usize]);
+        (!path.is_empty()).then_some(path)
+    }
+
+    /// The signer certificate's simple display name when `path` has a valid
+    /// Authenticode signature; `None` otherwise.
+    fn signature_vendor(path: &Path) -> Option<String> {
+        let mut wide: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
+        let mut file = WINTRUST_FILE_INFO {
+            cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
+            pcwszFilePath: wide.as_mut_ptr(),
+            hFile: std::ptr::null_mut(),
+            pgKnownSubject: std::ptr::null_mut(),
+        };
+        let mut data = WINTRUST_DATA {
+            cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
+            dwUIChoice: WTD_UI_NONE,
+            fdwRevocationChecks: WTD_REVOKE_NONE,
+            dwUnionChoice: WTD_CHOICE_FILE,
+            Anonymous: WINTRUST_DATA_0 { pFile: &mut file },
+            dwStateAction: WTD_STATEACTION_VERIFY,
+            dwProvFlags: WTD_CACHE_ONLY_URL_RETRIEVAL,
+            ..Default::default()
+        };
+        let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        // SAFETY: `data` points at the file info for the duration of the
+        // call; all pointers in the structure are valid.
+        let status = unsafe {
+            WinVerifyTrust(
+                std::ptr::null_mut(),
+                &mut action as *mut _,
+                &mut data as *mut WINTRUST_DATA as *mut c_void,
+            )
+        };
+        let vendor = if status == 0 {
+            signer_name(data.hWVTStateData)
+        } else {
+            None
+        };
+        // Free the provider state WinVerifyTrust allocated.
+        data.dwStateAction = WTD_STATEACTION_CLOSE;
+        // SAFETY: closing the same state data is the documented cleanup.
+        unsafe {
+            WinVerifyTrust(
+                std::ptr::null_mut(),
+                &mut action as *mut _,
+                &mut data as *mut WINTRUST_DATA as *mut c_void,
+            );
+        }
+        vendor
+    }
+
+    /// Read the signer certificate's display name from the provider state.
+    fn signer_name(state: HANDLE) -> Option<String> {
+        if state.is_null() {
+            return None;
+        }
+        // SAFETY: `state` came from a successful WinVerifyTrust.
+        let provider = unsafe { WTHelperProvDataFromStateData(state) };
+        if provider.is_null() {
+            return None;
+        }
+        // SAFETY: the provider data owns the signer chain.
+        let signer = unsafe { WTHelperGetProvSignerFromChain(provider, 0, 0, 0) };
+        if signer.is_null() {
+            return None;
+        }
+        // SAFETY: the signer owns its certificate chain.
+        let certificate = unsafe { WTHelperGetProvCertFromChain(signer, 0) };
+        if certificate.is_null() {
+            return None;
+        }
+        // SAFETY: `certificate` points at a provider cert whose `pCert` is a
+        // valid CERT_CONTEXT on success.
+        let context = unsafe { (*certificate).pCert };
+        if context.is_null() {
+            return None;
+        }
+        // SAFETY: the first call sizes the NUL-terminated display name.
+        let needed = unsafe {
+            CertGetNameStringW(
+                context,
+                CERT_NAME_SIMPLE_DISPLAY_TYPE,
+                0,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if needed <= 1 {
+            return None;
+        }
+        let mut buffer = vec![0u16; needed as usize];
+        // SAFETY: `buffer` is valid for `needed` UTF-16 code units.
+        let written = unsafe {
+            CertGetNameStringW(
+                context,
+                CERT_NAME_SIMPLE_DISPLAY_TYPE,
+                0,
+                std::ptr::null(),
+                buffer.as_mut_ptr(),
+                needed,
+            )
+        };
+        if written == 0 {
+            return None;
+        }
+        let name = String::from_utf16_lossy(&buffer[..(written as usize - 1)]);
+        (!name.is_empty()).then_some(name)
     }
 }
 
@@ -713,5 +993,75 @@ mod tests {
         if identity.kind == BrowserKind::Unknown {
             assert!(!identity.verified);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_image_paths_map_to_browser_kinds() {
+        let cases = [
+            (
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                BrowserKind::Chrome,
+            ),
+            (
+                r"C:\Program Files\Chromium\Application\chromium.exe",
+                BrowserKind::Chromium,
+            ),
+            (
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+                BrowserKind::Brave,
+            ),
+            (
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                BrowserKind::Edge,
+            ),
+            (
+                r"C:\Program Files\Mozilla Firefox\firefox.exe",
+                BrowserKind::Firefox,
+            ),
+            (r"C:\Windows\notepad.exe", BrowserKind::Unknown),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(
+                kind_from_executable_name(executable_name(path)),
+                expected,
+                "{path}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_signature_vendor_must_match_the_browser_family() {
+        let chrome = classify_windows(
+            Some(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            Some(VENDOR_GOOGLE),
+        );
+        assert_eq!(chrome.kind, BrowserKind::Chrome);
+        assert!(chrome.verified);
+        assert_eq!(chrome.team_id, None);
+
+        // A valid signature from a different vendor does not verify Chrome.
+        let impostor = classify_windows(
+            Some(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            Some(VENDOR_MOZILLA),
+        );
+        assert_eq!(impostor.kind, BrowserKind::Chrome);
+        assert!(!impostor.verified);
+
+        // Unsigned/unknown-signature builds are named but never verified.
+        let unsigned = classify_windows(
+            Some(r"C:\Program Files\Chromium\Application\chromium.exe"),
+            None,
+        );
+        assert_eq!(unsigned.kind, BrowserKind::Chromium);
+        assert!(!unsigned.verified);
+
+        let firefox = classify_windows(
+            Some(r"C:\Program Files\Mozilla Firefox\firefox.exe"),
+            Some(VENDOR_MOZILLA),
+        );
+        assert_eq!(firefox.kind, BrowserKind::Firefox);
+        assert!(firefox.verified);
     }
 }

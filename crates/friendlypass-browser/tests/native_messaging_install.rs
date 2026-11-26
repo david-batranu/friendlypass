@@ -23,10 +23,11 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         std::fs::create_dir(&home).unwrap();
+        // `.exe` on Windows, matching the name the installer expects.
         let host = dir
             .path()
             .join("bin")
-            .join(native_messaging::HOST_BINARY_NAME);
+            .join(native_messaging::host_binary_file_name());
         std::fs::create_dir_all(host.parent().unwrap()).unwrap();
         std::fs::write(&host, "#!/bin/sh\nexit 0\n").unwrap();
         make_executable(&host);
@@ -55,13 +56,13 @@ impl Fixture {
     }
 }
 
-fn make_executable(path: &Path) {
+fn make_executable(_path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        let mut perms = std::fs::metadata(_path).unwrap().permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).unwrap();
+        std::fs::set_permissions(_path, perms).unwrap();
     }
 }
 
@@ -69,6 +70,18 @@ fn read_manifest(path: &Path) -> serde_json::Value {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("missing manifest {}: {error}", path.display()));
     serde_json::from_str(&text).expect("manifest is valid JSON")
+}
+
+/// The path a manifest should contain for `path`. On Windows
+/// `std::fs::canonicalize` returns a `\\?\` verbatim path, while the installer
+/// writes a normal drive/UNC path.
+fn expected_manifest_path(path: &Path) -> String {
+    let canonical = std::fs::canonicalize(path).expect("canonical path");
+    let text = canonical.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned()
 }
 
 #[test]
@@ -82,14 +95,14 @@ fn installs_every_browser_on_macos_and_linux() {
         assert!(report.skipped.is_empty());
         assert!(report.unchanged.is_empty());
 
-        let host = std::fs::canonicalize(&fixture.host).unwrap();
+        let host = expected_manifest_path(&fixture.host);
         for browser in Browser::ALL {
             let path = fixture.path(platform, browser);
             assert_eq!(path, options.manifest_path(browser));
             let value = read_manifest(&path);
             assert_eq!(value["name"], HOST_NAME);
             assert_eq!(value["type"], "stdio");
-            assert_eq!(value["path"], host.to_string_lossy().as_ref());
+            assert_eq!(value["path"], host.as_str());
             assert!(value["description"].as_str().is_some_and(|d| !d.is_empty()));
             if browser == Browser::Firefox {
                 assert_eq!(value["allowed_extensions"], serde_json::json!([FIREFOX_ID]));
@@ -166,13 +179,7 @@ fn a_changed_host_path_rewrites_the_manifest() {
     let report = native_messaging::install(&moved_options).unwrap();
     assert_eq!(report.changed, vec![path.clone()]);
     let value = read_manifest(&path);
-    assert_eq!(
-        value["path"],
-        std::fs::canonicalize(&moved)
-            .unwrap()
-            .to_string_lossy()
-            .as_ref()
-    );
+    assert_eq!(value["path"], expected_manifest_path(&moved));
 }
 
 #[test]
@@ -358,16 +365,16 @@ fn invalid_options_are_rejected() {
     missing.host_path = fixture.dir.path().join("does-not-exist");
     assert!(native_messaging::install(&missing).is_err());
 
-    let not_executable = fixture.dir.path().join("plain-host");
-    std::fs::write(&not_executable, b"x").unwrap();
     #[cfg(unix)]
     {
+        let not_executable = fixture.dir.path().join("plain-host");
+        std::fs::write(&not_executable, b"x").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&not_executable, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut plain = fixture.options(Platform::Linux, vec![Browser::Chrome]);
+        plain.host_path = not_executable;
+        assert!(native_messaging::install(&plain).is_err());
     }
-    let mut plain = fixture.options(Platform::Linux, vec![Browser::Chrome]);
-    plain.host_path = not_executable;
-    assert!(native_messaging::install(&plain).is_err());
 
     let mut no_browsers = fixture.options(Platform::Linux, Vec::new());
     no_browsers.browsers.clear();

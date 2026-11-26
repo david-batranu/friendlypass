@@ -3,19 +3,21 @@
 The GUI is a normal Rust binary; these files make desktop launchers start it
 as a GUI instead of opening a terminal.
 
-The macOS bundle and the Linux tarball ship two executables:
+The macOS bundle, the Linux tarball and the Windows zip ship two executables:
 `friendlypass-gui` and `friendlypass-browser-host` (the native-messaging host).
 The app finds the host next to its own executable and registers it with
 browsers from Settings → Browser Integration, so the binaries must stay in the
-same directory.
+same directory. On Windows the host is `friendlypass-browser-host.exe`.
 
 ## End-user flow (browser integration)
 
-1. Install the app (macOS `.app` bundle or Linux tarball/`install.sh`).
+1. Install the app (macOS `.app` bundle, Linux tarball/`install.sh`, or the
+   Windows zip).
 2. Start friendlypass and open **Settings and tools → Browser…**. Tick
    **Enable browser integration** and the browsers you use. This writes
    `org.friendlypass.browser.json` in each browser's own native-messaging
-   folder, pointing at the bundled host.
+   folder (or under `%LOCALAPPDATA%\friendlypass\` plus the browser's `HKCU`
+   registry key on Windows), pointing at the bundled host.
 3. Install the friendlypass extension in those browsers (Chrome Web Store /
    Firefox add-ons, or a development build). The extension then talks to the
    running app.
@@ -61,11 +63,24 @@ Release builds carry `#![cfg_attr(not(debug_assertions), windows_subsystem =
 "windows")]`, so `friendlypass-gui.exe` is a GUI-subsystem binary and double-clicking
 it opens no console. Debug builds keep the console for diagnostics.
 
-Browser integration is currently macOS/Linux only (the manifest directory
-layout and the app socket are Unix-specific), and the SSH agent serves over a
-Unix domain socket as well. On Windows the GUI starts without either feature;
-the Settings menu explains "not available on Windows yet" instead of showing
-unusable controls. A named-pipe transport is a known follow-up.
+The Windows zip contains `friendlypass-gui.exe`, `friendlypass.exe` (CLI) and
+`friendlypass-browser-host.exe`; keep them together. Browser integration works
+exactly as on macOS/Linux: the GUI serves the browser protocol on the per-user
+named pipe `\\.\pipe\org.friendlypass.BrowserServer_<USERNAME>` and registers
+the native host in each browser's `HKCU` key (Chrome, Chromium, Edge, Brave and
+Firefox). The host manifest files live under `%LOCALAPPDATA%\friendlypass\`.
+
+End-user flow:
+
+1. Unzip the release anywhere and run `friendlypass-gui.exe` once. On startup
+   it rewrites a stale native-host registration, so a moved/updated install
+   keeps working.
+2. Open **Settings and tools → Browser…**, tick **Enable browser integration**
+   and the browsers you use.
+3. Install the friendlypass extension in those browsers.
+
+The SSH agent remains Unix-only for now (it serves a Unix domain socket); its
+dialog says so on Windows.
 
 ## Linux
 
@@ -140,7 +155,7 @@ The release is titled `friendlypass 0.1.0` and contains:
 | `friendlypass-0.1.0-macos-x86_64.zip` | the same bundle for Intel Macs |
 | `friendlypass-0.1.0-linux-x86_64.tar.gz` | the `packaging/linux/package.sh release` tarball (GUI + browser host) |
 | `friendlypass-0.1.0-linux-aarch64.tar.gz` | the same tarball for arm64 |
-| `friendlypass-0.1.0-windows-x86_64.zip` | `friendlypass-gui.exe`, `friendlypass.exe` (CLI), `LICENSE` and `NOTICE.md` |
+| `friendlypass-0.1.0-windows-x86_64.zip` | `friendlypass-gui.exe`, `friendlypass.exe` (CLI), `friendlypass-browser-host.exe`, `LICENSE` and `NOTICE.md` |
 | `friendlypass-0.1.0-android.apk` | signed release APK |
 | `friendlypass-chrome-0.1.0.zip` | unpacked Chrome extension build |
 | `friendlypass-firefox-0.1.0.zip` | unpacked Firefox extension build |

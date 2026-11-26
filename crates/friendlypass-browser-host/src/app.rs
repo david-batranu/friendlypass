@@ -15,7 +15,6 @@
 //!   reordering and no Unicode accidents).
 
 use std::io::{self, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
@@ -28,6 +27,7 @@ use serde_json::Value;
 use crate::browser_identity;
 use crate::errors;
 use crate::framing::ObjectFramer;
+use crate::socket::{self, AppSocket, AppStream};
 use crate::status::StatusCell;
 use crate::writer::Writer;
 
@@ -65,9 +65,9 @@ struct Outbound {
 
 #[derive(Default)]
 struct Conn {
-    stream: Option<UnixStream>,
+    stream: Option<AppSocket>,
     /// A clone used only to shut the reader down from the manager thread.
-    shutdown: Option<UnixStream>,
+    shutdown: Option<AppSocket>,
     generation: u64,
     pending_probe: bool,
     probe_sent: Option<Instant>,
@@ -199,7 +199,7 @@ impl AppLink {
 
     /// Connect if needed. Must be called with the connection lock held.
     fn connect_locked(self: &Arc<Self>, conn: &mut Conn) -> bool {
-        let Ok(stream) = UnixStream::connect(&self.path) else {
+        let Ok(stream) = socket::connect(&self.path) else {
             return false;
         };
         // Bounded writes: a wedged app cannot block the writer thread forever.
@@ -242,7 +242,7 @@ impl AppLink {
     }
 
     /// Read app frames until EOF/error, then settle that generation.
-    fn read_loop(self: Arc<Self>, mut stream: UnixStream, generation: u64) {
+    fn read_loop(self: Arc<Self>, mut stream: AppSocket, generation: u64) {
         let mut framer = ObjectFramer::new();
         let mut buffer = [0u8; 8192];
         loop {
@@ -618,10 +618,10 @@ impl AppLink {
 fn disconnect(conn: &mut Conn) -> u64 {
     let generation = conn.generation;
     if let Some(stream) = conn.stream.take() {
-        let _ = stream.shutdown(std::net::Shutdown::Both);
+        AppStream::shutdown(&stream);
     }
     if let Some(shutdown) = conn.shutdown.take() {
-        let _ = shutdown.shutdown(std::net::Shutdown::Both);
+        AppStream::shutdown(&shutdown);
     }
     conn.pending_probe = false;
     conn.probe_sent = None;

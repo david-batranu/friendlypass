@@ -139,16 +139,34 @@ async function writeClipboard(text: string): Promise<boolean> {
   }
 }
 
+/** How long the clear waits for a clipboard read before treating it as unavailable. */
+const CLIPBOARD_READ_TIMEOUT_MS = 1_000;
+
+/**
+ * Read the clipboard without waiting on it forever. `readText()` can stay
+ * pending indefinitely (for example while a permission prompt is open); a
+ * copied password must still be cleared in that case, so a timeout counts as
+ * "cannot verify" and the clear falls back to the visibility rule below.
+ */
+async function readClipboardOrNull(): Promise<string | null> {
+  let timer: number | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = window.setTimeout(() => resolve(null), CLIPBOARD_READ_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([navigator.clipboard.readText(), timeout]);
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 async function clearClipboardIfUnchanged(text: string): Promise<void> {
   if (lastCopy === null || lastCopy.text !== text) {
     return;
   }
-  let current: string | null = null;
-  try {
-    current = await navigator.clipboard.readText();
-  } catch {
-    current = null;
-  }
+  const current = await readClipboardOrNull();
   if (current !== null) {
     if (current !== text) {
       // The user copied something else in the meantime; leave it alone.

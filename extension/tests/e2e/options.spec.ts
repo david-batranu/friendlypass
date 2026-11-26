@@ -18,10 +18,11 @@ import http from "node:http";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { Harness } from "../harness/harness";
+import { shotsDir } from "../harness/shots";
 import { sleep } from "../harness/frames.mjs";
 
-const SHOTS = "/Users/david/Work/Projects/friendlypass/briefs/shots/wp6a-popup";
-const SHOTS_WP6C = "/Users/david/Work/Projects/friendlypass/briefs/shots/wp6c-polish";
+const SHOTS = shotsDir("wp6a-popup");
+const SHOTS_WP6C = shotsDir("wp6c-polish");
 
 async function capture(page: Page, name: string): Promise<void> {
   await page.emulateMedia({ colorScheme: "light" });

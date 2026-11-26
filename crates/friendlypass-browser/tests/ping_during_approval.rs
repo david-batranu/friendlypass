@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Pairing contract §1: the app must answer host-level `ping` immediately even
 //! while another request on the same connection is still waiting (association
 //! approval, `set-login`). Before the reader/worker split both ran on one

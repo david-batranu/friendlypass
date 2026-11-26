@@ -115,15 +115,28 @@ here, except for these invariants (§1.1.1 records the Phase-1 decision):
 
 ### 1.1.1 App socket framing (decision, Phase 1) **[friendlypass]**
 
-The app socket is **not** native messaging. It is a Unix stream socket
-(`<user temp dir>/org.friendlypass.BrowserServer` by default) on which
-both directions carry **raw, concatenated, compact JSON objects** — exactly what
-KeePassXC's `BrowserServer` and `crates/friendlypass-browser/src/server.rs`
-speak:
+The app socket is **not** native messaging. On macOS and Linux it is a Unix
+stream socket (`<user temp dir>/org.friendlypass.BrowserServer` by default) on
+which both directions carry **raw, concatenated, compact JSON objects** —
+exactly what KeePassXC's `BrowserServer` and
+`crates/friendlypass-browser/src/server.rs` speak:
 
 ```
 {...object 1...}{...object 2...}           no length prefix, no separators
 ```
+
+**[friendlypass] Windows transport.** On Windows the same app link is a
+per-user **named pipe** named
+`\\.\pipe\org.friendlypass.BrowserServer_<USERNAME>` (the `<name>_<USERNAME>`
+pattern KeePassXC uses). The framing, object-size cap, request order, `ping`
+handling and status probe are identical to the Unix socket; only the byte
+transport differs. The server creates the pipe with
+`FILE_FLAG_FIRST_PIPE_INSTANCE` for its first instance (so a second app sees
+the same "already listening" failure as on Unix), `PIPE_REJECT_REMOTE_CLIENTS`,
+and a DACL limited to the current user. Peer verification uses the pipe
+client's process id plus its image path instead of Unix credentials. The
+`FP_APP_SOCKET` override applies unchanged: both the app and the native host
+treat its value as the pipe path, so tests never touch the user's real pipe.
 
 Rules:
 

@@ -24,9 +24,14 @@ pub mod passkeys;
 pub mod peer;
 pub mod protocol;
 pub mod push;
-// The server speaks over a Unix domain socket (app socket + peer checks).
-// Windows gets a stub with the same API so the GUI builds; browser
-// integration is disabled there until a named-pipe transport exists.
+// The transport-independent connection loop (framing, reader/worker split,
+// pushes) is shared; only listening/accepting/peer checks are per platform.
+mod server_core;
+pub mod transport;
+// Named-pipe transport for the Windows app link.
+#[cfg(windows)]
+pub mod pipe;
+// Unix serves a domain socket, Windows a per-user named pipe.
 #[cfg(unix)]
 pub mod server;
 #[cfg(not(unix))]

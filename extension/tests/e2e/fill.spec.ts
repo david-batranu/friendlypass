@@ -30,6 +30,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import nacl from "tweetnacl";
 import { Harness } from "../harness/harness";
+import { shotsDir } from "../harness/shots";
 import { REPO_ROOT } from "../harness/app-mock";
 import type { RustApp } from "../harness/rust-app";
 import {
@@ -833,7 +834,7 @@ interface AssociationLike {
 /** Matches `test_server`'s default (`FP_TEST_DB_PASSWORD` unset). */
 const TEST_DB_PASSWORD = "testpassword";
 
-const WP6C_SHOTS = "/Users/david/Work/Projects/friendlypass/briefs/shots/wp6c-polish";
+const WP6C_SHOTS = shotsDir("wp6c-polish");
 
 async function captureViewport(page: Page, name: string): Promise<void> {
   await page.emulateMedia({ colorScheme: "light" });

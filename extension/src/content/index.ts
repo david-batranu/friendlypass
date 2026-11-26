@@ -291,6 +291,18 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Random id for this document. A submitted pair is stored with the id of the
+ * page that submitted it, so the same (still alive) page cannot consume it
+ * while its navigation is in flight. `crypto.randomUUID` is not used because
+ * it is missing on non-secure origins.
+ */
+const DOCUMENT_ID = (() => {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+})();
+
+/**
  * Ask the service worker for a pair submitted just before the previous page
  * unloaded. The store itself enforces tab/frame/site/expiry isolation; this
  * loop only tolerates the store message still being in flight when the new
@@ -300,6 +312,7 @@ async function pendingSubmissionForPage(): Promise<PendingCredential | null> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const result = await sendBackgroundMessage("submit.pending", {
       url: document.location.href,
+      documentId: DOCUMENT_ID,
     });
     if (result.ok && result.value) {
       return result.value;
@@ -912,6 +925,7 @@ function storeSubmission(submitted: SubmittedCredentials): void {
   }
   void sendBackgroundMessage("submit.store", {
     url: document.location.href,
+    documentId: DOCUMENT_ID,
     username: submitted.username,
     password: submitted.password,
     ...(submitted.submitUrl ? { submitUrl: submitted.submitUrl } : {}),
