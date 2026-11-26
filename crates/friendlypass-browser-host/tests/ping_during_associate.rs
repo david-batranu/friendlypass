@@ -79,7 +79,7 @@ impl TestServer {
     /// Start `test_server` on `socket` with the approval delay, logging to
     /// `log`.
     fn start(socket: &Path, log: &Path) -> TestServer {
-        let child = Command::new(test_server_binary())
+        let mut child = Command::new(test_server_binary())
             .env("FP_APP_SOCKET", socket)
             .env("FP_TEST_APPROVAL_DELAY_MS", APPROVAL_DELAY_MS.to_string())
             .arg("--log")
@@ -90,7 +90,27 @@ impl TestServer {
             .spawn()
             .expect("spawn test_server");
         let started = wait_until(Duration::from_secs(10), || socket.exists());
-        assert!(started, "test_server never bound {}", socket.display());
+        if !started {
+            // Diagnose instead of guessing: report whether test_server exited
+            // and the tail of its JSONL log.
+            let status = match child.try_wait() {
+                Ok(Some(status)) => format!("exited with {status}"),
+                Ok(None) => "still running".to_owned(),
+                Err(error) => format!("status unavailable: {error}"),
+            };
+            let tail = std::fs::read_to_string(log)
+                .map(|text| {
+                    let lines: Vec<&str> = text.lines().collect();
+                    lines[lines.len().saturating_sub(10)..].join("\n")
+                })
+                .unwrap_or_else(|error| format!("(log unreadable: {error})"));
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "test_server never bound {} within 10 s; test_server {status}; log tail:\n{tail}",
+                socket.display()
+            );
+        }
         TestServer { child }
     }
 }

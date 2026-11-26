@@ -307,10 +307,10 @@ mod tests {
             "firefox",
             "--browser=chrome",
             "--home",
-            "/tmp/home",
+            "home-dir",
             "--platform=linux",
             "--host-path",
-            "/tmp/host",
+            "host-bin",
             "--extension-id=abcdefghijklmnopabcdefghijklmnop",
             "--force",
             "--dry-run",
@@ -318,9 +318,10 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.mode, Some(Mode::Install));
         assert_eq!(parsed.browsers, vec![Browser::Chrome, Browser::Firefox]);
-        assert_eq!(parsed.home, Some(PathBuf::from("/tmp/home")));
+        // Parsed as opaque paths only; nothing touches the filesystem here.
+        assert_eq!(parsed.home, Some(PathBuf::from("home-dir")));
         assert_eq!(parsed.platform, Some(Platform::Linux));
-        assert_eq!(parsed.host_path, Some(PathBuf::from("/tmp/host")));
+        assert_eq!(parsed.host_path, Some(PathBuf::from("host-bin")));
         assert!(parsed.force);
         assert!(parsed.dry_run);
     }

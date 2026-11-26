@@ -23,10 +23,11 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         std::fs::create_dir(&home).unwrap();
+        // `.exe` on Windows, matching the name the installer expects.
         let host = dir
             .path()
             .join("bin")
-            .join(native_messaging::HOST_BINARY_NAME);
+            .join(native_messaging::host_binary_file_name());
         std::fs::create_dir_all(host.parent().unwrap()).unwrap();
         std::fs::write(&host, "#!/bin/sh\nexit 0\n").unwrap();
         make_executable(&host);

@@ -772,18 +772,26 @@ mod tests {
 
     #[test]
     fn host_path_is_a_sibling_of_the_executable() {
+        // Expected values are built with `join`, so the separator between the
+        // directory and the file name is the platform's own (`\` on Windows).
+        // The file name comes from `host_binary_file_name()`, which carries
+        // `.exe` on Windows.
+        let macos_dir = Path::new("/Applications/friendlypass.app/Contents/MacOS");
         assert_eq!(
-            host_path_for_exe(Path::new(
-                "/Applications/friendlypass.app/Contents/MacOS/friendlypass-gui"
-            )),
-            PathBuf::from(
-                "/Applications/friendlypass.app/Contents/MacOS/friendlypass-browser-host"
-            )
+            host_path_for_exe(&macos_dir.join("friendlypass-gui")),
+            macos_dir.join(host_binary_file_name())
         );
+
+        let debug_dir = Path::new("/repo/target/debug");
         assert_eq!(
-            host_path_for_exe(Path::new("/repo/target/debug/friendlypass-gui")),
-            PathBuf::from("/repo/target/debug/friendlypass-browser-host")
+            host_path_for_exe(&debug_dir.join("friendlypass-gui")),
+            debug_dir.join(host_binary_file_name())
         );
+
+        #[cfg(windows)]
+        assert_eq!(host_binary_file_name(), "friendlypass-browser-host.exe");
+        #[cfg(not(windows))]
+        assert_eq!(host_binary_file_name(), "friendlypass-browser-host");
     }
 
     #[cfg(windows)]

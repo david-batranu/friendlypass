@@ -1,6 +1,7 @@
+#![cfg(unix)]
 //! End-to-end verification against the REAL `keepassxc-proxy` binary from
 //! the KeePassXC.app bundle — an upstream compatibility oracle for the wire
-//! protocol.
+//! protocol. Unix only: the upstream proxy speaks a Unix domain socket.
 //!
 //! friendlypass serves its own socket
 //! (`friendlypass_browser::browser_server_path()`, normally
