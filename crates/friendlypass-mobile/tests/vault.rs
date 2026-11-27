@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use friendlypass_mobile::{
-    open_vault, NewLogin, PasskeyCreateRequest, PasskeyRegistration, Vault, VaultError,
+    create_database, generate_password, open_vault, EntryField, EntryInput, NewLogin,
+    PasskeyCreateRequest, PasskeyRegistration, Vault, VaultError,
 };
 use friendlypass_passkey::{
     KPEX_PASSKEY_CREDENTIAL_ID, KPEX_PASSKEY_FLAG_BE, KPEX_PASSKEY_FLAG_BS,
@@ -744,5 +745,109 @@ fn merge_from_bytes_refuses_unrelated_database_and_wrong_credentials() {
     assert!(matches!(
         mobile.merge_from_bytes(other_key_bytes),
         Err(VaultError::InvalidCredentials)
+    ));
+}
+
+#[test]
+fn full_crud_entries_groups_password_generator_and_new_database() {
+    // 1. Create a brand-new database.
+    let new_db_bytes = create_database("My Vault".to_owned(), Some("master123".to_owned()), None)
+        .expect("create_database succeeds");
+    let vault = open_vault(new_db_bytes, Some("master123".to_owned()), None).unwrap();
+    assert_eq!(vault.database_name(), "My Vault");
+    let root_uuid = vault.root_group_uuid();
+
+    // 2. Create, rename, and list groups.
+    let work_uuid = vault
+        .create_group(root_uuid.clone(), "Work".to_owned())
+        .unwrap();
+    vault
+        .rename_group(work_uuid.clone(), "Work Accounts".to_owned())
+        .unwrap();
+    assert!(vault
+        .groups()
+        .iter()
+        .any(|g| g.uuid == work_uuid && g.name == "Work Accounts"));
+
+    // 3. Create an entry with TOTP (raw Base32 secret), tags, Android app, and custom fields.
+    let entry_uuid = vault
+        .create_entry(EntryInput {
+            group_uuid: work_uuid.clone(),
+            title: "GitLab".to_owned(),
+            username: "dev@example.com".to_owned(),
+            password: "initial-password".to_owned(),
+            url: "https://gitlab.example.com".to_owned(),
+            notes: "SSH + web login".to_owned(),
+            totp: Some("JBSWY3DPEHPK3PXP".to_owned()),
+            android_apps: vec!["com.gitlab.android".to_owned()],
+            custom_fields: vec![EntryField {
+                name: "Recovery PIN".to_owned(),
+                value: "4242".to_owned(),
+                protected: true,
+            }],
+            tags: vec!["work".to_owned(), "git".to_owned()],
+        })
+        .unwrap();
+
+    let detail = vault.entry(entry_uuid.clone()).unwrap();
+    assert_eq!(detail.group_uuid, work_uuid);
+    assert_eq!(detail.summary.title, "GitLab");
+    assert!(detail.summary.has_totp);
+    assert!(detail.otp_uri.as_deref().unwrap().starts_with("otpauth://totp/"));
+    assert!(vault.totp(entry_uuid.clone(), 59).is_some());
+    assert_eq!(detail.android_apps, vec!["com.gitlab.android"]);
+    assert_eq!(detail.tags, vec!["work", "git"]);
+    assert!(detail
+        .custom_fields
+        .iter()
+        .any(|f| f.name == "Recovery PIN" && f.value == "4242" && f.protected));
+
+    // 4. Update the entry (move to root, change password, clear TOTP).
+    vault
+        .update_entry(
+            entry_uuid.clone(),
+            EntryInput {
+                group_uuid: root_uuid.clone(),
+                title: "GitLab Updated".to_owned(),
+                username: "dev2@example.com".to_owned(),
+                password: "updated-password".to_owned(),
+                url: "https://gitlab.example.com".to_owned(),
+                notes: "Rotated".to_owned(),
+                totp: None,
+                android_apps: vec![],
+                custom_fields: vec![],
+                tags: vec!["rotated".to_owned()],
+            },
+        )
+        .unwrap();
+    let updated = vault.entry(entry_uuid.clone()).unwrap();
+    assert_eq!(updated.group_uuid, root_uuid);
+    assert_eq!(updated.summary.title, "GitLab Updated");
+    assert_eq!(updated.password, "updated-password");
+    assert!(!updated.summary.has_totp);
+    assert!(updated.otp_uri.is_none());
+
+    // 5. Delete entry -> moves to Recycle Bin (hidden from all_entries & search).
+    vault.delete_entry(entry_uuid.clone()).unwrap();
+    assert!(vault.all_entries().is_empty());
+
+    // 6. Delete non-root group -> moves to Recycle Bin; deleting root fails.
+    vault.delete_group(work_uuid.clone()).unwrap();
+    assert!(!vault.groups().iter().any(|g| g.uuid == work_uuid));
+    assert!(matches!(
+        vault.delete_group(root_uuid),
+        Err(VaultError::Unsupported { .. })
+    ));
+
+    // 7. Password generator respects character classes and length.
+    let pw = generate_password(24, true, true, true, true).unwrap();
+    assert_eq!(pw.len(), 24);
+    assert!(pw.chars().any(|c| c.is_ascii_uppercase()));
+    assert!(pw.chars().any(|c| c.is_ascii_lowercase()));
+    assert!(pw.chars().any(|c| c.is_ascii_digit()));
+    assert!(pw.chars().any(|c| !c.is_ascii_alphanumeric()));
+    assert!(matches!(
+        generate_password(16, false, false, false, false),
+        Err(VaultError::Unsupported { .. })
     ));
 }

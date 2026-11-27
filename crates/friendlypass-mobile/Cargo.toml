@@ -26,6 +26,7 @@ bindgen = ["uniffi/cli"]
 # challenge-response/USB): the mobile build only needs URL matching.
 friendlypass = { path = "../friendlypass", default-features = false }
 friendlypass-passkey = { path = "../friendlypass-passkey" }
+getrandom = "0.4"
 keepass = { version = "0.17", features = ["save_kdbx4", "totp"] }
 thiserror = "2"
 # Wipe passwords and keyfile bytes once they have been folded into the key.

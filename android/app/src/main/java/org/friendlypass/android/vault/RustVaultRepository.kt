@@ -18,6 +18,7 @@ import org.friendlypass.android.storage.WriteResult
 import org.friendlypass.android.vault.model.DatabaseRef
 import org.friendlypass.android.vault.model.EntryDetail
 import org.friendlypass.android.vault.model.EntryField
+import org.friendlypass.android.vault.model.EntryInput
 import org.friendlypass.android.vault.model.EntrySummary
 import org.friendlypass.android.vault.model.GroupNode
 import org.friendlypass.android.vault.model.NewLogin
@@ -30,6 +31,7 @@ import org.friendlypass.android.vault.model.VaultException
 import org.friendlypass.android.vault.model.VaultState
 import uniffi.friendlypass_mobile.EntryDetail as RustEntryDetail
 import uniffi.friendlypass_mobile.EntryField as RustEntryField
+import uniffi.friendlypass_mobile.EntryInput as RustEntryInput
 import uniffi.friendlypass_mobile.EntrySummary as RustEntrySummary
 import uniffi.friendlypass_mobile.GroupNode as RustGroupNode
 import uniffi.friendlypass_mobile.MergeResult as RustMergeResult
@@ -187,6 +189,14 @@ class RustVaultRepository(
         }
     }
 
+    override fun clearDatabase() {
+        synchronized(monitor) {
+            demo = null
+            dropRustVaultLocked()
+            mutableState.value = VaultState.NoDatabase
+        }
+    }
+
     override suspend fun syncIfChanged(): Boolean {
         if (demo != null) return false
         return persistMutex.withLock {
@@ -256,6 +266,10 @@ class RustVaultRepository(
         demo?.entriesInGroup(groupUuid)
             ?: rustCall { requireVault().entriesInGroup(groupUuid) }.map(RustEntrySummary::toModel)
 
+    override fun allEntries(): List<EntrySummary> =
+        demo?.allEntries()
+            ?: rustCall { requireVault().allEntries() }.map(RustEntrySummary::toModel)
+
     override fun search(query: String): List<EntrySummary> =
         demo?.search(query)
             ?: rustCall { requireVault().search(query) }.map(RustEntrySummary::toModel)
@@ -291,6 +305,118 @@ class RustVaultRepository(
                 mutableRevision.value += 1
             }
             uuid
+        }
+    }
+
+    override suspend fun createEntry(input: EntryInput): String {
+        demo?.let { fake ->
+            return fake.createEntry(input).also { mutableRevision.value += 1 }
+        }
+        return persistMutex.withLock {
+            val uuid = withContext(Dispatchers.IO) {
+                rustCall { requireVault().createEntry(input.toRust()) }
+            }
+            synchronized(monitor) { hasUnsavedChanges = true }
+            try {
+                persistWithMerge()
+            } finally {
+                mutableRevision.value += 1
+            }
+            uuid
+        }
+    }
+
+    override suspend fun updateEntry(uuid: String, input: EntryInput) {
+        demo?.let { fake ->
+            fake.updateEntry(uuid, input)
+            mutableRevision.value += 1
+            return
+        }
+        persistMutex.withLock {
+            withContext(Dispatchers.IO) {
+                rustCall { requireVault().updateEntry(uuid, input.toRust()) }
+            }
+            synchronized(monitor) { hasUnsavedChanges = true }
+            try {
+                persistWithMerge()
+            } finally {
+                mutableRevision.value += 1
+            }
+        }
+    }
+
+    override suspend fun deleteEntry(uuid: String) {
+        demo?.let { fake ->
+            fake.deleteEntry(uuid)
+            mutableRevision.value += 1
+            return
+        }
+        persistMutex.withLock {
+            withContext(Dispatchers.IO) {
+                rustCall { requireVault().deleteEntry(uuid) }
+            }
+            synchronized(monitor) { hasUnsavedChanges = true }
+            try {
+                persistWithMerge()
+            } finally {
+                mutableRevision.value += 1
+            }
+        }
+    }
+
+    override suspend fun createGroup(parentUuid: String, name: String): String {
+        demo?.let { fake ->
+            return fake.createGroup(parentUuid, name).also { mutableRevision.value += 1 }
+        }
+        return persistMutex.withLock {
+            val uuid = withContext(Dispatchers.IO) {
+                rustCall { requireVault().createGroup(parentUuid, name) }
+            }
+            synchronized(monitor) { hasUnsavedChanges = true }
+            try {
+                persistWithMerge()
+            } finally {
+                mutableRevision.value += 1
+            }
+            uuid
+        }
+    }
+
+    override suspend fun renameGroup(groupUuid: String, name: String) {
+        demo?.let { fake ->
+            fake.renameGroup(groupUuid, name)
+            mutableRevision.value += 1
+            return
+        }
+        persistMutex.withLock {
+            withContext(Dispatchers.IO) {
+                rustCall { requireVault().renameGroup(groupUuid, name) }
+            }
+            synchronized(monitor) { hasUnsavedChanges = true }
+            try {
+                persistWithMerge()
+            } finally {
+                mutableRevision.value += 1
+            }
+        }
+    }
+
+    override suspend fun deleteGroup(groupUuid: String) {
+        demo?.let { fake ->
+            fake.deleteGroup(groupUuid)
+            mutableRevision.value += 1
+            return
+        }
+        persistMutex.withLock {
+            withContext(Dispatchers.IO) {
+                rustCall { requireVault().deleteGroup(groupUuid) }
+            }
+            synchronized(monitor) { hasUnsavedChanges = true }
+            try {
+                persistWithMerge()
+            } finally {
+                mutableRevision.value += 1
+            }
         }
     }
 
@@ -517,6 +643,27 @@ private fun RustEntryDetail.toModel(): EntryDetail = EntryDetail(
     androidApps = androidApps.toList(),
     customFields = customFields.map(RustEntryField::toModel),
     tags = tags.toList(),
+    groupUuid = groupUuid,
+    otpUri = otpUri,
+)
+
+private fun EntryField.toRust(): RustEntryField = RustEntryField(
+    name = name,
+    value = value,
+    protected = protected,
+)
+
+private fun EntryInput.toRust(): RustEntryInput = RustEntryInput(
+    groupUuid = groupUuid,
+    title = title,
+    username = username,
+    password = password,
+    url = url,
+    notes = notes,
+    totp = totp,
+    androidApps = androidApps,
+    customFields = customFields.map(EntryField::toRust),
+    tags = tags,
 )
 
 private fun RustGroupNode.toModel(): GroupNode = GroupNode(

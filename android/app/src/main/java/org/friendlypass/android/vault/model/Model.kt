@@ -51,6 +51,22 @@ data class EntryDetail(
     val androidApps: List<String>,
     val customFields: List<EntryField>,
     val tags: List<String>,
+    val groupUuid: String = "",
+    val otpUri: String? = null,
+)
+
+/** Mirror of the UniFFI `EntryInput` record for creating or editing an entry. */
+data class EntryInput(
+    val groupUuid: String,
+    val title: String,
+    val username: String,
+    val password: String,
+    val url: String,
+    val notes: String,
+    val totp: String? = null,
+    val androidApps: List<String> = emptyList(),
+    val customFields: List<EntryField> = emptyList(),
+    val tags: List<String> = emptyList(),
 )
 
 /** Mirror of the UniFFI `GroupNode` record. The recycle bin is never included. */

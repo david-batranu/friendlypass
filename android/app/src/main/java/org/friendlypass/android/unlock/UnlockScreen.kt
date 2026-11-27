@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -23,10 +24,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +50,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import org.friendlypass.android.FriendlypassApp
 import org.friendlypass.android.storage.SafDocuments
+import org.friendlypass.android.ui.DatabaseSwitcherDialog
 import org.friendlypass.android.ui.EntryAvatar
 import org.friendlypass.android.vault.model.DatabaseRef
 import org.friendlypass.android.vault.model.VaultException
@@ -74,6 +78,8 @@ fun UnlockScreen(
     var keyfileName by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var showSwitcher by remember { mutableStateOf(false) }
+    var biometricAutoTriggered by rememberSaveable(db.uri) { mutableStateOf(false) }
     // Biometric failures live at app level: the prompt's result may arrive after this screen instance
     // was recreated, and a state write into the dead composition would never be seen.
     val biometricError by app.biometricError.collectAsStateWithLifecycle()
@@ -145,12 +151,37 @@ fun UnlockScreen(
         )
     }
 
+    // Automatically prompt for biometrics as soon as the unlock screen opens for an enrolled database.
+    LaunchedEffect(db.uri) {
+        if (!biometricAutoTriggered && activity != null && app.biometric.isAvailableFor(db)) {
+            biometricAutoTriggered = true
+            unlockWithBiometrics()
+        }
+    }
+
+    if (showSwitcher) {
+        DatabaseSwitcherDialog(
+            currentDb = db,
+            onDismiss = { showSwitcher = false },
+            onSelect = { chosen ->
+                app.store.remember(chosen)
+                app.vault.selectDatabase(chosen)
+            },
+            onManageDatabases = { app.vault.clearDatabase() },
+        )
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
             .imePadding()
-            .padding(horizontal = 24.dp, vertical = 40.dp),
+            .padding(horizontal = 24.dp, vertical = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         EntryAvatar(title = db.displayName, size = 72.dp)
@@ -261,6 +292,24 @@ fun UnlockScreen(
         }
 
         Spacer(Modifier.height(24.dp))
-        TextButton(onClick = onCancel) { Text("Cancel") }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                onClick = {
+                    if (app.store.recent().size > 1) {
+                        showSwitcher = true
+                    } else {
+                        app.vault.clearDatabase()
+                    }
+                },
+                modifier = Modifier.testTag("switch-database"),
+            ) {
+                Text("Switch database")
+            }
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        }
+    }
     }
 }

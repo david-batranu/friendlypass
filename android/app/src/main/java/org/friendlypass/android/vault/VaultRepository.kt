@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.friendlypass.android.vault.model.DatabaseRef
 import org.friendlypass.android.vault.model.EntryDetail
+import org.friendlypass.android.vault.model.EntryInput
 import org.friendlypass.android.vault.model.EntrySummary
 import org.friendlypass.android.vault.model.GroupNode
 import org.friendlypass.android.vault.model.NewLogin
@@ -48,6 +49,9 @@ interface VaultRepository {
     /** Drops the open vault; the state becomes `Locked` (or stays `NoDatabase`). */
     fun lock()
 
+    /** Drops the open vault and returns to `NoDatabase` so the user can choose another database. */
+    fun clearDatabase() = Unit
+
     /**
      * Checks whether the backing database changed externally (for example synced from a desktop client) and
      * reloads it in place when there are no unsaved local edits. Returns `true` when external changes were
@@ -60,6 +64,8 @@ interface VaultRepository {
     fun rootGroupUuid(): String
 
     fun entriesInGroup(groupUuid: String): List<EntrySummary>
+
+    fun allEntries(): List<EntrySummary> = groups().flatMap { entriesInGroup(it.uuid) }
 
     fun search(query: String): List<EntrySummary>
 
@@ -74,6 +80,30 @@ interface VaultRepository {
 
     /** Adds the login and saves through the [org.friendlypass.android.storage.DatabaseStore]. */
     suspend fun addLogin(login: NewLogin): String
+
+    /** Creates a full entry in the target group and saves through [DatabaseStore] (merge-safe). */
+    suspend fun createEntry(input: EntryInput): String =
+        throw org.friendlypass.android.vault.model.VaultException.Failure("Creating entries is not supported")
+
+    /** Updates an existing entry and saves through [DatabaseStore] (merge-safe). */
+    suspend fun updateEntry(uuid: String, input: EntryInput): Unit =
+        throw org.friendlypass.android.vault.model.VaultException.Failure("Editing entries is not supported")
+
+    /** Deletes an entry (moves to Recycle Bin when enabled) and saves through [DatabaseStore]. */
+    suspend fun deleteEntry(uuid: String): Unit =
+        throw org.friendlypass.android.vault.model.VaultException.Failure("Deleting entries is not supported")
+
+    /** Creates a subgroup under [parentUuid] and saves through [DatabaseStore]. */
+    suspend fun createGroup(parentUuid: String, name: String): String =
+        throw org.friendlypass.android.vault.model.VaultException.Failure("Creating groups is not supported")
+
+    /** Renames an existing group and saves through [DatabaseStore]. */
+    suspend fun renameGroup(groupUuid: String, name: String): Unit =
+        throw org.friendlypass.android.vault.model.VaultException.Failure("Renaming groups is not supported")
+
+    /** Deletes a non-root group and saves through [DatabaseStore]. */
+    suspend fun deleteGroup(groupUuid: String): Unit =
+        throw org.friendlypass.android.vault.model.VaultException.Failure("Deleting groups is not supported")
 
     fun passkeysForRp(rpId: String, allowCredentialIds: List<ByteArray>): List<PasskeyInfo>
 

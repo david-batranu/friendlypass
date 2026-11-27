@@ -9,6 +9,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -32,6 +34,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.friendlypass.android.ui.BrowserScreen
 import org.friendlypass.android.ui.EntryDetailScreen
+import org.friendlypass.android.ui.EntryEditorScreen
 import org.friendlypass.android.ui.SettingsScreen
 import org.friendlypass.android.ui.theme.FriendlypassTheme
 import org.friendlypass.android.unlock.UnlockGate
@@ -76,7 +79,12 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             FriendlypassTheme {
-                FriendlypassRoot(allowScreenCapture = allowScreenCapture)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    FriendlypassRoot(allowScreenCapture = allowScreenCapture)
+                }
             }
         }
 
@@ -128,6 +136,8 @@ private fun FriendlypassRoot(allowScreenCapture: Boolean) {
     val route = backStackEntry?.destination?.route
 
     val secureScreen = route?.startsWith("entry/") == true ||
+        route?.startsWith("edit-entry/") == true ||
+        route?.startsWith("create-entry") == true ||
         (route == "gate" && state is VaultState.Locked)
     SecureFlag(secure = secureScreen && !allowScreenCapture)
 
@@ -155,6 +165,7 @@ private fun FriendlypassRoot(allowScreenCapture: Boolean) {
             if (state is VaultState.Unlocked) {
                 BrowserScreen(
                     onOpenEntry = { uuid -> navController.navigate("entry/$uuid") },
+                    onCreateEntry = { groupUuid -> navController.navigate("create-entry?groupUuid=$groupUuid") },
                     onOpenSettings = { navController.navigate("settings") },
                 )
             } else {
@@ -166,8 +177,49 @@ private fun FriendlypassRoot(allowScreenCapture: Boolean) {
             arguments = listOf(navArgument("uuid") { type = NavType.StringType }),
         ) { entry ->
             if (state is VaultState.Unlocked) {
+                val uuid = entry.arguments?.getString("uuid").orEmpty()
                 EntryDetailScreen(
+                    entryUuid = uuid,
+                    onEdit = { navController.navigate("edit-entry/$uuid") },
+                    onBack = { navController.popBackStack() },
+                )
+            } else {
+                Box(Modifier.fillMaxSize())
+            }
+        }
+        composable(
+            route = "create-entry?groupUuid={groupUuid}",
+            arguments = listOf(
+                navArgument("groupUuid") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+            ),
+        ) { entry ->
+            if (state is VaultState.Unlocked) {
+                EntryEditorScreen(
+                    entryUuid = null,
+                    initialGroupUuid = entry.arguments?.getString("groupUuid")?.takeIf { it.isNotBlank() },
+                    onSaved = { newUuid ->
+                        navController.navigate("entry/$newUuid") {
+                            popUpTo("browser")
+                        }
+                    },
+                    onBack = { navController.popBackStack() },
+                )
+            } else {
+                Box(Modifier.fillMaxSize())
+            }
+        }
+        composable(
+            route = "edit-entry/{uuid}",
+            arguments = listOf(navArgument("uuid") { type = NavType.StringType }),
+        ) { entry ->
+            if (state is VaultState.Unlocked) {
+                EntryEditorScreen(
                     entryUuid = entry.arguments?.getString("uuid").orEmpty(),
+                    initialGroupUuid = null,
+                    onSaved = { navController.popBackStack() },
                     onBack = { navController.popBackStack() },
                 )
             } else {

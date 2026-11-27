@@ -7,6 +7,8 @@ import org.friendlypass.android.storage.DatabaseStore
 import org.friendlypass.android.storage.Snapshot
 import org.friendlypass.android.storage.WriteResult
 import org.friendlypass.android.vault.model.DatabaseRef
+import org.friendlypass.android.vault.model.EntryField
+import org.friendlypass.android.vault.model.EntryInput
 import org.friendlypass.android.vault.model.EntrySummary
 import org.friendlypass.android.vault.model.NewLogin
 import org.friendlypass.android.vault.model.PasskeyCreateRequest
@@ -293,6 +295,68 @@ class RustVaultRepositoryTest {
         val found = repo.passkeysForRp("concurrent-passkey.example", emptyList()).single()
         assertEquals(registration.entryUuid, found.entryUuid)
         assertTrue(registration.credentialId.contentEquals(found.credentialId))
+    }
+
+    @Test
+    fun fullCrudEntriesAndGroupsPersistAcrossReopen(): Unit = runBlocking {
+        val store = MemoryStore(ref, asset("sample4.kdbx"))
+        val repo = repository(store)
+        unlock(repo, "testpassword")
+
+        val groupUuid = repo.createGroup(repo.rootGroupUuid(), "Personal")
+        repo.renameGroup(groupUuid, "Personal Vault")
+        assertTrue(repo.groups().any { it.uuid == groupUuid && it.name == "Personal Vault" })
+
+        val entryUuid = repo.createEntry(
+            EntryInput(
+                groupUuid = groupUuid,
+                title = "Fastmail Personal",
+                username = "me@fastmail.example",
+                password = "v1-password",
+                url = "https://fastmail.example",
+                notes = "Primary mail",
+                totp = "JBSWY3DPEHPK3PXP",
+                androidApps = listOf("com.fastmail.app"),
+                customFields = listOf(EntryField("PIN", "1337", protected = true)),
+                tags = listOf("email", "personal"),
+            ),
+        )
+
+        val created = repo.entry(entryUuid)
+        assertEquals(groupUuid, created.groupUuid)
+        assertTrue(created.summary.hasTotp)
+        assertNotNull(repo.totp(entryUuid, 59L))
+
+        repo.updateEntry(
+            entryUuid,
+            EntryInput(
+                groupUuid = repo.rootGroupUuid(),
+                title = "Fastmail Rotated",
+                username = "me@fastmail.example",
+                password = "v2-password",
+                url = "https://fastmail.example",
+                notes = "Rotated",
+                totp = null,
+                androidApps = emptyList(),
+                customFields = emptyList(),
+                tags = listOf("rotated"),
+            ),
+        )
+
+        // Verify persistence across lock/unlock.
+        repo.lock()
+        repo.unlock("testpassword".toCharArray(), null)
+        val reopened = repo.entry(entryUuid)
+        assertEquals("Fastmail Rotated", reopened.summary.title)
+        assertEquals("v2-password", reopened.password)
+        assertEquals(repo.rootGroupUuid(), reopened.groupUuid)
+        assertFalse(reopened.summary.hasTotp)
+
+        repo.deleteEntry(entryUuid)
+        assertTrue(repo.search("Fastmail Rotated").isEmpty())
+
+        repo.deleteGroup(groupUuid)
+        assertFalse(repo.groups().any { it.uuid == groupUuid })
     }
 
     private fun externalDatabaseWith(bytes: ByteArray, title: String): ByteArray {

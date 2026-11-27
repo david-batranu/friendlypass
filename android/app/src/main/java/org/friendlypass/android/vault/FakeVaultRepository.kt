@@ -8,6 +8,7 @@ import org.friendlypass.android.storage.WriteResult
 import org.friendlypass.android.vault.model.DatabaseRef
 import org.friendlypass.android.vault.model.EntryDetail
 import org.friendlypass.android.vault.model.EntryField
+import org.friendlypass.android.vault.model.EntryInput
 import org.friendlypass.android.vault.model.EntrySummary
 import org.friendlypass.android.vault.model.GroupNode
 import org.friendlypass.android.vault.model.NewLogin
@@ -85,7 +86,20 @@ class FakeVaultRepository(
         }
     }
 
-    override fun groups(): List<GroupNode> = requireUnlocked().groups.values.toList()
+    override fun clearDatabase() {
+        synchronized(stateLock) {
+            _state.value = VaultState.NoDatabase
+        }
+    }
+
+    override fun groups(): List<GroupNode> {
+        val db = requireUnlocked()
+        return db.groups.values.map { group ->
+            val path = db.pathOf(group.uuid)
+            val count = db.entries.values.count { it.summary.groupPath == path }
+            group.copy(entryCount = count)
+        }
+    }
 
     override fun rootGroupUuid(): String = requireUnlocked().rootUuid
 
@@ -96,6 +110,9 @@ class FakeVaultRepository(
             .map { it.summary }
             .sortedBy { it.title.lowercase() }
     }
+
+    override fun allEntries(): List<EntrySummary> =
+        requireUnlocked().entries.values.map { it.summary }.sortedBy { it.title.lowercase() }
 
     override fun search(query: String): List<EntrySummary> {
         val db = requireUnlocked()
@@ -177,6 +194,121 @@ class FakeVaultRepository(
         }
         persist()
         return uuid
+    }
+
+    override suspend fun createEntry(input: EntryInput): String {
+        val db = requireUnlocked()
+        val uuid = newUuid()
+        val targetGroup = if (db.groups.containsKey(input.groupUuid)) input.groupUuid else db.rootUuid
+        val urls = listOfNotNull(input.url.takeIf { it.isNotBlank() })
+        val secret = input.totp?.trim()?.takeIf { it.isNotEmpty() }
+        val detail = EntryDetail(
+            summary = EntrySummary(
+                uuid = uuid,
+                title = input.title,
+                username = input.username,
+                url = urls.firstOrNull().orEmpty(),
+                groupPath = db.pathOf(targetGroup),
+                hasTotp = secret != null,
+                hasPasskey = false,
+            ),
+            password = input.password,
+            notes = input.notes,
+            urls = urls,
+            androidApps = input.androidApps,
+            customFields = input.customFields,
+            tags = input.tags,
+            groupUuid = targetGroup,
+            otpUri = secret,
+        )
+        synchronized(stateLock) {
+            db.entries[uuid] = detail
+            if (secret != null) db.totpSecrets[uuid] = secret
+            _revision.value += 1
+        }
+        persist()
+        return uuid
+    }
+
+    override suspend fun updateEntry(uuid: String, input: EntryInput) {
+        val db = requireUnlocked()
+        val existing = db.entries[uuid] ?: throw VaultException.Failure("Entry not found")
+        val targetGroup = if (db.groups.containsKey(input.groupUuid)) input.groupUuid else db.rootUuid
+        val urls = listOfNotNull(input.url.takeIf { it.isNotBlank() })
+        val secret = input.totp?.trim()?.takeIf { it.isNotEmpty() }
+        val updated = existing.copy(
+            summary = existing.summary.copy(
+                title = input.title,
+                username = input.username,
+                url = urls.firstOrNull().orEmpty(),
+                groupPath = db.pathOf(targetGroup),
+                hasTotp = secret != null,
+            ),
+            password = input.password,
+            notes = input.notes,
+            urls = urls,
+            androidApps = input.androidApps,
+            customFields = input.customFields,
+            tags = input.tags,
+            groupUuid = targetGroup,
+            otpUri = secret,
+        )
+        synchronized(stateLock) {
+            db.entries[uuid] = updated
+            if (secret != null) db.totpSecrets[uuid] = secret else db.totpSecrets.remove(uuid)
+            _revision.value += 1
+        }
+        persist()
+    }
+
+    override suspend fun deleteEntry(uuid: String) {
+        val db = requireUnlocked()
+        synchronized(stateLock) {
+            db.entries.remove(uuid) ?: throw VaultException.Failure("Entry not found")
+            db.totpSecrets.remove(uuid)
+            _revision.value += 1
+        }
+        persist()
+    }
+
+    override suspend fun createGroup(parentUuid: String, name: String): String {
+        val db = requireUnlocked()
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) throw VaultException.Failure("Group name cannot be empty")
+        val uuid = newUuid()
+        val parent = if (db.groups.containsKey(parentUuid)) parentUuid else db.rootUuid
+        synchronized(stateLock) {
+            db.groups[uuid] = GroupNode(uuid, trimmed, parent, 0)
+            _revision.value += 1
+        }
+        persist()
+        return uuid
+    }
+
+    override suspend fun renameGroup(groupUuid: String, name: String) {
+        val db = requireUnlocked()
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) throw VaultException.Failure("Group name cannot be empty")
+        synchronized(stateLock) {
+            val existing = db.groups[groupUuid] ?: throw VaultException.Failure("Group not found")
+            db.groups[groupUuid] = existing.copy(name = trimmed)
+            _revision.value += 1
+        }
+        persist()
+    }
+
+    override suspend fun deleteGroup(groupUuid: String) {
+        val db = requireUnlocked()
+        if (groupUuid == db.rootUuid) throw VaultException.Failure("Cannot delete root group")
+        synchronized(stateLock) {
+            val pathPrefix = db.pathOf(groupUuid)
+            db.groups.remove(groupUuid) ?: throw VaultException.Failure("Group not found")
+            db.entries.entries.removeAll { (_, e) ->
+                e.summary.groupPath == pathPrefix || e.summary.groupPath.startsWith("$pathPrefix/")
+            }
+            _revision.value += 1
+        }
+        persist()
     }
 
     override fun passkeysForRp(rpId: String, allowCredentialIds: List<ByteArray>): List<PasskeyInfo> {
@@ -336,6 +468,8 @@ class FakeVaultRepository(
                             }
                         },
                         tags = tags,
+                        groupUuid = group,
+                        otpUri = totpSecret,
                     )
                     entries[uuid] = detail
                     totpSecret?.let { totp[uuid] = it }

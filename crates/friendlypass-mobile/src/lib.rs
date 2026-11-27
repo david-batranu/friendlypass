@@ -13,13 +13,14 @@ uniffi::setup_scaffolding!();
 
 use std::collections::HashSet;
 use std::io::Cursor;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use friendlypass::matching::{self, MatchCandidate, MatchTarget};
 use friendlypass_passkey::StoredPasskey;
 use keepass::config::{DatabaseVersion, InnerCipherConfig};
-use keepass::db::{fields, Database, Entry, EntryRef, GroupRef, Times};
+use keepass::db::{fields, Database, Entry, EntryId, EntryRef, GroupId, GroupRef, History, Times, TOTP};
 use keepass::DatabaseKey;
 use zeroize::Zeroizing;
 
@@ -74,13 +75,33 @@ pub struct EntryField {
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct EntryDetail {
     pub summary: EntrySummary,
+    pub group_uuid: String,
     pub password: String,
     pub notes: String,
+    /// Raw `otp` field value (e.g. `otpauth://totp/...`), if present.
+    pub otp_uri: Option<String>,
     /// The main URL first, then additional URLs.
     pub urls: Vec<String>,
     pub android_apps: Vec<String>,
     /// Fields that are not one of the standard Title/UserName/Password/URL/
     /// Notes/otp fields.
+    pub custom_fields: Vec<EntryField>,
+    pub tags: Vec<String>,
+}
+
+/// Full input for creating or updating an entry.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct EntryInput {
+    /// Target group UUID (falls back to root group when empty).
+    pub group_uuid: String,
+    pub title: String,
+    pub username: String,
+    pub password: String,
+    pub url: String,
+    pub notes: String,
+    /// Either a full `otpauth://` URI or a raw Base32 secret. Empty/None clears TOTP.
+    pub totp: Option<String>,
+    pub android_apps: Vec<String>,
     pub custom_fields: Vec<EntryField>,
     pub tags: Vec<String>,
 }
@@ -181,6 +202,109 @@ pub struct Vault {
     /// The same credentials the database was opened with; `save` reuses them.
     key: DatabaseKey,
     modified: AtomicBool,
+}
+
+/// Create a brand-new KDBX 4.1 database and return its serialized bytes.
+#[uniffi::export]
+pub fn create_database(
+    name: String,
+    password: Option<String>,
+    keyfile: Option<Vec<u8>>,
+) -> Result<Vec<u8>, VaultError> {
+    let password = password.map(Zeroizing::new);
+    let keyfile = keyfile.map(Zeroizing::new);
+
+    let has_password = password.as_deref().is_some_and(|p| !p.is_empty());
+    let has_keyfile = keyfile.as_deref().is_some_and(|k| !k.is_empty());
+    if !has_password && !has_keyfile {
+        return Err(VaultError::InvalidCredentials);
+    }
+
+    let mut key = DatabaseKey::new();
+    if let Some(password) = password.as_deref().filter(|p| !p.is_empty()) {
+        key = key.with_password(password);
+    }
+    if let Some(keyfile) = keyfile.as_deref().filter(|k| !k.is_empty()) {
+        key = key
+            .with_keyfile(&mut Cursor::new(keyfile))
+            .map_err(|error| VaultError::Io {
+                msg: error.to_string(),
+            })?;
+    }
+
+    let mut database = Database::new();
+    database.config.version = DatabaseVersion::KDB4(1);
+    database.config.inner_cipher_config = InnerCipherConfig::ChaCha20;
+    let db_name = if name.trim().is_empty() {
+        "Passwords".to_owned()
+    } else {
+        name.trim().to_owned()
+    };
+    database.meta.database_name = Some(db_name.clone());
+    database.meta.recyclebin_enabled = Some(true);
+    {
+        let mut root = database.root_mut();
+        root.name = db_name;
+    }
+
+    let mut out = Vec::new();
+    database.save(&mut out, key).map_err(save_error)?;
+    Ok(out)
+}
+
+/// Generate a cryptographically random password guaranteeing at least one
+/// character from each enabled character class.
+#[uniffi::export]
+pub fn generate_password(
+    length: u32,
+    uppercase: bool,
+    lowercase: bool,
+    digits: bool,
+    symbols: bool,
+) -> Result<String, VaultError> {
+    const UPPER: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+    const LOWER: &[u8] = b"abcdefghijkmnopqrstuvwxyz";
+    const DIGITS: &[u8] = b"23456789";
+    const SYMBOLS: &[u8] = b"!@#$%^&*()-_=+[]{};:,.?";
+
+    let mut classes: Vec<&[u8]> = Vec::new();
+    if uppercase {
+        classes.push(UPPER);
+    }
+    if lowercase {
+        classes.push(LOWER);
+    }
+    if digits {
+        classes.push(DIGITS);
+    }
+    if symbols {
+        classes.push(SYMBOLS);
+    }
+    if classes.is_empty() {
+        return Err(VaultError::Unsupported {
+            msg: "select at least one character set".to_owned(),
+        });
+    }
+
+    let len = (length as usize).clamp(classes.len().max(4), 128);
+    let mut pool: Vec<u8> = Vec::new();
+    for class in &classes {
+        pool.extend_from_slice(class);
+    }
+
+    let mut chars: Vec<u8> = Vec::with_capacity(len);
+    for class in &classes {
+        chars.push(class[random_index(class.len())?]);
+    }
+    while chars.len() < len {
+        chars.push(pool[random_index(pool.len())?]);
+    }
+    // Fisher-Yates shuffle.
+    for i in (1..chars.len()).rev() {
+        let j = random_index(i + 1)?;
+        chars.swap(i, j);
+    }
+    Ok(String::from_utf8(chars).expect("ASCII password"))
 }
 
 /// Open a KDBX database from memory.
@@ -315,8 +439,13 @@ impl Vault {
         custom_fields.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(EntryDetail {
             summary: summary(&entry),
+            group_uuid: uuid_of_group(&entry.parent()),
             password: entry.get(fields::PASSWORD).unwrap_or_default().to_owned(),
             notes: entry.get(fields::NOTES).unwrap_or_default().to_owned(),
+            otp_uri: entry
+                .get(fields::OTP)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned),
             urls,
             android_apps,
             custom_fields,
@@ -384,6 +513,211 @@ impl Vault {
         };
         self.modified.store(true, Ordering::SeqCst);
         Ok(uuid)
+    }
+
+    /// Create a full entry in the specified group (or root if empty) and return its UUID.
+    pub fn create_entry(&self, input: EntryInput) -> Result<String, VaultError> {
+        let normalized_otp = match input.totp.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => Some(normalize_otp(raw, &input.title, &input.username)?),
+            None => None,
+        };
+        let password = Zeroizing::new(input.password);
+        let uuid = {
+            let mut database = self.lock_database();
+            let target_group_id = find_group_id(&database, &input.group_uuid)
+                .unwrap_or_else(|| database.root().id());
+            let now = Times::now();
+            let mut group = database
+                .group_mut(target_group_id)
+                .ok_or(VaultError::NotFound)?;
+            let mut entry = group.add_entry();
+            apply_entry_fields(
+                &mut entry,
+                &input.title,
+                &input.username,
+                password.as_str(),
+                &input.url,
+                &input.notes,
+                normalized_otp.as_deref(),
+                &input.android_apps,
+                &input.custom_fields,
+                &input.tags,
+            );
+            entry.times.creation = Some(now);
+            entry.times.last_modification = Some(now);
+            entry.times.location_changed = Some(now);
+            uuid_of_entry(&entry)
+        };
+        self.modified.store(true, Ordering::SeqCst);
+        Ok(uuid)
+    }
+
+    /// Update an existing entry in place (recording a history snapshot first and
+    /// moving it if `input.group_uuid` changed). Preserves `KPEX_PASSKEY_*` fields
+    /// and attachments.
+    pub fn update_entry(&self, uuid: String, input: EntryInput) -> Result<(), VaultError> {
+        let normalized_otp = match input.totp.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => Some(normalize_otp(raw, &input.title, &input.username)?),
+            None => None,
+        };
+        let password = Zeroizing::new(input.password);
+        {
+            let mut database = self.lock_database();
+            let entry_id = find_entry_id(&database, &uuid).ok_or(VaultError::NotFound)?;
+            let current_parent_id = database
+                .entry(entry_id)
+                .ok_or(VaultError::NotFound)?
+                .parent()
+                .id();
+            let target_group_id = find_group_id(&database, &input.group_uuid)
+                .unwrap_or(current_parent_id);
+            let now = Times::now();
+
+            {
+                let mut entry = database.entry_mut(entry_id).ok_or(VaultError::NotFound)?;
+                // Preserve previous version in history before mutating.
+                let mut snapshot = entry.as_ref().deref().clone();
+                snapshot.history = None;
+                let history = entry.history.get_or_insert_with(History::default);
+                history.add_entry(snapshot);
+
+                apply_entry_fields(
+                    &mut entry,
+                    &input.title,
+                    &input.username,
+                    password.as_str(),
+                    &input.url,
+                    &input.notes,
+                    normalized_otp.as_deref(),
+                    &input.android_apps,
+                    &input.custom_fields,
+                    &input.tags,
+                );
+                entry.times.last_modification = Some(now);
+            }
+
+            if target_group_id != current_parent_id {
+                if let Some(mut entry) = database.entry_mut(entry_id) {
+                    entry.track_changes().move_to(target_group_id).map_err(|e| {
+                        VaultError::Corrupt {
+                            msg: format!("could not move entry: {e}"),
+                        }
+                    })?;
+                    entry.times.location_changed = Some(now);
+                }
+            }
+        }
+        self.modified.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Delete an entry: moves to the Recycle Bin when enabled (creating it on demand),
+    /// or permanently removes it with a KDBX tombstone for cloud sync.
+    pub fn delete_entry(&self, uuid: String) -> Result<(), VaultError> {
+        {
+            let mut database = self.lock_database();
+            let entry_id = find_entry_id(&database, &uuid).ok_or(VaultError::NotFound)?;
+            let recycle = recycle_ids(&database);
+            let already_in_recycle = database
+                .entry(entry_id)
+                .map(|e| in_recycle(&e, &recycle))
+                .unwrap_or(false);
+            let use_recycle = database.meta.recyclebin_enabled.unwrap_or(true) && !already_in_recycle;
+
+            if use_recycle {
+                let bin_id = ensure_recycle_bin(&mut database);
+                if let Some(mut entry) = database.entry_mut(entry_id) {
+                    entry.track_changes().move_to(bin_id).map_err(|e| {
+                        VaultError::Corrupt {
+                            msg: format!("could not move entry to recycle bin: {e}"),
+                        }
+                    })?;
+                }
+            } else if let Some(mut entry) = database.entry_mut(entry_id) {
+                entry.track_changes().remove();
+            }
+        }
+        self.modified.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Create a new group under `parent_uuid` (or root when empty) and return its UUID.
+    pub fn create_group(&self, parent_uuid: String, name: String) -> Result<String, VaultError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(VaultError::Unsupported {
+                msg: "group name cannot be empty".to_owned(),
+            });
+        }
+        let uuid = {
+            let mut database = self.lock_database();
+            let parent_id = find_group_id(&database, &parent_uuid)
+                .unwrap_or_else(|| database.root().id());
+            let now = Times::now();
+            let mut parent = database.group_mut(parent_id).ok_or(VaultError::NotFound)?;
+            let mut group = parent.add_group();
+            group.name = trimmed.to_owned();
+            group.times.creation = Some(now);
+            group.times.last_modification = Some(now);
+            group.times.location_changed = Some(now);
+            group.id().uuid().simple().to_string()
+        };
+        self.modified.store(true, Ordering::SeqCst);
+        Ok(uuid)
+    }
+
+    /// Rename an existing group.
+    pub fn rename_group(&self, group_uuid: String, name: String) -> Result<(), VaultError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(VaultError::Unsupported {
+                msg: "group name cannot be empty".to_owned(),
+            });
+        }
+        {
+            let mut database = self.lock_database();
+            let group_id = find_group_id(&database, &group_uuid).ok_or(VaultError::NotFound)?;
+            let mut group = database.group_mut(group_id).ok_or(VaultError::NotFound)?;
+            group.name = trimmed.to_owned();
+            group.times.last_modification = Some(Times::now());
+        }
+        self.modified.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Delete a non-root group (moves to Recycle Bin when enabled, otherwise removes with tombstone).
+    pub fn delete_group(&self, group_uuid: String) -> Result<(), VaultError> {
+        {
+            let mut database = self.lock_database();
+            let group_id = find_group_id(&database, &group_uuid).ok_or(VaultError::NotFound)?;
+            if group_id == database.root().id() {
+                return Err(VaultError::Unsupported {
+                    msg: "cannot delete the root group".to_owned(),
+                });
+            }
+            let recycle = recycle_ids(&database);
+            let already_in_recycle = recycle.contains(&group_id.uuid().simple().to_string());
+            let use_recycle = database.meta.recyclebin_enabled.unwrap_or(true) && !already_in_recycle;
+
+            if use_recycle {
+                let bin_id = ensure_recycle_bin(&mut database);
+                if let Some(mut group) = database.group_mut(group_id) {
+                    group.track_changes().move_to(bin_id).map_err(|e| {
+                        VaultError::Corrupt {
+                            msg: format!("could not move group to recycle bin: {e}"),
+                        }
+                    })?;
+                }
+            } else if let Some(mut group) = database.group_mut(group_id) {
+                group.track_changes().remove().map_err(|e| {
+                    VaultError::Corrupt {
+                        msg: format!("could not delete group: {e}"),
+                    }
+                })?;
+            }
+        }
+        self.modified.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn is_modified(&self) -> bool {
@@ -679,6 +1013,158 @@ fn find_entry<'a>(database: &'a Database, uuid: &str) -> Option<EntryRef<'a>> {
     database
         .iter_all_entries()
         .find(|entry| uuid_of_entry(entry) == uuid)
+}
+
+fn find_entry_id(database: &Database, uuid: &str) -> Option<EntryId> {
+    find_entry(database, uuid).map(|e| e.id())
+}
+
+fn find_group_id(database: &Database, uuid: &str) -> Option<GroupId> {
+    let uuid = normalize_uuid(uuid)?;
+    let recycle = recycle_ids(database);
+    if recycle.contains(&uuid) {
+        return None;
+    }
+    database
+        .iter_all_groups()
+        .find(|group| uuid_of_group(group) == uuid)
+        .map(|group| group.id())
+}
+
+fn ensure_recycle_bin(database: &mut Database) -> GroupId {
+    if let Some(bin) = database.recycle_bin() {
+        return bin.id();
+    }
+    let now = Times::now();
+    let bin_id = {
+        let mut root = database.root_mut();
+        let mut bin = root.add_group();
+        bin.name = "Recycle Bin".to_owned();
+        bin.times.creation = Some(now);
+        bin.times.last_modification = Some(now);
+        bin.times.location_changed = Some(now);
+        bin.id()
+    };
+    database.meta.recyclebin_uuid = Some(bin_id.uuid());
+    database.meta.recyclebin_enabled = Some(true);
+    bin_id
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_entry_fields(
+    entry: &mut Entry,
+    title: &str,
+    username: &str,
+    password: &str,
+    url: &str,
+    notes: &str,
+    otp: Option<&str>,
+    android_apps: &[String],
+    custom_fields: &[EntryField],
+    tags: &[String],
+) {
+    entry.set_unprotected(fields::TITLE, title);
+    entry.set_unprotected(fields::USERNAME, username);
+    entry.set_protected(fields::PASSWORD, password);
+    entry.set_unprotected(fields::URL, url);
+    entry.set_unprotected(fields::NOTES, notes);
+
+    match otp {
+        Some(uri) if !uri.is_empty() => {
+            entry.set_protected(fields::OTP, uri);
+        }
+        _ => {
+            entry.fields.remove(fields::OTP);
+        }
+    }
+
+    // Remove previous non-standard, non-passkey fields (including old AndroidApp* fields)
+    // so deleted custom fields and removed Android apps don't linger.
+    let to_remove: Vec<String> = entry
+        .fields
+        .keys()
+        .filter(|name| !is_standard_field(name) && !name.starts_with("KPEX_PASSKEY_"))
+        .cloned()
+        .collect();
+    for name in to_remove {
+        entry.fields.remove(&name);
+    }
+
+    let cleaned_apps: Vec<&str> = android_apps
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    for (idx, app) in cleaned_apps.iter().enumerate() {
+        let field_name = if idx == 0 {
+            ANDROID_APP_FIELD.to_owned()
+        } else {
+            format!("{ANDROID_APP_FIELD}_{idx}")
+        };
+        entry.set_unprotected(field_name, *app);
+    }
+
+    for field in custom_fields {
+        let name = field.name.trim();
+        if name.is_empty()
+            || is_standard_field(name)
+            || is_android_app_field(name)
+            || name.starts_with("KPEX_PASSKEY_")
+        {
+            continue;
+        }
+        if field.protected {
+            entry.set_protected(name, field.value.as_str());
+        } else {
+            entry.set_unprotected(name, field.value.as_str());
+        }
+    }
+
+    entry.tags = tags
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+        .collect();
+}
+
+fn normalize_otp(raw: &str, title: &str, username: &str) -> Result<String, VaultError> {
+    let uri = if raw.starts_with("otpauth://") {
+        raw.to_owned()
+    } else {
+        let secret: String = raw
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '-')
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
+        let label = if !username.trim().is_empty() {
+            username.trim()
+        } else if !title.trim().is_empty() {
+            title.trim()
+        } else {
+            "account"
+        };
+        format!("otpauth://totp/{label}?secret={secret}&digits=6&period=30&algorithm=SHA1")
+    };
+    uri.parse::<TOTP>().map_err(|_| VaultError::Unsupported {
+        msg: "invalid TOTP secret or otpauth:// URI".to_owned(),
+    })?;
+    Ok(uri)
+}
+
+fn random_index(bound: usize) -> Result<usize, VaultError> {
+    debug_assert!(bound > 0 && bound <= 256);
+    let limit = (256 / bound) * bound;
+    let mut byte = [0u8; 1];
+    loop {
+        getrandom::fill(&mut byte).map_err(|e| VaultError::Io {
+            msg: format!("random number generator failed: {e}"),
+        })?;
+        let value = byte[0] as usize;
+        if value < limit {
+            return Ok(value % bound);
+        }
+    }
 }
 
 /// Reads a KeePassXC-format passkey from an entry's fields. Protected values

@@ -2413,6 +2413,7 @@ version = "0.1.2"
 dependencies = [
  "friendlypass",
  "friendlypass-passkey",
+ "getrandom 0.4.3",
  "keepass",
  "p256",
  "sha2 0.10.9",

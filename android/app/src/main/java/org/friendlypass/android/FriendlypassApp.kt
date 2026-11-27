@@ -69,6 +69,9 @@ class FriendlypassApp : Application() {
         settings = AppSettings(this)
         store = SafDatabaseStore(AndroidDocumentGateway(this), PrefsRecentStore(this))
         vault = RustVaultRepository(store, this)
+        store.recent().firstOrNull()?.let { defaultDb ->
+            vault.selectDatabase(defaultDb)
+        }
         autoLock = AutoLockController(vault, timeoutMillis = { settings.lockTimeoutMillis })
         biometric = BiometricUnlock(this)
         biometricUnlocker = BiometricUnlockCoordinator(appScope, vault, biometricError)
