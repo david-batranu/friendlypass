@@ -72,7 +72,7 @@ import {
 } from "../common/platform";
 import { openPopupWindow } from "../common/popup";
 
-const EXTENSION_VERSION = "0.1.2";
+const EXTENSION_VERSION = "0.1.3";
 
 let transport: NativeTransport | null = null;
 let stateStore: StateStore | null = null;

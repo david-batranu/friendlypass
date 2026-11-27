@@ -16,7 +16,7 @@ plugins {
 // hand-maintained constant.
 // ---------------------------------------------------------------------------
 
-val appVersionName = "0.1.2"
+val appVersionName = "0.1.3"
 
 val appVersionCode: Int = run {
     val parts = appVersionName.split('.')
