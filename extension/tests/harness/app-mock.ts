@@ -90,6 +90,11 @@ export interface AppMockOptions {
    * tests to observe the manual Connect fallback without a GUI prompt.
    */
   denyAssociations?: boolean;
+  /**
+   * Accept `passkeys-register`/`passkeys-get` but never answer them — models
+   * the GUI's pending passkey dialog without stalling the session handshake.
+   */
+  holdPasskeys?: boolean;
 }
 
 interface Session {
@@ -121,6 +126,7 @@ export class AppMock {
   private stallUntil = 0;
   private locked = false;
   private associationDenied: boolean;
+  private readonly holdPasskeys: boolean;
   /** Monotonic counter so `generate-password` returns a distinct value. */
   private generatedPasswords = 0;
 
@@ -135,6 +141,7 @@ export class AppMock {
     this.socketPath = options.socketPath;
     this.logPath = options.logPath;
     this.associationDenied = options.denyAssociations === true;
+    this.holdPasskeys = options.holdPasskeys === true;
   }
 
   get listening(): boolean {
@@ -512,6 +519,16 @@ export class AppMock {
         this.locked = true;
         this.sendInner(socket, session, action, requestNonce, {});
         this.push("database-locked");
+        return;
+
+      case "passkeys-register":
+      case "passkeys-get":
+        if (this.holdPasskeys) {
+          // The real app is showing its passkey dialog; do not answer.
+          this.appendLog({ event: "passkey-held", action });
+          return;
+        }
+        this.outerError(socket, action, 12, "Incorrect action");
         return;
 
       default:

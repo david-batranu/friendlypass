@@ -33,6 +33,11 @@ const PAGE = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Passkey test</title></head>
 <body><p>passkey test page</p></body></html>`;
 
+/** The subset of `status.get` this spec reads. */
+interface StatusLike {
+  appRunning?: boolean;
+}
+
 async function startPageServer(): Promise<{ origin: string; close(): Promise<void> }> {
   const server = http.createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -273,6 +278,107 @@ test("registers a passkey and signs in with it", async () => {
         fromB64(discoverable.signature),
       ),
     ).toBe(true);
+
+    await page.close();
+  } finally {
+    await harness.close();
+    await pageServer.close();
+  }
+});
+
+test("keeps an approval hint on the page while the app prompt is pending", async () => {
+  test.setTimeout(60_000);
+  const pageServer = await startPageServer();
+  const harness = await Harness.start({ holdPasskeys: true });
+  try {
+    // Passkey actions need an association; the mock app approves it.
+    await expect
+      .poll(
+        async () => {
+          const status = (await harness.internalRequest("status.get")) as StatusLike;
+          return status.appRunning;
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+    await harness.internalRequest("association.create");
+
+    const page = await harness.context.newPage();
+    await page.goto(pageServer.origin);
+    await page.waitForFunction(
+      () =>
+        (window as unknown as Record<string, unknown>)["__friendlypassPasskeys"] === true,
+      undefined,
+      { timeout: 10_000 },
+    );
+
+    // The mock accepts the action but never answers, exactly like the app
+    // while its passkey dialog is waiting for the user.
+    await page.evaluate(() => {
+      void navigator.credentials
+        .create({
+          publicKey: {
+            challenge: new Uint8Array(32).buffer,
+            rp: { id: "localhost", name: "friendlypass test" },
+            user: {
+              id: new Uint8Array(8).buffer,
+              name: "alice@example.test",
+              displayName: "Alice",
+            },
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            timeout: 60_000,
+          },
+        })
+        .catch(() => undefined);
+    });
+
+    const hint = () =>
+      page.evaluate(
+        () =>
+          document.querySelector('[data-friendlypass="notification"]')?.shadowRoot
+            ?.textContent ?? "",
+      );
+    await expect
+      .poll(hint, { timeout: 5_000 })
+      .toContain("Approve saving this passkey in friendlypass");
+
+    // It must outlive the 6 s self-dismissing toast lifetime.
+    await page.waitForTimeout(7_000);
+    await expect
+      .poll(hint)
+      .toContain("Approve saving this passkey in friendlypass");
+
+    // The browser-level notice is created too, so the alert is visible even
+    // when this tab is in the background.
+    const noticeIds = () =>
+      harness.swEvaluate(() => {
+        const scope = globalThis as {
+          chrome?: {
+            notifications?: {
+              getAll(callback: (items: Record<string, true>) => void): void;
+            };
+          };
+        };
+        const { promise, resolve } = Promise.withResolvers<string[]>();
+        const api = scope.chrome?.notifications;
+        if (api) {
+          api.getAll((items) => resolve(Object.keys(items)));
+        } else {
+          resolve([]);
+        }
+        return promise;
+      });
+    await expect
+      .poll(async () =>
+        (await noticeIds()).some((id: string) =>
+          id.startsWith("friendlypass-approval-"),
+        ),
+      )
+      .toBe(true);
+
+    // Settling the request (the app goes away) clears the notice.
+    await harness.killApp();
+    await expect.poll(noticeIds, { timeout: 10_000 }).toEqual([]);
 
     await page.close();
   } finally {

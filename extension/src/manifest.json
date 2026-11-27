@@ -23,7 +23,8 @@
     "activeTab",
     "scripting",
     "webRequest",
-    "webRequestAuthProvider"
+    "webRequestAuthProvider",
+    "notifications"
   ],
   "host_permissions": [
     "<all_urls>"

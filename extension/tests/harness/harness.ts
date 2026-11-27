@@ -64,6 +64,11 @@ export interface HarnessOptions {
    * with `appMode: "mock"`; the real Rust test server auto-approves.
    */
   denyAssociations?: boolean;
+  /**
+   * Have the mock accept but never answer passkey actions, so the extension's
+   * approval hint can be observed while a prompt is pending.
+   */
+  holdPasskeys?: boolean;
 }
 
 /** The lifecycle surface the harness needs from either app backend. */
@@ -168,6 +173,7 @@ export class Harness {
           socketPath: paths.appSocket,
           logPath: paths.appLog,
           denyAssociations: options.denyAssociations === true,
+          holdPasskeys: options.holdPasskeys === true,
         });
       }
       await app.start();

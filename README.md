@@ -405,7 +405,10 @@ wire contract; `protocol/fixtures/` holds the golden frames.
 Carried over or added: auto-fill, HTTP auth, password generation, TOTP
 retrieval, lock/unlock push, and WebAuthn passkey registration and sign-in
 (passkeys are on by default; the browser's own password prompts are turned
-off).
+off). While the desktop app is waiting for a passkey approval, the page keeps
+a persistent hint visible and the extension raises a browser desktop
+notification naming the site and action, cleared as soon as the app answers —
+so the in-app dialog cannot go unnoticed behind the browser or in another tab.
 
 ```console
 $ cd extension && npm ci && npm run build    # dist/, dist-firefox/

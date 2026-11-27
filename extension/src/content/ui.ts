@@ -193,18 +193,20 @@ export function createElement<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
-/**
- * A small, self-dismissing toast. Never receives passwords.
- *
- * Rendered in its own open shadow root with the shared tokens (WP6b), so page
- * CSS cannot hide it or change its text.
- */
-export function showNotification(
-  type: "success" | "info" | "warning" | "error",
+type NotificationType = "success" | "info" | "warning" | "error";
+
+export interface PersistentNotification {
+  /** Remove it; safe to call more than once. */
+  dismiss(): void;
+}
+
+function notificationHost(
+  type: NotificationType,
   message: string,
-): void {
+  dismissOnClick: boolean,
+): HTMLDivElement | null {
   if (!message || typeof document === "undefined" || !document.body) {
-    return;
+    return null;
   }
 
   document.querySelector(`[${FP_ATTR}="notification"]`)?.remove();
@@ -234,16 +236,48 @@ export function showNotification(
         color:var(--fp-text);background:var(--fp-bg);
         border:1px solid var(--fp-border);border-left:4px solid ${accent};
         border-radius:var(--fp-radius);box-shadow:var(--fp-shadow);
-        padding:10px 12px;cursor:pointer;
+        padding:10px 12px;cursor:${dismissOnClick ? "pointer" : "default"};
       }`,
   );
   const toast = document.createElement("div");
   toast.className = "fp-panel toast";
   toast.textContent = message;
   shadow.append(toast);
-  toast.addEventListener("click", () => host.remove());
+  if (dismissOnClick) {
+    toast.addEventListener("click", () => host.remove());
+  }
   document.documentElement.append(host);
+  return host;
+}
+
+/**
+ * A small, self-dismissing toast. Never receives passwords.
+ *
+ * Rendered in its own open shadow root with the shared tokens (WP6b), so page
+ * CSS cannot hide it or change its text.
+ */
+export function showNotification(type: NotificationType, message: string): void {
+  const host = notificationHost(type, message, true);
+  if (!host) {
+    return;
+  }
   window.setTimeout(() => host.remove(), 6000);
+}
+
+/**
+ * A toast that stays until [`PersistentNotification.dismiss`] — used while the
+ * desktop app is waiting for a passkey approval the user cannot see.
+ */
+export function showPersistentNotification(
+  type: "info" | "warning",
+  message: string,
+): PersistentNotification {
+  const host = notificationHost(type, message, false);
+  return {
+    dismiss() {
+      host?.remove();
+    },
+  };
 }
 
 /**

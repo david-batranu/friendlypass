@@ -43,6 +43,7 @@ import type { ProtocolSession } from "./session";
 import { broadcastEvent } from "./broadcast";
 import { createStateStore, normaliseOrigin, upsertSiteException } from "./state";
 import type { StateStore } from "./state";
+import { clearStaleApprovalNotices, withApprovalNotice } from "./notifications";
 import {
   createNewGroup,
   generatePassword,
@@ -522,21 +523,40 @@ function buildBackgroundHandlers(): BackgroundHandlers {
     // `response` (a credential or `{errorCode}`) back into a DOM event.
     "passkeys.register": async (args) => {
       const snapshot = await usableSnapshot();
-      return passkeysRegister(await actionContext(snapshot), {
-        publicKey: args.publicKey,
-        origin: args.origin,
-        ...(typeof args.groupName === "string" ? { groupName: args.groupName } : {}),
-      });
+      return withApprovalNotice(
+        "friendlypass",
+        `Approve saving a passkey for ${siteLabel(args.origin)}.`,
+        async () =>
+          passkeysRegister(await actionContext(snapshot), {
+            publicKey: args.publicKey,
+            origin: args.origin,
+            ...(typeof args.groupName === "string" ? { groupName: args.groupName } : {}),
+          }),
+      );
     },
 
     "passkeys.get": async (args) => {
       const snapshot = await usableSnapshot();
-      return passkeysGet(await actionContext(snapshot), {
-        publicKey: args.publicKey,
-        origin: args.origin,
-      });
+      return withApprovalNotice(
+        "friendlypass",
+        `Approve the passkey sign-in for ${siteLabel(args.origin)}.`,
+        async () =>
+          passkeysGet(await actionContext(snapshot), {
+            publicKey: args.publicKey,
+            origin: args.origin,
+          }),
+      );
     },
   };
+}
+
+/** Host for user-facing text, or a generic phrase for unusable origins. */
+function siteLabel(origin: string): string {
+  try {
+    return new URL(origin).host || "this site";
+  } catch {
+    return "this site";
+  }
 }
 
 /**
@@ -942,6 +962,10 @@ export function bootstrap(): void {
   }
 
   ensureWatchdogAlarm();
+
+  // Notifications outlive the service worker; clear any a previous instance
+  // left behind while a passkey prompt was pending.
+  clearStaleApprovalNotices();
 
   console.info(
     `[friendlypass] service worker loaded (protocol v${SUPPORTED_PROTOCOL_VERSION}, host ${NATIVE_HOST_NAME})`,

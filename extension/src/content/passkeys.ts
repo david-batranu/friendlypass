@@ -14,6 +14,7 @@
 import { errorMessageFor, sendBackgroundMessage } from "../common/messages";
 import type { ExtensionSettings, PasskeysResponse } from "../common/types";
 import { normaliseSettings, type ContentSettings } from "./settings";
+import { showPersistentNotification } from "./ui";
 
 const REQUEST_EVENT = "friendlypass-passkeys-request";
 const RESPONSE_EVENT = "friendlypass-passkeys-response";
@@ -331,6 +332,15 @@ async function handleRequest(
   );
   passkeysLifetimeTimerAbortFunc = lifetimeTimer.abort;
 
+  // The desktop app opens its own passkey dialog, which is easy to miss when
+  // the browser has focus. Keep a hint on the page until the app answers.
+  const approval = showPersistentNotification(
+    "info",
+    action === "passkeys_create"
+      ? "Approve saving this passkey in friendlypass — open the app if it is hidden."
+      : "Approve this passkey sign-in in friendlypass — open the app if it is hidden.",
+  );
+
   const result = await sendBackgroundMessage(
     action === "passkeys_create" ? "passkeys.register" : "passkeys.get",
     action === "passkeys_create"
@@ -342,7 +352,7 @@ async function handleRequest(
             : {}),
         }
       : { publicKey, origin: window.location.origin },
-  );
+  ).finally(() => approval.dismiss());
 
   passkeysLifetimeTimerAbortFunc = null;
 
