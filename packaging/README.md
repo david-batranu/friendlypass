@@ -42,19 +42,54 @@ open -b org.friendlypass.friendlypass           # or open it from Finder/Launchp
 `package.sh` builds `target/release/friendlypass.app` (or
 `./packaging/macos/package.sh debug`) if you prefer to copy it yourself.
 
-`package.sh` builds `friendlypass-gui` and `friendlypass-browser-host`,
-copies both into `friendlypass.app/Contents/MacOS`, installs `Info.plist`
-(bundle id `org.friendlypass.friendlypass`) and `AppIcon.icns`, and ad-hoc
-signs the bundle and both executables. LaunchServices then starts the
-executable directly, so no Terminal window appears. Replace the ad-hoc
-signature with a Developer ID (`codesign --sign "Developer ID Application: …"`)
-before distributing.
+`package.sh` builds `friendlypass-gui`, `friendlypass-browser-host`, and the
+macOS AutoFill Credential Provider extension
+(`Contents/PlugIns/FriendlyPassCredentialProvider.appex`, supporting Passkeys,
+Passwords, and macOS 15+ One-Time Codes), installs `Info.plist` and
+`AppIcon.icns`, and signs the bundle inside-out.
 
-Verify the bundle contains the host:
+### Enabling macOS Passkeys & AutoFill
+
+macOS requires the restricted
+`com.apple.developer.authentication-services.autofill-credential-provider`
+entitlement (plus a shared App Group) backed by Apple provisioning profiles
+before the extension appears in **System Settings → General → AutoFill &
+Passwords**:
+
+1. In Apple Developer Portal, create:
+   - An **App Group** (keep it short so the Unix socket path stays under 104 bytes, e.g. `<TEAM_ID>.org.friendlypass`).
+   - An **App ID** for the host app (e.g. `org.friendlypass.friendlypass`) with **AutoFill Credential Provider** and **App Groups** enabled.
+   - An **App ID** for the extension (`<app-bundle-id>.credential-provider`) with **AutoFill Credential Provider** and **App Groups** enabled.
+   - Two macOS **Provisioning Profiles** (Development or Developer ID), one for the host app and one for the extension.
+2. Build and sign using `package.sh` (or `install.sh` to copy into `/Applications` and register with LaunchServices):
+
+```sh
+FP_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" \
+FP_APP_PROFILE=/path/to/friendlypass_app.provisionprofile \
+FP_EXT_PROFILE=/path/to/friendlypass_ext.provisionprofile \
+./packaging/macos/install.sh release
+```
+
+`package.sh` automatically reads the bundle IDs, Team ID, and App Group from the
+provisioning profiles (all can still be overridden with `FP_BUNDLE_ID`,
+`FP_EXT_BUNDLE_ID`, `FP_TEAM_ID`, and `FP_APP_GROUP`), embeds the profiles,
+signs inside-out with the required entitlements, and verifies with
+`codesign --verify --deep --strict`.
+
+3. Open **friendlypass** once (so LaunchServices registers the embedded `.appex`),
+   then enable **friendlypass** under **System Settings → General → AutoFill &
+   Passwords**.
+
+Without `FP_CODESIGN_IDENTITY` and the provisioning profiles, `package.sh` still
+builds and bundles the `.appex` with an ad-hoc sandbox-only signature (omitting
+the restricted entitlement so AMFI does not block launch).
+
+Verify the bundle contains the host and credential provider extension:
 
 ```sh
 ls -l target/release/friendlypass.app/Contents/MacOS/
-codesign -dv target/release/friendlypass.app/Contents/MacOS/friendlypass-browser-host
+ls -l target/release/friendlypass.app/Contents/PlugIns/
+codesign --verify --deep --strict target/release/friendlypass.app
 ```
 
 ## Windows

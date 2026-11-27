@@ -204,6 +204,11 @@ pub struct App {
     /// Host binary registered with the browsers; `None` resolves the sibling
     /// of the running executable (the app bundle in a packaged build).
     pub browser_install_host: Option<PathBuf>,
+    /// macOS AutoFill Credential Provider bridge (passkeys, passwords, TOTP).
+    pub macos_provider: Option<Arc<crate::macos_provider::GuiMacosProvider>>,
+    /// Cached macOS AutoFill provider status shown in Settings.
+    #[cfg(target_os = "macos")]
+    pub macos_provider_status: Option<crate::macos_provider::MacosProviderStatus>,
 
     // -- persisted preferences ------------------------------------------
     /// Column layout and the recent-databases list.
@@ -284,6 +289,9 @@ impl Default for App {
                 .unwrap_or_default(),
             browser_install_platform: None,
             browser_install_host: None,
+            macos_provider: None,
+            #[cfg(target_os = "macos")]
+            macos_provider_status: None,
             prefs: Preferences::default(),
             config_path: None,
             reset_columns: false,
@@ -320,6 +328,7 @@ impl App {
         // the manifests still point at the previous location.
         crate::browser_bridge::refresh_native_messaging(&mut app);
         crate::browser_bridge::start_background(&mut app);
+        crate::macos_provider::start_background(&mut app);
         app
     }
 
@@ -1585,6 +1594,10 @@ impl App {
             |ui| {
                 if ui.button("Settings…").clicked() {
                     self.launch_at_login = startup::launch_at_login_enabled();
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.macos_provider_status = Some(crate::macos_provider::status_summary(self));
+                    }
                     self.dialog = Dialog::Settings;
                     ui.close();
                 }
@@ -1867,6 +1880,7 @@ impl eframe::App for App {
         // Browser-integration bridge: approvals, set-login writes, pushes and
         // the served snapshot all run on the GUI thread.
         crate::browser_bridge::pump(self, &ctx);
+        crate::macos_provider::pump(self, &ctx);
 
         // Clipboard auto-clear runs on every screen, so a copied password is
         // removed even after the database was locked.

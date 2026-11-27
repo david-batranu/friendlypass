@@ -2918,6 +2918,49 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     if prefs_changed {
                         app.save_preferences();
                     }
+                    #[cfg(target_os = "macos")]
+                    {
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.heading("macOS AutoFill & Passkeys");
+                        let info = if let Some(cached) = app.macos_provider_status.clone() {
+                            cached
+                        } else {
+                            let summary = crate::macos_provider::status_summary(app);
+                            app.macos_provider_status = Some(summary.clone());
+                            summary
+                        };
+                        let state_text = if info.store_enabled {
+                            format!(
+                                "Enabled in macOS System Settings ({} passkeys, {} passwords, {} one-time codes).",
+                                info.synced_passkeys, info.synced_passwords, info.synced_totps
+                            )
+                        } else if info.extension_bundled {
+                            "Bundled, not yet enabled in System Settings → General → AutoFill & Passwords (requires Developer signing with the AutoFill Credential Provider entitlement).".to_owned()
+                        } else {
+                            "Not running from a packaged friendlypass.app bundle with the macOS Credential Provider extension.".to_owned()
+                        };
+                        ui.label(state_text);
+                        ui.horizontal(|ui| {
+                            if ui.button("Open AutoFill Settings…").clicked() {
+                                crate::macos_provider::open_system_autofill_settings();
+                            }
+                            if ui.add_enabled(app.db.is_some(), egui::Button::new("Sync Now")).clicked() {
+                                match crate::macos_provider::sync_identity_store_now(app) {
+                                    Ok(true) => {
+                                        app.status = "Synced credentials with macOS AutoFill".into();
+                                    }
+                                    Ok(false) => {
+                                        app.status = "macOS AutoFill provider is not enabled in System Settings".into();
+                                    }
+                                    Err(msg) => {
+                                        app.status = msg;
+                                    }
+                                }
+                                app.macos_provider_status = Some(crate::macos_provider::status_summary(app));
+                            }
+                        });
+                    }
                     ui.add_space(8.0);
                     if ui.button("Close").clicked() {
                         close_clicked = true;

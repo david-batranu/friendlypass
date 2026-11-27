@@ -15,17 +15,23 @@ enigo = "0.6.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "ico", "webp", "bmp"] }
 keepass = { version = "0.17.0", features = ["save_kdbx4", "challenge_response", "totp"] }
 friendlypass = { path = "../friendlypass" }
+friendlypass-passkey = { path = "../friendlypass-passkey" }
 friendlypass-ssh-agent = { path = "../friendlypass-ssh-agent" }
 friendlypass-browser = { path = "../friendlypass-browser" }
+base64 = "0.22"
 resvg = { version = "0.47.0", default-features = false }
 rfd = "0.18.0"
 rust-argon2 = "3.0.0"
 unicode-segmentation = "1.13.3"
 ureq = "3.3.0"
+url = "2"
 uuid = "1.29.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 zxcvbn = "3"
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+cc = "1.11.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
@@ -38,7 +44,6 @@ windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Wi
 keyring = { version = "3.6", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
-friendlypass-passkey = { path = "../friendlypass-passkey" }
 accesskit = "0.25.0"
 ed25519-dalek = "3.0.0"
 egui_kittest = { version = "0.37.0", features = ["eframe", "wgpu", "snapshot"] }

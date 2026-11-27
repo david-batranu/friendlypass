@@ -26,6 +26,8 @@
 	<string>public.app-category.productivity</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>FPAppGroupIdentifier</key>
+	<string>org.friendlypass.shared</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>GPL-3.0-only. Based on KeePassXC, Copyright (C) 2016-2023 KeePassXC Team.</string>
 </dict>

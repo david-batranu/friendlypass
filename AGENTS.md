@@ -19,7 +19,7 @@ cross-checked against KeePassXC 2.8.0 (`verify.sh`).
 | Path | Purpose | Open first |
 |---|---|---|
 | `crates/friendlypass/` | Core library + `friendlypass` CLI: commands, KDBX open/save, keyfiles, import/export, KeeShare. | `src/commands.rs`, `src/import.rs`, `src/export.rs`, `src/saveutil.rs`, `src/key.rs`, `tests/integration.rs` |
-| `crates/friendlypass-gui/` | egui/eframe GUI, dialogs, browser bridge, auto-type, TOTP, icons; headless `egui_kittest` tests and PNG snapshots. | `src/app.rs`, `src/dialogs.rs`, `src/browser_bridge.rs`, `src/autotype.rs`, `src/icons.rs`, `tests/gui.rs`, `tests/browser.rs` |
+| `crates/friendlypass-gui/` | egui/eframe GUI, dialogs, browser bridge, macOS AutoFill Credential Provider bridge (`macos_provider.rs` + `macos_identity_store.m`), auto-type, TOTP, icons; headless `egui_kittest` tests and PNG snapshots. | `src/app.rs`, `src/dialogs.rs`, `src/browser_bridge.rs`, `src/macos_provider.rs`, `src/autotype.rs`, `src/icons.rs`, `tests/gui.rs`, `tests/browser.rs`, `tests/macos_provider.rs` |
 | `crates/friendlypass-ssh-agent/` | SSH agent (unencrypted `ssh-ed25519` subset) plus `friendlypass-ssh-agent` binary. | `src/server.rs`, `src/openssh.rs`, `tests/e2e.rs` |
 | `crates/friendlypass-mobile/` | UniFFI cdylib `friendlypass_mobile` for Android: vault open/search/save, mobile passkey records. | `src/lib.rs`, `src/bin/uniffi-bindgen.rs`, `Cargo.toml` |
 | `crates/friendlypass-passkey/` | WebAuthn authenticator (ES256/EdDSA/RSA) and KeePassXC `KPEX_PASSKEY_*` field format, no keepass dependency. | `src/lib.rs`, `tests/` |
@@ -29,7 +29,7 @@ cross-checked against KeePassXC 2.8.0 (`verify.sh`).
 | `android/` | Android app (`org.friendlypass.android`): Compose UI, UniFFI vault, SAF storage, autofill service, Credential Manager provider, debug-only `:testapp` and `:credtest` drivers, instrumented tests. Contract is frozen. | `CONTRACT.md`, `app/src/main/java/org/friendlypass/android/`, `app/src/androidTest/`, `app/build.gradle.kts` |
 | `protocol/` | Frozen wire contract, golden frames, file ownership. | `ACTIONS.md`, `OWNERSHIP.md`, `version`, `fixtures/` |
 | `installer/` | Registers the native host with Chrome-family browsers and Firefox; thin delegate to `friendlypass-browser-host --install`. | `install.sh`, `tests/install.sh` |
-| `packaging/` | macOS `.app` bundle and Linux tarball/desktop entry; both ship GUI + browser host. | `macos/package.sh`, `linux/package.sh`, `README.md` |
+| `packaging/` | macOS `.app` bundle (GUI + browser host + Swift `FriendlyPassCredentialProvider.appex` for macOS Passkeys/Passwords/TOTP) and Linux tarball/desktop entry. | `macos/package.sh`, `macos/credential-provider/`, `linux/package.sh`, `README.md` |
 | `branding/` | Logo, derived app icons, icon generation script. | `generate-icons.sh`, `derived/` |
 | `fixtures/` | Real KDBX/KDB databases and keyfiles used by Rust and e2e tests. | `sample4.kdbx`, `sample4.keyx` (passwords in `README.md`) |
 | `vendor/challenge-response/` | Local platform shim for `challenge_response` 0.5.46 (its nusb backend does not build on macOS). | `Cargo.toml`, `src/` |
