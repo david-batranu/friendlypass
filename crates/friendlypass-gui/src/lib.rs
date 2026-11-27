@@ -24,5 +24,6 @@ pub mod refs;
 pub mod startup;
 pub mod theme;
 pub mod totp;
+pub mod window_focus;
 
 pub use app::App;

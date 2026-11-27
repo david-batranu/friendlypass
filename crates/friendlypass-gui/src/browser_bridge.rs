@@ -37,6 +37,7 @@ use friendlypass_browser::{
 
 use crate::app::App;
 use crate::dialogs::Dialog;
+use crate::window_focus::{ActivePrompt, NoopWindowFocus, WindowFocusDriver};
 
 /// How long a connection thread waits for the user to approve an association.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -127,6 +128,8 @@ pub struct GuiBrowserBridge {
     /// connection thread can decide without touching the GUI.
     require_approval: AtomicBool,
     notices: Mutex<Vec<BrowserNotice>>,
+    egui_ctx: Mutex<Option<egui::Context>>,
+    window_focus: Mutex<Arc<dyn WindowFocusDriver>>,
 }
 
 impl GuiBrowserBridge {
@@ -136,7 +139,50 @@ impl GuiBrowserBridge {
             cv: Condvar::new(),
             require_approval: AtomicBool::new(require_approval),
             notices: Mutex::new(Vec::new()),
+            egui_ctx: Mutex::new(None),
+            window_focus: Mutex::new(Arc::new(NoopWindowFocus)),
         }
+    }
+
+    pub fn set_egui_ctx(&self, ctx: &egui::Context) {
+        let mut slot = self
+            .egui_ctx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = Some(ctx.clone());
+        }
+    }
+
+    pub fn set_window_focus(&self, driver: Arc<dyn WindowFocusDriver>) {
+        *self
+            .window_focus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = driver;
+    }
+
+    fn wake_gui(&self) {
+        if let Some(ctx) = self
+            .egui_ctx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Wake a potentially minimized/backgrounded desktop window right when an
+    /// interactive confirmation (passkey, browser approval, unlock) arrives.
+    fn wake_gui_for_prompt(&self) {
+        let driver = Arc::clone(
+            &self
+                .window_focus
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        driver.wake_from_background();
+        self.wake_gui();
     }
 
     fn lock(&self) -> MutexGuard<'_, BridgeState> {
@@ -222,6 +268,7 @@ impl GuiBrowserBridge {
             id
         };
         self.cv.notify_all();
+        self.wake_gui_for_prompt();
 
         let deadline = Instant::now() + PASSKEY_TIMEOUT;
         let (lock, cv) = &*reply;
@@ -346,6 +393,7 @@ impl BrowserBridge for GuiBrowserBridge {
                     association_id: name.clone(),
                 });
             self.cv.notify_all();
+            self.wake_gui();
             return Some(name);
         }
 
@@ -363,6 +411,7 @@ impl BrowserBridge for GuiBrowserBridge {
             });
         }
         self.cv.notify_all();
+        self.wake_gui_for_prompt();
 
         let deadline = Instant::now() + APPROVAL_TIMEOUT;
         let mut state = self.lock();
@@ -395,11 +444,13 @@ impl BrowserBridge for GuiBrowserBridge {
     fn request_unlock(&self) {
         self.lock().unlock_requested = true;
         self.cv.notify_all();
+        self.wake_gui_for_prompt();
     }
 
     fn lock_database(&self) {
         self.lock().lock_requested = true;
         self.cv.notify_all();
+        self.wake_gui();
     }
 
     fn apply_set_login(&self, request: &SetLoginRequest) -> bool {
@@ -414,6 +465,7 @@ impl BrowserBridge for GuiBrowserBridge {
             });
         }
         self.cv.notify_all();
+        self.wake_gui();
 
         let deadline = Instant::now() + SET_LOGIN_TIMEOUT;
         let mut state = self.lock();
@@ -467,6 +519,7 @@ fn start_inner(app: &mut App, announce: bool) {
         .browser_bridge
         .get_or_insert_with(|| Arc::new(GuiBrowserBridge::new(require_approval)))
         .clone();
+    bridge.set_window_focus(app.window_focus.driver());
     // Contract §3: the only socket peer that may be auto-approved is our own
     // native host binary.
     let trusted_host_path = native_host_path(app);
@@ -699,11 +752,15 @@ pub fn refresh_native_messaging(app: &mut App) {
 /// served snapshot in sync and emits lock/unlock/changed pushes.
 pub fn pump(app: &mut App, ctx: &egui::Context) {
     let Some(push) = app.browser_handle.as_ref().map(|handle| handle.push_hub()) else {
+        app.window_focus.sync_prompt(ctx, None);
         return;
     };
     let Some(bridge) = app.browser_bridge.clone() else {
+        app.window_focus.sync_prompt(ctx, None);
         return;
     };
+    bridge.set_egui_ctx(ctx);
+    bridge.set_window_focus(app.window_focus.driver());
     bridge.set_require_approval(app.prefs.require_approval_for_new_browsers);
     // Automatic approvals completed on a connection thread become notices.
     for notice in bridge.take_notices() {
@@ -711,7 +768,8 @@ pub fn pump(app: &mut App, ctx: &egui::Context) {
     }
 
     // Interactive requests first: the server thread is waiting for them.
-    if bridge.pending_approval().is_some() {
+    let approval_pending = bridge.pending_approval();
+    if approval_pending.is_some() {
         if matches!(app.dialog, Dialog::None) {
             app.dialog = Dialog::Browser;
         }
@@ -719,8 +777,8 @@ pub fn pump(app: &mut App, ctx: &egui::Context) {
     }
 
     // One passkey dialog at a time; an unrelated open dialog is not replaced.
-    let passkey_pending = bridge.pending_passkey().is_some();
-    if passkey_pending {
+    let passkey_pending = bridge.pending_passkey();
+    if passkey_pending.is_some() {
         if matches!(app.dialog, Dialog::None | Dialog::Passkey) {
             app.dialog = Dialog::Passkey;
         }
@@ -728,6 +786,19 @@ pub fn pump(app: &mut App, ctx: &egui::Context) {
     } else if matches!(app.dialog, Dialog::Passkey) {
         app.dialog = Dialog::None;
     }
+
+    // Raise & float the window while a passkey or association confirmation is
+    // awaiting user input, then drop AlwaysOnTop and return focus to the
+    // previous app (e.g. the browser) once the prompt settles.
+    let active_prompt = passkey_pending
+        .as_ref()
+        .map(|prompt| ActivePrompt::Passkey(prompt.id))
+        .or_else(|| {
+            approval_pending
+                .as_ref()
+                .map(|(_, client_id)| ActivePrompt::Approval(client_id.clone()))
+        });
+    app.window_focus.sync_prompt(ctx, active_prompt);
 
     if let Some(request) = bridge.take_login() {
         let accepted = apply_set_login(app, &request);
@@ -740,6 +811,7 @@ pub fn pump(app: &mut App, ctx: &egui::Context) {
             app.focus_password = true;
             app.unlock_error.clear();
             app.status = "Unlock friendlypass to use the browser extension".into();
+            app.window_focus.raise_for_unlock(ctx);
         }
         ctx.request_repaint();
     }

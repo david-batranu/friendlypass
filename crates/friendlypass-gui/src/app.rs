@@ -209,6 +209,8 @@ pub struct App {
     /// Cached macOS AutoFill provider status shown in Settings.
     #[cfg(target_os = "macos")]
     pub macos_provider_status: Option<crate::macos_provider::MacosProviderStatus>,
+    /// Raises and restores the desktop window when browser confirmations arrive.
+    pub window_focus: crate::window_focus::WindowFocusCoordinator,
 
     // -- persisted preferences ------------------------------------------
     /// Column layout and the recent-databases list.
@@ -292,6 +294,9 @@ impl Default for App {
             macos_provider: None,
             #[cfg(target_os = "macos")]
             macos_provider_status: None,
+            window_focus: crate::window_focus::WindowFocusCoordinator::new(Arc::new(
+                crate::window_focus::NoopWindowFocus,
+            )),
             prefs: Preferences::default(),
             config_path: None,
             reset_columns: false,
@@ -312,6 +317,8 @@ impl App {
             Some(path) => App::with_config_path(path),
             None => App::default(),
         };
+        app.window_focus
+            .set_driver(Arc::new(crate::window_focus::SystemWindowFocus::default()));
         if let Some(path) = initial_db {
             app.db_path = path;
         }
@@ -335,6 +342,15 @@ impl App {
     /// Replace the secret store (tests use an in-memory store).
     pub fn with_secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
         self.secret_store = store;
+        self
+    }
+
+    /// Replace the window-focus driver (tests use a recording driver).
+    pub fn with_window_focus(
+        mut self,
+        driver: Arc<dyn crate::window_focus::WindowFocusDriver>,
+    ) -> Self {
+        self.window_focus.set_driver(driver);
         self
     }
 
