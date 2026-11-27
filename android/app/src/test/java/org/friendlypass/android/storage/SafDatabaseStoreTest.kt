@@ -213,6 +213,44 @@ class SafDatabaseStoreTest {
         assertTrue(key.all { it in "0123456789abcdef" })
     }
 
+    @Test
+    fun `hasChanged detects metadata changes and ignores unreachable providers`() = runTest {
+        gateway.documentMetadata = DocumentMetadata(lastModified = 100L, size = 4L)
+        val snapshot = Snapshot(byteArrayOf(1, 2, 3, 4), lastModified = 100L, size = 4L)
+
+        assertFalse(store.hasChanged(db, snapshot))
+
+        gateway.documentMetadata = DocumentMetadata(lastModified = 101L, size = 4L)
+        assertTrue(store.hasChanged(db, snapshot))
+
+        gateway.documentMetadata = DocumentMetadata(lastModified = 100L, size = 5L)
+        assertTrue(store.hasChanged(db, snapshot))
+
+        gateway.documentMetadata = DocumentMetadata(lastModified = null, size = null)
+        assertTrue(store.hasChanged(db, snapshot))
+
+        gateway.documentMetadata = null
+        assertFalse(store.hasChanged(db, snapshot))
+    }
+
+    @Test
+    fun `write checks content bytes when provider omits metadata`() = runTest {
+        gateway.documentMetadata = DocumentMetadata(lastModified = null, size = null)
+        gateway.documentBytes = byteArrayOf(1, 2, 3, 4)
+        val expected = Snapshot(byteArrayOf(1, 2, 3, 4), lastModified = null, size = null)
+
+        // Content unchanged -> write succeeds.
+        assertTrue(store.write(db, byteArrayOf(5, 6), expected) is WriteResult.Written)
+        assertArrayEquals(byteArrayOf(5, 6), gateway.documentBytes)
+
+        // Another client changed the remote bytes -> conflict instead of silent overwrite.
+        gateway.documentMetadata = DocumentMetadata(lastModified = null, size = null)
+        gateway.documentBytes = byteArrayOf(9, 9, 9)
+        val stale = Snapshot(byteArrayOf(5, 6), lastModified = null, size = null)
+        assertEquals(WriteResult.Conflict, store.write(db, byteArrayOf(7, 8), stale))
+        assertArrayEquals(byteArrayOf(9, 9, 9), gateway.documentBytes)
+    }
+
     private class InMemoryRecentStore : RecentStore {
         private var entries: List<DatabaseRef> = emptyList()
 

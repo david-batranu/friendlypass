@@ -17,8 +17,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -84,6 +86,16 @@ class MainActivity : FragmentActivity() {
                 app.autoLock.checkIdle()
             }
         }
+
+        // Auto-reload external cloud-sync changes on resume and periodically while in foreground.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (isActive) {
+                    app.vault.syncIfChanged()
+                    delay(SYNC_CHECK_INTERVAL_MS)
+                }
+            }
+        }
     }
 
     override fun onUserInteraction() {
@@ -93,6 +105,7 @@ class MainActivity : FragmentActivity() {
 
     companion object {
         private const val IDLE_CHECK_INTERVAL_MS = 10_000L
+        private const val SYNC_CHECK_INTERVAL_MS = 3_000L
 
         /** Debug-only: skip `FLAG_SECURE` so `adb screencap` works for development screenshots. */
         const val EXTRA_ALLOW_CAPTURE = "org.friendlypass.android.ALLOW_CAPTURE"

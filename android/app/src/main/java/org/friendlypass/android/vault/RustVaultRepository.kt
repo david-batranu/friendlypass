@@ -2,9 +2,15 @@ package org.friendlypass.android.vault
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.friendlypass.android.storage.DatabaseStore
 import org.friendlypass.android.storage.Snapshot
@@ -26,6 +32,7 @@ import uniffi.friendlypass_mobile.EntryDetail as RustEntryDetail
 import uniffi.friendlypass_mobile.EntryField as RustEntryField
 import uniffi.friendlypass_mobile.EntrySummary as RustEntrySummary
 import uniffi.friendlypass_mobile.GroupNode as RustGroupNode
+import uniffi.friendlypass_mobile.MergeResult as RustMergeResult
 import uniffi.friendlypass_mobile.NewLogin as RustNewLogin
 import uniffi.friendlypass_mobile.PasskeyAssertion as RustPasskeyAssertion
 import uniffi.friendlypass_mobile.PasskeyCreateRequest as RustPasskeyCreateRequest
@@ -39,9 +46,13 @@ import uniffi.friendlypass_mobile.openVault
 /**
  * [VaultRepository] backed by the UniFFI `friendlypass_mobile` cdylib.
  *
- * All Rust calls run on [Dispatchers.IO]. The encrypted bytes handed to the Rust vault carry the same credentials
- * the vault was opened with, so a conflict can re-read the document, open it again, re-apply this session's
- * not-yet-persisted additions and save once more (contract save algorithm, at most three writes).
+ * All Rust calls run on [Dispatchers.IO]. Concurrent edits across synced devices (desktop + Android) are
+ * handled the same way as the desktop app:
+ * - [syncIfChanged] performs a cheap metadata check and reloads the database in place when another client
+ *   saved a newer copy and there are no unsaved local edits.
+ * - [addLogin] and [registerPasskey] merge remote changes via `Vault.mergeFromBytes` (UUID + timestamp +
+ *   tombstones + conflict history + attachments + `meta.custom_data` + root-UUID check) whenever the
+ *   backing document changed before writing, preserving exact entry UUIDs and passkey keypairs.
  *
  * The password and key file are only held while unlocked, as arrays that are zeroed by [lock]. They never appear
  * in log messages, exception messages or the state flow.
@@ -56,9 +67,16 @@ class RustVaultRepository(
 ) : VaultRepository {
 
     private val monitor = Any()
+    private val persistMutex = Mutex()
     private val mutableState = MutableStateFlow<VaultState>(VaultState.NoDatabase)
     private val stateFlow: StateFlow<VaultState> = mutableState.asStateFlow()
     override val state: StateFlow<VaultState> get() = stateFlow
+
+    private val mutableRevision = MutableStateFlow(0L)
+    override val revision: StateFlow<Long> = mutableRevision.asStateFlow()
+
+    private val mutableSyncEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    override val syncEvents: SharedFlow<String> = mutableSyncEvents.asSharedFlow()
 
     /** Non-null only while the debug demo database is selected. */
     @Volatile
@@ -68,7 +86,7 @@ class RustVaultRepository(
     private var snapshot: Snapshot? = null
     private var sessionPassword: CharArray? = null
     private var sessionKeyfile: ByteArray? = null
-    private val pending = mutableListOf<PendingAddition>()
+    private var hasUnsavedChanges: Boolean = false
 
     override fun selectDatabase(db: DatabaseRef) {
         if (db.uri.startsWith(DEMO_URI_PREFIX)) {
@@ -93,6 +111,7 @@ class RustVaultRepository(
                 fake.unlock(password, keyfile)
             } finally {
                 mutableState.value = fake.state.value
+                mutableRevision.value += 1
             }
             return
         }
@@ -146,7 +165,9 @@ class RustVaultRepository(
             snapshot = fresh
             sessionPassword = passwordCopy
             sessionKeyfile = keyfileCopy
+            hasUnsavedChanges = false
             mutableState.value = VaultState.Unlocked(db, name)
+            mutableRevision.value += 1
         }
     }
 
@@ -163,6 +184,65 @@ class RustVaultRepository(
                 is VaultState.Unlocked -> VaultState.Locked(current.db)
                 VaultState.NoDatabase -> VaultState.NoDatabase
             }
+        }
+    }
+
+    override suspend fun syncIfChanged(): Boolean {
+        if (demo != null) return false
+        return persistMutex.withLock {
+            val (db, currentSnapshot, dirty) = synchronized(monitor) {
+                val unlocked = mutableState.value as? VaultState.Unlocked ?: return@withLock false
+                val snap = snapshot ?: return@withLock false
+                Triple(unlocked.db, snap, hasUnsavedChanges)
+            }
+            // Do not discard unsaved local edits; they will be merged on the next save.
+            if (dirty) return@withLock false
+
+            val changed = runCatching { store.hasChanged(db, currentSnapshot) }.getOrDefault(false)
+            if (!changed) return@withLock false
+
+            val fresh = runCatching { withContext(Dispatchers.IO) { store.read(db) } }.getOrNull()
+                ?: return@withLock false
+            if (fresh.bytes.contentEquals(currentSnapshot.bytes)) {
+                synchronized(monitor) {
+                    if (snapshot === currentSnapshot) {
+                        snapshot = fresh
+                    }
+                }
+                return@withLock false
+            }
+
+            val password = synchronized(monitor) { sessionPassword?.concatToString() }
+            val keyfile = synchronized(monitor) { sessionKeyfile?.copyOf() }
+            val (reopened, latestFresh) = try {
+                openWithRetry(db, fresh, password, keyfile)
+            } catch (_: Exception) {
+                return@withLock false
+            } finally {
+                keyfile?.fill(0)
+            }
+
+            val name = try {
+                withContext(Dispatchers.IO) { reopened.databaseName() }
+            } catch (_: Exception) {
+                reopened.destroy()
+                return@withLock false
+            }
+
+            synchronized(monitor) {
+                val current = mutableState.value
+                if (current !is VaultState.Unlocked || current.db != db || hasUnsavedChanges) {
+                    reopened.destroy()
+                    return@withLock false
+                }
+                dropVaultOnlyLocked()
+                vault = reopened
+                snapshot = latestFresh
+                mutableState.value = VaultState.Unlocked(db, name)
+                mutableRevision.value += 1
+            }
+            mutableSyncEvents.tryEmit("Reloaded external changes")
+            true
         }
     }
 
@@ -196,14 +276,22 @@ class RustVaultRepository(
             ?: rustCall { requireVault().matchApp(packageName) }.map(RustEntrySummary::toModel)
 
     override suspend fun addLogin(login: NewLogin): String {
-        demo?.let { return it.addLogin(login) }
-
-        val initial = withContext(Dispatchers.IO) {
-            rustCall { requireVault().addLogin(login.toRust()) }
+        demo?.let { fake ->
+            return fake.addLogin(login).also { mutableRevision.value += 1 }
         }
-        synchronized(monitor) { pending += PendingAddition.Login(login) }
-        val reapplied = persistPending()
-        return reapplied?.loginUuids?.lastOrNull() ?: initial
+
+        return persistMutex.withLock {
+            val uuid = withContext(Dispatchers.IO) {
+                rustCall { requireVault().addLogin(login.toRust()) }
+            }
+            synchronized(monitor) { hasUnsavedChanges = true }
+            try {
+                persistWithMerge()
+            } finally {
+                mutableRevision.value += 1
+            }
+            uuid
+        }
     }
 
     override fun passkeysForRp(rpId: String, allowCredentialIds: List<ByteArray>): List<PasskeyInfo> =
@@ -215,12 +303,18 @@ class RustVaultRepository(
     override suspend fun registerPasskey(req: PasskeyCreateRequest): PasskeyRegistration {
         demo?.let { return it.registerPasskey(req) }
 
-        val initial = withContext(Dispatchers.IO) {
-            rustCall { requireVault().registerPasskey(req.toRust()) }.toModel()
+        return persistMutex.withLock {
+            val registration = withContext(Dispatchers.IO) {
+                rustCall { requireVault().registerPasskey(req.toRust()) }.toModel()
+            }
+            synchronized(monitor) { hasUnsavedChanges = true }
+            try {
+                persistWithMerge()
+            } finally {
+                mutableRevision.value += 1
+            }
+            registration
         }
-        synchronized(monitor) { pending += PendingAddition.Passkey(req) }
-        val reapplied = persistPending()
-        return reapplied?.registrations?.lastOrNull() ?: initial
     }
 
     override fun assertPasskey(
@@ -236,12 +330,10 @@ class RustVaultRepository(
     // ------------------------------------------------------------------ save
 
     /**
-     * Write the current vault; on [WriteResult.Conflict] re-read the document, reopen it with the remembered
-     * credentials, re-apply every pending addition and try again. Three writes at most.
-     *
-     * @return results from the last re-application, or `null` when the first write succeeded.
+     * Write the current vault; on [WriteResult.Conflict] re-read the document, merge external changes into
+     * the in-memory vault via `Vault.mergeFromBytes`, re-serialize, and try again. Three writes at most.
      */
-    private suspend fun persistPending(): Applied? {
+    private suspend fun persistWithMerge() {
         val db = synchronized(monitor) {
             when (val current = mutableState.value) {
                 is VaultState.Unlocked -> current.db
@@ -250,7 +342,6 @@ class RustVaultRepository(
         }
         var expected = synchronized(monitor) { snapshot } ?: throw VaultException.Locked()
         var bytes = withContext(Dispatchers.IO) { rustCall { requireVault().save() } }
-        var applied: Applied? = null
 
         var attempt = 1
         while (true) {
@@ -259,9 +350,9 @@ class RustVaultRepository(
                 is WriteResult.Written -> {
                     synchronized(monitor) {
                         snapshot = result.snapshot
-                        pending.clear()
+                        hasUnsavedChanges = false
                     }
-                    return applied
+                    return
                 }
 
                 WriteResult.Conflict -> {
@@ -269,56 +360,86 @@ class RustVaultRepository(
                     attempt += 1
 
                     val fresh = withContext(Dispatchers.IO) { store.read(db) }
-                    val password = synchronized(monitor) { sessionPassword?.concatToString() }
-                    val keyfile = synchronized(monitor) { sessionKeyfile?.copyOf() }
-                    val reopened = try {
-                        withContext(Dispatchers.IO) {
-                            openVault(fresh.bytes, password, keyfile)
+                    if (!fresh.bytes.contentEquals(expected.bytes)) {
+                        val (merged, latestFresh) = mergeWithRetry(db, fresh)
+                        bytes = withContext(Dispatchers.IO) { rustCall { requireVault().save() } }
+                        val name = withContext(Dispatchers.IO) {
+                            runCatching { requireVault().databaseName() }.getOrNull()
                         }
-                    } finally {
-                        keyfile?.fill(0)
+                        synchronized(monitor) {
+                            snapshot = latestFresh
+                            if (name != null && mutableState.value is VaultState.Unlocked) {
+                                mutableState.value = VaultState.Unlocked(db, name)
+                            }
+                        }
+                        expected = latestFresh
+                        mutableSyncEvents.tryEmit("Merged external changes (${merged.description})")
+                    } else {
+                        synchronized(monitor) { snapshot = fresh }
+                        expected = fresh
                     }
-                    val additions = synchronized(monitor) { pending.toList() }
-                    val results = try {
-                        withContext(Dispatchers.IO) { applyPending(reopened, additions) }
-                    } catch (error: Exception) {
-                        reopened.destroy()
-                        throw error.toContract()
-                    }
-                    bytes = try {
-                        withContext(Dispatchers.IO) { reopened.save() }
-                    } catch (error: Exception) {
-                        reopened.destroy()
-                        throw error.toContract()
-                    }
-
-                    synchronized(monitor) {
-                        dropVaultOnlyLocked()
-                        vault = reopened
-                        snapshot = fresh
-                    }
-                    expected = fresh
-                    applied = results
                 }
             }
         }
     }
 
-    private fun applyPending(target: RustVault, additions: List<PendingAddition>): Applied {
-        val loginUuids = mutableListOf<String>()
-        val registrations = mutableListOf<PasskeyRegistration>()
-        for (addition in additions) {
-            when (addition) {
-                is PendingAddition.Login ->
-                    loginUuids += rustCall { target.addLogin(addition.login.toRust()) }
-
-                is PendingAddition.Passkey ->
-                    registrations += rustCall {
-                        target.registerPasskey(addition.request.toRust())
-                    }.toModel()
+    /** Retries briefly in case a cloud sync provider is mid-write when we read the remote copy. */
+    private suspend fun mergeWithRetry(
+        db: DatabaseRef,
+        initialFresh: Snapshot,
+    ): Pair<RustMergeResult, Snapshot> {
+        var fresh = initialFresh
+        var lastError: RustVaultException? = null
+        for (retryIndex in 0..OPEN_RETRY_DELAYS_MS.size) {
+            if (retryIndex > 0) {
+                delay(OPEN_RETRY_DELAYS_MS[retryIndex - 1])
+                fresh = withContext(Dispatchers.IO) { store.read(db) }
+            }
+            try {
+                val merged = withContext(Dispatchers.IO) {
+                    requireVault().mergeFromBytes(fresh.bytes)
+                }
+                return merged to fresh
+            } catch (error: RustVaultException) {
+                // Wrong credentials or an unrelated database will not resolve by retrying.
+                if (error is RustVaultException.InvalidCredentials ||
+                    (error is RustVaultException.Corrupt && error.msg.contains("different database"))
+                ) {
+                    throw error.toContract()
+                }
+                lastError = error
             }
         }
-        return Applied(loginUuids, registrations)
+        throw lastError?.toContract() ?: VaultException.Conflict()
+    }
+
+    /** Retries briefly in case a cloud sync provider is mid-write when we auto-reload. */
+    private suspend fun openWithRetry(
+        db: DatabaseRef,
+        initialFresh: Snapshot,
+        password: String?,
+        keyfile: ByteArray?,
+    ): Pair<RustVault, Snapshot> {
+        var fresh = initialFresh
+        var lastError: Exception? = null
+        for (retryIndex in 0..OPEN_RETRY_DELAYS_MS.size) {
+            if (retryIndex > 0) {
+                delay(OPEN_RETRY_DELAYS_MS[retryIndex - 1])
+                fresh = withContext(Dispatchers.IO) { store.read(db) }
+            }
+            try {
+                val opened = withContext(Dispatchers.IO) {
+                    openVault(fresh.bytes, password, keyfile)
+                }
+                return opened to fresh
+            } catch (error: RustVaultException) {
+                if (error is RustVaultException.InvalidCredentials) throw error
+                lastError = error
+            } catch (error: Exception) {
+                lastError = error
+            }
+        }
+        throw lastError ?: VaultException.Failure("Could not reopen database")
     }
 
     // --------------------------------------------------------------- helpers
@@ -334,7 +455,7 @@ class RustVaultRepository(
         sessionPassword = null
         sessionKeyfile = null
         snapshot = null
-        pending.clear()
+        hasUnsavedChanges = false
     }
 
     private fun dropVaultOnlyLocked() {
@@ -350,20 +471,10 @@ class RustVaultRepository(
             throw error.toContract()
         }
 
-    private sealed interface PendingAddition {
-        data class Login(val login: NewLogin) : PendingAddition
-
-        data class Passkey(val request: PasskeyCreateRequest) : PendingAddition
-    }
-
-    private data class Applied(
-        val loginUuids: List<String>,
-        val registrations: List<PasskeyRegistration>,
-    )
-
     private companion object {
         const val MAX_SAVE_ATTEMPTS = 3
         const val DEMO_URI_PREFIX = "demo://"
+        val OPEN_RETRY_DELAYS_MS = longArrayOf(100L, 250L, 500L)
     }
 }
 

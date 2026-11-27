@@ -21,11 +21,15 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,25 +58,36 @@ fun BrowserScreen(
     val context = LocalContext.current
     val app = context.applicationContext as FriendlypassApp
     val state by app.vault.state.collectAsStateWithLifecycle()
+    val revision by app.vault.revision.collectAsStateWithLifecycle()
     val unlocked = state as? VaultState.Unlocked ?: return
 
-    val groups = app.vault.groups()
-    val rootUuid = app.vault.rootGroupUuid()
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(app.vault) {
+        app.vault.syncEvents.collect { message ->
+            snackbar.showSnackbar(message, withDismissAction = false)
+        }
+    }
+
+    val groups = remember(unlocked, revision) { app.vault.groups() }
+    val rootUuid = remember(unlocked, revision) { app.vault.rootGroupUuid() }
     var currentGroupUuid by rememberSaveable(unlocked.db.uri, rootUuid) { mutableStateOf(rootUuid) }
     var query by rememberSaveable(unlocked.db.uri) { mutableStateOf("") }
 
     val currentGroup = groups.firstOrNull { it.uuid == currentGroupUuid } ?: groups.first { it.uuid == rootUuid }
     val childGroups = groups.filter { it.parentUuid == currentGroup.uuid }.sortedBy { it.name.lowercase() }
-    val entries = if (query.isBlank()) {
-        app.vault.entriesInGroup(currentGroup.uuid)
-    } else {
-        app.vault.search(query)
+    val entries = remember(unlocked, revision, currentGroup.uuid, query) {
+        if (query.isBlank()) {
+            app.vault.entriesInGroup(currentGroup.uuid)
+        } else {
+            app.vault.search(query)
+        }
     }
 
     val canGoBack = query.isNotBlank() || currentGroup.uuid != rootUuid
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
                 title = {

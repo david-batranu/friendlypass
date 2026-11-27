@@ -27,6 +27,13 @@ interface DatabaseStore {
     /** Reads through the provider, falling back to the app-private cache when the provider fails. */
     suspend fun read(db: DatabaseRef): Snapshot
 
+    /**
+     * Cheap metadata pre-check for external changes. Returns `true` when the provider reports different
+     * metadata than [expected] (or omits both timestamp and size), signaling that the caller should [read]
+     * and verify the content bytes. Returns `false` when metadata matches or the provider is unreachable.
+     */
+    suspend fun hasChanged(db: DatabaseRef, expected: Snapshot): Boolean = true
+
     /** Returns [WriteResult.Conflict] when the remote metadata no longer matches [expected]. */
     suspend fun write(db: DatabaseRef, bytes: ByteArray, expected: Snapshot): WriteResult
 }

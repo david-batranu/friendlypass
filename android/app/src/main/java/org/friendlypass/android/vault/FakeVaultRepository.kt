@@ -35,6 +35,8 @@ class FakeVaultRepository(
     private val stateLock = Any()
     private val _state = MutableStateFlow<VaultState>(VaultState.NoDatabase)
     override val state: StateFlow<VaultState> = _state.asStateFlow()
+    private val _revision = MutableStateFlow(0L)
+    override val revision: StateFlow<Long> = _revision.asStateFlow()
 
     private var database: FakeDatabase? = null
 
@@ -65,6 +67,7 @@ class FakeVaultRepository(
             }
             synchronized(stateLock) {
                 _state.value = VaultState.Unlocked(ref, database?.name ?: ref.displayName)
+                _revision.value += 1
             }
         } finally {
             password?.fill('\u0000')
@@ -170,6 +173,7 @@ class FakeVaultRepository(
         )
         synchronized(stateLock) {
             db.entries[uuid] = detail
+            _revision.value += 1
         }
         persist()
         return uuid

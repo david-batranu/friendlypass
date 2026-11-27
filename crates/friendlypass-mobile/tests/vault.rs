@@ -628,3 +628,121 @@ fn register_passkey_honours_excluded_credentials() {
         Err(VaultError::Unsupported { .. })
     ));
 }
+
+#[test]
+fn merge_from_bytes_preserves_concurrent_desktop_and_mobile_edits() {
+    let original = fixture("sample4.kdbx");
+    let mobile = open_vault(original.clone(), Some("testpassword".to_owned()), None).unwrap();
+
+    // Mobile registers a passkey and adds a login while holding the older snapshot.
+    let passkey_reg = mobile
+        .register_passkey(registration_request("mobile.example", "alice"))
+        .unwrap();
+    let mobile_login_uuid = mobile
+        .add_login(NewLogin {
+            title: "Mobile Login".to_owned(),
+            username: "mob".to_owned(),
+            password: "mob-secret".to_owned(),
+            url: Some("https://mobile.example".to_owned()),
+            android_app: Some("org.mobile.app".to_owned()),
+        })
+        .unwrap();
+
+    // Meanwhile, a desktop client edits the same database: adds an entry,
+    // deletes "Web Login" (recording a tombstone), and adds a browser association.
+    let key = DatabaseKey::new().with_password("testpassword");
+    let mut desktop_db = Database::open(&mut std::io::Cursor::new(&original), key.clone()).unwrap();
+    desktop_db.config.version = DatabaseVersion::KDB4(1);
+    desktop_db.config.inner_cipher_config = InnerCipherConfig::ChaCha20;
+    {
+        let web_id = desktop_db
+            .iter_all_entries()
+            .find(|e| e.get(fields::TITLE) == Some("Web Login"))
+            .unwrap()
+            .id();
+        desktop_db.entry_mut(web_id).unwrap().track_changes().remove();
+
+        let mut root = desktop_db.root_mut();
+        let mut added = root.add_entry();
+        added.set_unprotected(fields::TITLE, "Desktop Login");
+        added.set_unprotected(fields::USERNAME, "desk");
+        added.set_protected(fields::PASSWORD, "desk-secret");
+        let now = keepass::db::Times::now();
+        added.times.creation = Some(now);
+        added.times.last_modification = Some(now);
+        added.times.location_changed = Some(now);
+    }
+    desktop_db.meta.custom_data.insert(
+        "KPXC_BROWSER_desktop".to_owned(),
+        keepass::db::CustomDataItem {
+            value: Some(keepass::db::CustomDataValue::String("assoc-key".to_owned())),
+            last_modification_time: Some(keepass::db::Times::now()),
+        },
+    );
+    let mut desktop_bytes = Vec::new();
+    desktop_db.save(&mut desktop_bytes, key.clone()).unwrap();
+
+    // Mobile merges desktop's bytes into its open vault, then saves.
+    let result = mobile.merge_from_bytes(desktop_bytes).unwrap();
+    assert_eq!(result.created_entries, 1);
+    assert_eq!(result.deleted_entries, 1);
+    assert_eq!(result.custom_data_updated, 1);
+    assert!(!result.description.is_empty());
+
+    let saved = mobile.save().unwrap();
+    let reopened = open_vault(saved.clone(), Some("testpassword".to_owned()), None).unwrap();
+
+    // Both mobile's login and desktop's login survive; Web Login stays deleted.
+    assert_eq!(
+        reopened.entry(mobile_login_uuid.clone()).unwrap().password,
+        "mob-secret"
+    );
+    assert_eq!(reopened.search("Desktop Login".to_owned()).len(), 1);
+    assert!(reopened.search("Web Login".to_owned()).is_empty());
+
+    // Mobile's passkey kept its exact credential ID & keypair (never regenerated).
+    let found = reopened.passkeys_for_rp("mobile.example".to_owned(), Vec::new());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].entry_uuid, passkey_reg.entry_uuid);
+    assert_eq!(found[0].credential_id, passkey_reg.credential_id);
+
+    // Desktop's browser association in meta.custom_data survived the merge.
+    let final_db = Database::open(&mut std::io::Cursor::new(&saved), key).unwrap();
+    assert!(final_db.meta.custom_data.contains_key("KPXC_BROWSER_desktop"));
+}
+
+#[test]
+fn merge_from_bytes_refuses_unrelated_database_and_wrong_credentials() {
+    let mobile = open_sample4();
+
+    // Build a completely unrelated database with the same password.
+    let mut unrelated = Database::new();
+    unrelated.config.version = DatabaseVersion::KDB4(1);
+    unrelated.config.inner_cipher_config = InnerCipherConfig::ChaCha20;
+    let mut unrelated_bytes = Vec::new();
+    unrelated
+        .save(
+            &mut unrelated_bytes,
+            DatabaseKey::new().with_password("testpassword"),
+        )
+        .unwrap();
+
+    let err = mobile.merge_from_bytes(unrelated_bytes).unwrap_err();
+    match err {
+        VaultError::Corrupt { msg } => assert!(msg.contains("different database"), "got: {msg}"),
+        other => panic!("expected Corrupt with root UUID mismatch, got {other:?}"),
+    }
+
+    // Wrong credentials on remote copy returns InvalidCredentials.
+    let mut other_key_bytes = Vec::new();
+    unrelated
+        .save(
+            &mut other_key_bytes,
+            DatabaseKey::new().with_password("other-password"),
+        )
+        .unwrap();
+    assert!(matches!(
+        mobile.merge_from_bytes(other_key_bytes),
+        Err(VaultError::InvalidCredentials)
+    ));
+}

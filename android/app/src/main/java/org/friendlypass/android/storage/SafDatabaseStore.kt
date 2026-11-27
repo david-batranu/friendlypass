@@ -59,10 +59,17 @@ class SafDatabaseStore(
         Snapshot(bytes = bytes, lastModified = metadata?.lastModified, size = metadata?.size)
     }
 
+    override suspend fun hasChanged(db: DatabaseRef, expected: Snapshot): Boolean =
+        withContext(Dispatchers.IO) {
+            val current = runCatching { gateway.metadata(db.uri) }.getOrNull() ?: return@withContext false
+            if (current.lastModified == null && current.size == null) return@withContext true
+            current.lastModified != expected.lastModified || current.size != expected.size
+        }
+
     override suspend fun write(db: DatabaseRef, bytes: ByteArray, expected: Snapshot): WriteResult =
         withContext(Dispatchers.IO) {
             val current = runCatching { gateway.metadata(db.uri) }.getOrNull()
-            if (!unchanged(current, expected)) return@withContext WriteResult.Conflict
+            if (!unchanged(db, current, expected)) return@withContext WriteResult.Conflict
             try {
                 SafWrite.write(gateway, db.uri, bytes)
             } catch (e: Exception) {
@@ -81,11 +88,15 @@ class SafDatabaseStore(
             )
         }
 
-    private fun unchanged(current: DocumentMetadata?, expected: Snapshot): Boolean {
+    private fun unchanged(db: DatabaseRef, current: DocumentMetadata?, expected: Snapshot): Boolean {
         // No document row at all: we cannot prove the file is unchanged, so never truncate it.
         if (current == null) return false
-        // Provider publishes neither timestamp nor size; there is nothing to compare, trust the caller.
-        if (current.lastModified == null && current.size == null) return true
+        // Provider publishes neither timestamp nor size: verify content bytes directly so concurrent
+        // edits from another client are never silently overwritten.
+        if (current.lastModified == null && current.size == null) {
+            val remoteBytes = runCatching { gateway.read(db.uri) }.getOrNull() ?: return false
+            return remoteBytes.contentEquals(expected.bytes)
+        }
         return current.lastModified == expected.lastModified && current.size == expected.size
     }
 

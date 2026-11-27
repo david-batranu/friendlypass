@@ -238,6 +238,63 @@ class RustVaultRepositoryTest {
         assertTrue(assertion.authenticatorData.contentEquals(reopenedAssertion.authenticatorData))
     }
 
+    @Test
+    fun syncIfChangedReloadsExternalEditsInPlace(): Unit = runBlocking {
+        val original = asset("sample4.kdbx")
+        val store = MemoryStore(ref, original)
+        val repo = repository(store)
+        unlock(repo, "testpassword")
+
+        val initialRevision = repo.revision.value
+        assertFalse(repo.syncIfChanged())
+        assertEquals(initialRevision, repo.revision.value)
+
+        // Another client (e.g. desktop over Google Drive) updates the backing document.
+        store.replaceExternally(externalDatabaseWith(original, "Synced From Desktop"))
+
+        assertTrue(repo.syncIfChanged())
+        assertTrue(repo.revision.value > initialRevision)
+        assertEquals(1, repo.search("Synced From Desktop").size)
+
+        // Calling syncIfChanged again with no new remote change is a no-op.
+        val afterSyncRevision = repo.revision.value
+        assertFalse(repo.syncIfChanged())
+        assertEquals(afterSyncRevision, repo.revision.value)
+    }
+
+    @Test
+    fun passkeyRegistrationConflictPreservesExactCredentialIdAndMergesExternalEdits(): Unit = runBlocking {
+        val original = asset("sample4.kdbx")
+        val externalBytes = externalDatabaseWith(original, "Desktop Entry During Passkey")
+        val store = MemoryStore(ref, original).apply {
+            conflicts = 1
+            this.externalBytes = externalBytes
+        }
+        val repo = repository(store)
+        unlock(repo, "testpassword")
+
+        val registration = repo.registerPasskey(
+            PasskeyCreateRequest(
+                rpId = "concurrent-passkey.example",
+                rpName = "Concurrent",
+                userName = "alice@example.com",
+                userDisplayName = "Alice",
+                userHandle = "alice-handle".toByteArray(),
+                algorithms = listOf(-7),
+                excludeCredentialIds = emptyList(),
+            ),
+        )
+
+        assertEquals(2, store.writes)
+        // Both the desktop entry and the newly registered passkey survive in the merged store.
+        repo.lock()
+        repo.unlock("testpassword".toCharArray(), null)
+        assertEquals(1, repo.search("Desktop Entry During Passkey").size)
+        val found = repo.passkeysForRp("concurrent-passkey.example", emptyList()).single()
+        assertEquals(registration.entryUuid, found.entryUuid)
+        assertTrue(registration.credentialId.contentEquals(found.credentialId))
+    }
+
     private fun externalDatabaseWith(bytes: ByteArray, title: String): ByteArray {
         val opened = openVault(bytes, "testpassword", null)
         return try {
@@ -278,6 +335,15 @@ class RustVaultRepositoryTest {
 
         override suspend fun read(db: DatabaseRef): Snapshot =
             Snapshot(bytes = bytes.copyOf(), lastModified = lastModified, size = size)
+
+        override suspend fun hasChanged(db: DatabaseRef, expected: Snapshot): Boolean =
+            expected.lastModified != lastModified || expected.size != size
+
+        fun replaceExternally(newBytes: ByteArray) {
+            bytes = newBytes.copyOf()
+            size = newBytes.size.toLong()
+            lastModified += 10
+        }
 
         override suspend fun write(db: DatabaseRef, bytes: ByteArray, expected: Snapshot): WriteResult {
             writes += 1

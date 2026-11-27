@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.friendlypass.android.FriendlypassApp
@@ -57,7 +58,8 @@ import org.friendlypass.android.vault.model.VaultException
 fun EntryDetailScreen(entryUuid: String, onBack: () -> Unit) {
     val context = LocalContext.current
     val app = context.applicationContext as FriendlypassApp
-    val detail = remember(entryUuid) {
+    val revision by app.vault.revision.collectAsStateWithLifecycle()
+    val detail = remember(entryUuid, revision) {
         runCatching { app.vault.entry(entryUuid) }.getOrElse { error ->
             if (error is VaultException) null else throw error
         }
@@ -90,7 +92,7 @@ fun EntryDetailScreen(entryUuid: String, onBack: () -> Unit) {
             delay(1_000)
         }
     }
-    val totp = remember(entryUuid, nowSecs) {
+    val totp = remember(entryUuid, nowSecs, revision) {
         runCatching { app.vault.totp(entryUuid, nowSecs) }.getOrNull()
     }
 

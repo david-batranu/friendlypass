@@ -11,6 +11,12 @@ import android.service.autofill.SaveRequest
 import android.util.Log
 import android.view.autofill.AutofillId
 import android.widget.inline.InlinePresentationSpec
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.friendlypass.android.FriendlypassApp
 import org.friendlypass.android.R
 import org.friendlypass.android.vault.model.VaultState
@@ -35,6 +41,12 @@ class FriendlypassAutofillService : AutofillService() {
 
     private val app: FriendlypassApp get() = application as FriendlypassApp
     private val ui: AutofillUi get() = AutofillUi(this)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serviceScope.cancel()
+    }
 
     override fun onFillRequest(
         request: FillRequest,
@@ -88,12 +100,23 @@ class FriendlypassAutofillService : AutofillService() {
                 "locked=${app.vault.state.value !is VaultState.Unlocked}",
         )
 
-        val response = if (app.vault.state.value is VaultState.Unlocked) {
-            buildUnlockedResponse(reading.activityPackage, target, fields, maxSuggestions, spec)
+        if (app.vault.state.value is VaultState.Unlocked) {
+            val job = serviceScope.launch {
+                withTimeoutOrNull(SYNC_TIMEOUT_MS) { app.vault.syncIfChanged() }
+                if (cancellationSignal.isCanceled) return@launch
+                val response = if (app.vault.state.value is VaultState.Unlocked) {
+                    buildUnlockedResponse(reading.activityPackage, target, fields, maxSuggestions, spec)
+                } else {
+                    ui.lockedResponse(fields, target, maxSuggestions, spec)
+                }
+                if (!cancellationSignal.isCanceled) {
+                    callback.onSuccess(response)
+                }
+            }
+            cancellationSignal.setOnCancelListener { job.cancel() }
         } else {
-            ui.lockedResponse(fields, target, maxSuggestions, spec)
+            callback.onSuccess(ui.lockedResponse(fields, target, maxSuggestions, spec))
         }
-        callback.onSuccess(response)
     }
 
     override fun onSaveRequest(request: SaveRequest, callback: SaveCallback) {
@@ -209,6 +232,7 @@ class FriendlypassAutofillService : AutofillService() {
 
     companion object {
         private const val TAG = "FriendlypassAutofill"
+        private const val SYNC_TIMEOUT_MS = 1_500L
 
         /** Same as `InlineSuggestionsRequest.SUGGESTION_COUNT_UNLIMITED`; the planner treats it as unlimited. */
         const val UNLIMITED = -1

@@ -13,7 +13,14 @@ import androidx.credentials.provider.BeginGetCredentialRequest
 import androidx.credentials.provider.BeginGetCredentialResponse
 import androidx.credentials.provider.CredentialProviderService
 import androidx.credentials.provider.ProviderClearCredentialStateRequest
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.friendlypass.android.FriendlypassApp
+import org.friendlypass.android.vault.model.VaultState
 
 /**
  * Credential Manager provider: offers friendlypass passwords and passkeys to the system credential sheet.
@@ -23,10 +30,16 @@ import org.friendlypass.android.FriendlypassApp
 class FriendlypassCredentialProviderService : CredentialProviderService() {
 
     private val app: FriendlypassApp get() = application as FriendlypassApp
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
         CredentialSession.ensureStarted(app.vault)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        serviceScope.cancel()
     }
 
     override fun onBeginGetCredentialRequest(
@@ -37,7 +50,23 @@ class FriendlypassCredentialProviderService : CredentialProviderService() {
         try {
             if (cancellationSignal.isCanceled) return
             CredentialSession.ensureStarted(app.vault)
-            callback.onResult(BeginResponses.get(this, request, app.vault))
+            if (app.vault.state.value is VaultState.Unlocked) {
+                val job = serviceScope.launch {
+                    try {
+                        withTimeoutOrNull(SYNC_TIMEOUT_MS) { app.vault.syncIfChanged() }
+                        if (!cancellationSignal.isCanceled) {
+                            callback.onResult(BeginResponses.get(this@FriendlypassCredentialProviderService, request, app.vault))
+                        }
+                    } catch (_: Exception) {
+                        if (!cancellationSignal.isCanceled) {
+                            callback.onError(GetCredentialUnknownException())
+                        }
+                    }
+                }
+                cancellationSignal.setOnCancelListener { job.cancel() }
+            } else {
+                callback.onResult(BeginResponses.get(this, request, app.vault))
+            }
         } catch (_: Exception) {
             callback.onError(GetCredentialUnknownException())
         }
@@ -64,5 +93,9 @@ class FriendlypassCredentialProviderService : CredentialProviderService() {
     ) {
         // Nothing is cached outside the (already locked) vault.
         callback.onResult(null)
+    }
+
+    companion object {
+        private const val SYNC_TIMEOUT_MS = 1_500L
     }
 }

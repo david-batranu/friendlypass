@@ -156,6 +156,22 @@ pub struct PasskeyAssertion {
     pub user_handle: Vec<u8>,
 }
 
+/// Summary of changes merged in from an external copy of the same database.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct MergeResult {
+    pub created_entries: u32,
+    pub updated_entries: u32,
+    pub deleted_entries: u32,
+    pub moved_entries: u32,
+    pub created_groups: u32,
+    pub updated_groups: u32,
+    pub deleted_groups: u32,
+    pub moved_groups: u32,
+    pub custom_data_updated: u32,
+    /// Short human-readable summary (e.g. `"1 added, 2 updated"`).
+    pub description: String,
+}
+
 /// An unlocked database. Interior mutability (`Mutex`) lets Kotlin share one
 /// `Arc<Vault>` across threads; reads never block on a pending save beyond the
 /// database lock.
@@ -363,6 +379,7 @@ impl Vault {
             }
             entry.times.creation = Some(now);
             entry.times.last_modification = Some(now);
+            entry.times.location_changed = Some(now);
             uuid_of_entry(&entry)
         };
         self.modified.store(true, Ordering::SeqCst);
@@ -464,6 +481,7 @@ impl Vault {
             }
             entry.times.creation = Some(now);
             entry.times.last_modification = Some(now);
+            entry.times.location_changed = Some(now);
             uuid_of_entry(&entry)
         };
         self.modified.store(true, Ordering::SeqCst);
@@ -498,6 +516,40 @@ impl Vault {
             authenticator_data: assertion.authenticator_data,
             signature: assertion.signature,
             user_handle: assertion.user_handle,
+        })
+    }
+
+    /// Merge a newer external copy of the same database (opened with this
+    /// vault's credentials) into the in-memory database, preserving both
+    /// sides' edits.
+    ///
+    /// Uses [`friendlypass::sync::merge_databases`] (UUID + timestamp +
+    /// `deleted_objects` tombstones + conflict history + attachments +
+    /// `meta.custom_data` + root UUID check).
+    pub fn merge_from_bytes(&self, kdbx: Vec<u8>) -> Result<MergeResult, VaultError> {
+        let mut source_cursor = Cursor::new(kdbx);
+        let source = Database::open(&mut source_cursor, self.key.clone()).map_err(open_error)?;
+        let mut database = self.lock_database();
+        let summary = friendlypass::sync::merge_databases(&mut database, &source).map_err(|err| {
+            VaultError::Corrupt {
+                msg: err.to_string(),
+            }
+        })?;
+        drop(database);
+        if summary.total_changes() > 0 {
+            self.modified.store(true, Ordering::SeqCst);
+        }
+        Ok(MergeResult {
+            created_entries: u32::try_from(summary.created_entries).unwrap_or(u32::MAX),
+            updated_entries: u32::try_from(summary.updated_entries).unwrap_or(u32::MAX),
+            deleted_entries: u32::try_from(summary.deleted_entries).unwrap_or(u32::MAX),
+            moved_entries: u32::try_from(summary.moved_entries).unwrap_or(u32::MAX),
+            created_groups: u32::try_from(summary.created_groups).unwrap_or(u32::MAX),
+            updated_groups: u32::try_from(summary.updated_groups).unwrap_or(u32::MAX),
+            deleted_groups: u32::try_from(summary.deleted_groups).unwrap_or(u32::MAX),
+            moved_groups: u32::try_from(summary.moved_groups).unwrap_or(u32::MAX),
+            custom_data_updated: u32::try_from(summary.custom_data_updated).unwrap_or(u32::MAX),
+            description: summary.describe(),
         })
     }
 
