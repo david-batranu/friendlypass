@@ -1,6 +1,6 @@
 {
   "name": "friendlypass-extension",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "friendlypass browser extension (MV3): native-messaging transport, protocol client, content fill engine",
   "license": "GPL-3.0-only",

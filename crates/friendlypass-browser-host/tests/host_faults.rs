@@ -43,7 +43,7 @@ fn app_absent_ping_and_hello_keep_host_alive() {
     assert_eq!(ping["action"], "ping");
     assert_eq!(ping["success"], "true");
     assert_eq!(ping["protocolVersion"], 1);
-    assert_eq!(ping["hostVersion"], "0.1.0");
+    assert_eq!(ping["hostVersion"], env!("CARGO_PKG_VERSION"));
     assert_eq!(ping["appRunning"], false);
     assert!(ping["appVersion"].is_null());
     assert!(ping["locked"].is_null());
