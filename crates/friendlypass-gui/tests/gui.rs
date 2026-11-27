@@ -1489,7 +1489,7 @@ fn write_database_for_external_verification() {
     assert!(!temp_password.is_empty());
 
     // Add "GUI Only Entry" — with a protected custom attribute, an auto-type
-    // configuration, a standard icon, and a password reference to Temp Entry.
+    // configuration, a symbol avatar, and a password reference to Temp Entry.
     harness.get_by_label("New Entry").click();
     harness.run();
     harness.get_by_label("Title:").click();
@@ -1512,7 +1512,9 @@ fn write_database_for_external_verification() {
     harness.get_by_label("Insert reference").click();
     harness.run();
     expand(&mut harness, "Icon");
-    harness.get_by_label("Icon 5").click();
+    harness.get_by_label("Choose symbol").click();
+    harness.run();
+    harness.get_by_label("§").click();
     harness.run();
     harness.get_by_label("Generate").click();
     harness.run();
@@ -1557,7 +1559,15 @@ fn write_database_for_external_verification() {
     assert_eq!(entry.fields.get("API Key").unwrap().get(), "sk-12345");
     assert!(entry.fields.get("API Key").unwrap().is_protected());
     assert!(entry.autotype.as_ref().unwrap().default_sequence.is_some());
-    assert!(matches!(entry.icon(), Some(keepass::db::Icon::BuiltIn(5))), "icon persisted");
+    let symbol = entry
+        .custom_data
+        .get("friendlypass.symbol")
+        .and_then(|item| item.value.as_ref())
+        .map(|value| match value {
+            keepass::db::CustomDataValue::String(s) => s.clone(),
+            keepass::db::CustomDataValue::Binary(_) => String::new(),
+        });
+    assert_eq!(symbol.as_deref(), Some("§"), "symbol persisted");
     let notes = entry.get("Notes").unwrap();
     assert!(notes.contains("{REF:P@I:"), "reference persisted: {notes}");
     let temp_uuid = db

@@ -36,7 +36,7 @@ cross-checked against KeePassXC 2.8.0 (`verify.sh`).
 | `docs/` | Screenshots referenced by the README. | `screenshots/details.png` |
 | `scripts/` | Browser e2e entry point. | `e2e.sh` |
 | `.github/` | CI for the extension + browser crates + installer. `release.yml` builds every platform and the extension on a `vX.Y.Z` tag and publishes one GitHub Release (`workflow_dispatch` = dry run). | `workflows/browser-ext.yml`, `workflows/release.yml` |
-| `verify.sh` | Cross-verification of Rust ↔ real KeePassXC 2.8.0 (release build; slow). | whole file |
+| `verify.sh` | Cross-verification of Rust ↔ real KeePassXC 2.8.0 plus the whole workspace and extension suites (release build; slow). | whole file |
 
 Also at the root: `LICENSE` (GPL-3.0-only), `NOTICE.md` (upstream provenance),
 and `Cargo.toml` (workspace + local `challenge_response` patch).
@@ -100,14 +100,14 @@ from `extension/`.
 | Frozen protocol fixtures (CI gate) | `cargo test -p friendlypass-browser --test fixtures_crypto` | ~5 s |
 | Installer tests | `./installer/tests/install.sh` | ~2 s |
 | Extension deps (first) | `npm ci --prefer-offline` | ~4 s |
-| Extension unit tests | `npx vitest run` (or `npm test`) | ~2 s, 213 tests |
+| Extension unit tests | `npx vitest run` (or `npm test`) | ~2 s, 214 tests |
 | Extension typecheck | `npm run typecheck` | ~4 s |
 | Extension build | `npm run build` (Firefox: `npm run build:firefox`) | <1 s |
 | Chromium e2e | `FP_SKIP_BROWSER_INSTALL=1 bash scripts/e2e.sh` | ~5 min 20 s |
 | Firefox e2e | `npm run e2e:firefox` (from `extension/`) | ~2 min after first download |
 | Package extension zips | `npm run package` | ~2 s |
 | macOS app bundle | `packaging/macos/package.sh` | slow, not run (release build) |
-| Full KeePassXC cross-check | `./verify.sh` | slow, not run (release build + KeePassXC) |
+| Full cross-check | `./verify.sh` | ~1 min warm, minutes cold (81 gates: workspace + extension + real KeePassXC) |
 | Clean clippy (browser + host) | `cargo clippy -p friendlypass-browser -p friendlypass-browser-host --all-targets --no-deps -- -D warnings` | ~5 s warm |
 | Windows cross-check (browser + host) | `cargo check --target x86_64-pc-windows-gnu -p friendlypass-browser -p friendlypass-browser-host --all-targets`, then the same with `cargo clippy … -- -D warnings` | ~1 min warm |
 | Release workflow lint | `actionlint .github/workflows/release.yml` | ~1 s |

@@ -5,12 +5,14 @@
 </p>
 
 **A friendly password manager for KeePass databases** — a Rust
-reimplementation of KeePassXC's headless core *plus* a cross-platform GUI,
+reimplementation of KeePassXC's headless core *plus* a cross-platform desktop
+GUI, a browser extension with its native-messaging host, and an Android app,
 composing the Rust ecosystem instead of rewriting existing functionality.
 
-The name is the `friendlypass` binary (CLI) and the `friendlypass-gui`
-desktop app. Databases stay standard KDBX files, so they keep opening in
-KeePassXC, KeePass, and mobile KeePass apps.
+The name is the `friendlypass` binary (CLI), the `friendlypass-gui` desktop
+app, the `extension/` browser add-on and the Android app. Databases stay
+standard KDBX files, so they keep opening in KeePassXC, KeePass, and mobile
+KeePass apps.
 
 The original C++ implementation is KeePassXC
 (https://github.com/keepassxreboot/keepassxc); friendlypass is built to be
@@ -59,6 +61,13 @@ layers; this project is the behavior/compatibility layer on top:
   attribute and 32-byte key data so KeePassXC and keepass-rs agree),
   password generation, the KDBX3→4.1 upgrade-on-save, atomic writes, and
   friendly credential errors.
+* The rest of the workspace composes the other surfaces:
+  `friendlypass-browser` (KeePassXC-Browser protocol server) and
+  `friendlypass-browser-host` (native-messaging host), `friendlypass-passkey`
+  (WebAuthn authenticator over KeePassXC's `KPEX_PASSKEY_*` attributes),
+  `friendlypass-ssh-agent`, and `friendlypass-mobile` (UniFFI cdylib for
+  Android). `extension/` is a hard fork of keepassxc-browser and `android/` is
+  the Kotlin app on top of the cdylib.
 * `vendor/challenge-response` — a local compatibility patch for the
   `challenge_response` 0.5.46 crate (pulled in by keepass's
   `challenge_response` feature): its `nusb` backend calls the Linux-only
@@ -116,19 +125,40 @@ normal typing (and `Cmd+C` inside the search box) keeps working.
 3. a KDBX 3.1 database upgraded to 4.1 by `friendlypass` opens in keepassxc-cli with
    all entries and attachments intact;
 4. attachments and generated keyfiles round-trip byte-identically;
-5. `cargo test --release` — 13 integration tests over the same fixtures.
+5. `cargo test --release --workspace` — the whole workspace suite (374 tests
+   today: core/CLI, GUI kittest, SSH agent, browser + host, passkeys, mobile).
+   The extension's unit tests and typecheck also run when `extension/node_modules`
+   has been installed.
 
-Current result: **72/72 checks, all workspace tests green.**
+`./verify.sh` has 82 gates (81 without `KEEPASSXC_SRC`, which skips the
+byte-identical attachment comparison; the two extension gates need
+`extension/node_modules`) and exits non-zero if any fails.
+
+Current result: **81 pass, 0 fail, 1 skipped** — the skipped gate is the
+byte-identical attachment comparison, which needs `KEEPASSXC_SRC`.
 
 ## Layout
 
 ```
-crates/friendlypass/          the CLI + library (commands, key handling, save logic)
-crates/friendlypass-gui/      the cross-platform GUI (egui) + headless UI tests
-crates/friendlypass/tests/    integration tests against the fixtures
-fixtures/             real .kdbx files (see passwords below)
-packaging/            macOS .app bundle, Linux .desktop entry
-verify.sh             end-to-end Rust <=> KeePassXC cross-verification
+crates/friendlypass/              CLI + library: KDBX engine, commands, import/export, KeeShare
+crates/friendlypass/tests/        integration tests against `fixtures/`
+crates/friendlypass-gui/          desktop app (egui/eframe) + headless kittest UI tests
+crates/friendlypass-ssh-agent/    SSH agent (unencrypted ssh-ed25519 subset) + binary
+crates/friendlypass-browser/      browser-protocol server: crypto, actions, passkeys, peer verification
+crates/friendlypass-browser-host/ native-messaging host `org.friendlypass.browser` + installer flags
+crates/friendlypass-passkey/      WebAuthn authenticator + KeePassXC `KPEX_PASSKEY_*` storage
+crates/friendlypass-mobile/       UniFFI cdylib `friendlypass_mobile` for Android
+extension/                        MV3 extension (hard fork of keepassxc-browser) + vitest/Playwright tests
+android/                          Android app (Compose, SAF, autofill, Credential Manager) + Gradle tests
+protocol/                         frozen wire contract (`ACTIONS.md`) + golden fixtures
+installer/                        registers the native host with Chrome-family browsers and Firefox
+packaging/                        macOS .app bundle, Linux tarball/desktop entry
+branding/                         logo and derived app icons
+fixtures/                         real .kdbx/.kdb files (passwords below)
+docs/                             screenshots referenced here
+scripts/                          browser e2e entry point
+vendor/challenge-response/        local platform shim for challenge_response 0.5.46
+verify.sh                         end-to-end Rust <=> KeePassXC cross-verification
 ```
 
 `verify.sh` cross-checks friendlypass against a KeePassXC 2.8.0 install
@@ -356,18 +386,73 @@ entry deleted into the Recycle Bin — and the original C++ `keepassxc-cli
 attribute in clear text, and reports "Recycle bin is enabled"
 (`verify.sh`, section 7).
 
+## Browser extension and native messaging
+
+`extension/` is a Manifest V3 extension hard-forked from keepassxc-browser
+1.10.4.1. One source tree builds a Chrome bundle (`npm run build`) and a
+Firefox MV3 event-page build (`npm run build:firefox`); `npm run package`
+produces both zips.
+
+The extension talks to its own native host, `org.friendlypass.browser`
+(`crates/friendlypass-browser-host`), which forwards frames over a Unix
+socket — `<user temp>/org.friendlypass.BrowserServer` — or a Windows named
+pipe to the GUI or the `friendlypass-browser` library. The app side speaks the
+KeePassXC-Browser protocol (X25519 handshake, libsodium-compatible
+`crypto_box_easy`, nonce increment) and checks the browser's code signature
+and the app-link peer on every connection. `protocol/ACTIONS.md` is the frozen
+wire contract; `protocol/fixtures/` holds the golden frames.
+
+Carried over or added: auto-fill, HTTP auth, password generation, TOTP
+retrieval, lock/unlock push, and WebAuthn passkey registration and sign-in
+(passkeys are on by default; the browser's own password prompts are turned
+off).
+
+```console
+$ cd extension && npm ci && npm run build    # dist/, dist-firefox/
+$ ./installer/install.sh                     # register org.friendlypass.browser
+```
+
+Tests:
+
+```console
+$ npx vitest run                         # 214 unit tests
+$ npm run typecheck
+$ npm run e2e                            # Playwright (Chromium)
+$ npm run e2e:firefox                    # Puppeteer / WebDriver BiDi
+$ cargo test -p friendlypass-browser -p friendlypass-browser-host
+```
+
+`scripts/e2e.sh` wraps the Chromium run with a fresh profile per test.
+
+## Android
+
+`android/` is a native Android app (`org.friendlypass.android`, Compose) over
+the `friendlypass-mobile` UniFFI cdylib: SAF database storage, browse/search,
+entry details, an autofill service (including one-time codes), a Credential
+Manager provider with passkeys, and biometric unlock. The Rust/Kotlin boundary
+is frozen in [`android/CONTRACT.md`](android/CONTRACT.md).
+
+```console
+$ cd android && ./gradlew :app:assembleDebug
+```
+
+Requires a rustup toolchain with the Android targets, `cargo-ndk`, the SDK,
+NDK 28.2.13676358 and JDK 21 (see [`AGENTS.md`](AGENTS.md), "Android"). Tests:
+`:app:testDebugUnitTest` plus `:app:connectedDebugAndroidTest` against an
+emulator. The release workflow builds and signs the APK for a `vX.Y.Z` tag.
+
 ## Status & scope
 
 Migrated and verified: the headless core (database open/save, all cipher and
-KDF variants, entries/groups/attachments/protected fields, CLI commands
-above) and the GUI workflow described above — verified against KeePassXC
-2.8.0 in both directions, the SSH agent against real `ssh-keygen`/`ssh-add`,
-the browser protocol against the REAL `keepassxc-proxy`, and KeeShare
-(classic + signed) against `keepassxc-cli` and OpenSSL
-(`./verify.sh`: 72 checks; GUI kittest, import/export, startup/auto-unlock, ssh-agent, browser, KeeShare and
-CLI test suites all green).
+KDF variants, entries/groups/attachments/protected fields, CLI commands above),
+the GUI workflow described above, the SSH agent, the browser stack (protocol
+server, native-messaging host, MV3 extension), the WebAuthn passkey
+authenticator, and the Android app. Cross-checks: KeePassXC 2.8.0 in both
+directions, real `ssh-keygen`/`ssh-add`, the shipped `keepassxc-proxy`, and
+OpenSSL — see [Compatibility, verified](#compatibility-verified) for the
+current gate status.
 
-### Feature matrix (GUI)
+### Feature matrix
 
 | Feature                                   | Status |
 |-------------------------------------------|--------|
@@ -407,6 +492,9 @@ CLI test suites all green).
 | Auto-type execution (keystroke injection via `enigo`) | ✅ implemented + pipeline unit-tested with a recording injector; end-to-end injection requires the user to grant the macOS Accessibility permission (manual step) |
 | SSH agent (key serving) | ✅ implemented + tested against the REAL ssh tooling: our parser reads `ssh-keygen` output; `ssh-keygen -y/-lf` accepts our written keys; `ssh-add -l` lists keys served from database attachments via the `friendlypass-ssh-agent` binary, the library server, AND the GUI's SSH Agent window; signatures verify. Subset: unencrypted `ssh-ed25519` (RSA/ECDSA + passphrase-encrypted documented as unsupported) |
 | Browser integration (friendlypass browser protocol) | ✅ implemented: X25519 `change-public-keys` handshake, nonce-increment responses, encrypted `associate` / `test-associate` / `get-logins` / `generate-password` / `lock-database` with KeePassXC 2.8.0-compatible message shapes and error codes. The GUI's Browser window starts/stops the server on `<user temp dir>/org.friendlypass.BrowserServer`, so friendlypass and KeePassXC run side by side. Protocol interoperability is still checked against the REAL shipped `keepassxc-proxy` binary (handshake → associate → test-associate → get-logins → error replies) when KeePassXC's own socket is free |
+| Browser extension + native host | ✅ MV3 extension (hard fork of keepassxc-browser 1.10.4.1) with Chrome and Firefox builds, own host id `org.friendlypass.browser`, own socket/pipe, browser code-signature and app-link peer verification; 214 extension unit tests, typecheck and Playwright e2e |
+| Passkeys (WebAuthn) | ✅ `friendlypass-passkey` provides an ES256/EdDSA/RSA authenticator over KeePassXC's `KPEX_PASSKEY_*` attributes; the GUI shows passkey entries and the extension plus Android app register and assert credentials — crate tests and extension tests |
+| Android app | ✅ Compose app over the UniFFI vault: SAF storage, browse/search/details, autofill (including one-time codes), Credential Manager provider, passkeys, biometric unlock; Gradle unit + instrumented suites (see `AGENTS.md`) |
 | KeeShare (signed share containers) | ✅ full: classic (unsigned) shares **and signed shares**. Signed containers use KeePassXC's exact layout — ZIP with `container.share.kdbx` + `container.share.signature`, RSA PKCS#1 v1.5 SHA-256 over the database bytes hex-prefixed `rsa|`, signature XML carrying the signer name and the `ssh-rsa` public key blob — signed with a local self-signed X.509 identity (CN signer) persisted under the config dir. Verified on import (tampered containers rejected, signer reported). Cross-checked with real tools: `openssl dgst -sha256 -verify` reports Verified OK, `unzip -l` shows the KeePassXC layout, and `keepassxc-cli` reads the database inside our signed container |
 | YubiKey challenge-response keys | ✅ challenge-response composite-key support implemented + tested: the response component is HMAC-SHA1(KDF seed, secret) — the same construction a YubiKey uses — via the keepass `challenge_response` feature (`LocalChallenge`); CLI (`--challenge-response <hex>`) and GUI unlock field; round-trip tests cover password+CR, keyfile+CR, and rejection of missing/wrong secrets. ❌ live USB YubiKey HID transport is not implemented — it needs physical YubiKey hardware |
 

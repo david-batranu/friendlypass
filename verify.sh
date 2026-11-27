@@ -8,6 +8,11 @@
 #   3. KDBX 3.1 -> 4.1 upgrades done by friendlypass open in keepassxc-cli,
 #   4. attachments and keyfiles round-trip byte-identically.
 #
+# It also gates the rest of the workspace: GUI kittest, SSH agent, browser
+# protocol + native host, passkeys, mobile vault, KeeShare (classic + signed),
+# challenge-response, and (when extension/node_modules exists) the browser
+# extension unit tests and typecheck.
+#
 # Requires: cargo, and keepassxc-cli (looked up in $PATH or in
 # /Applications/KeePassXC.app).
 # Optional: KEEPASSXC_SRC=/path/to/keepassxc (a KeePassXC source checkout) enables
@@ -45,14 +50,14 @@ check() { # check <description> <command...>
 }
 
 echo "== building =="
-cargo build --release --manifest-path "$ROOT/Cargo.toml" || exit 2
+cargo build --release --workspace --manifest-path "$ROOT/Cargo.toml" || exit 2
 
 echo "== unit/integration tests =="
-if cargo test --release --manifest-path "$ROOT/Cargo.toml" >/dev/null 2>&1; then
-    echo "PASS: cargo test --release (13 integration tests)"
+if cargo test --release --workspace --manifest-path "$ROOT/Cargo.toml" >/dev/null 2>&1; then
+    echo "PASS: cargo test --release --workspace (all crates)"
     PASS=$((PASS+1))
 else
-    echo "FAIL: cargo test --release"
+    echo "FAIL: cargo test --release --workspace"
     FAIL=$((FAIL+1))
 fi
 
@@ -134,7 +139,7 @@ check "keepassxc-cli opens it with the friendlypass-generated keyfile" \
 
 echo
 echo "== 7. GUI (friendlypass-gui): headless UI tests + C++ opens a GUI-written database =="
-check "cargo test -p friendlypass-gui (13 headless UI tests + 6 unit tests: browse, edit, recycle bin, history, attributes/auto-type, icons, multi-selection, references, entry & group drag&drop, auto-type pipeline)" \
+check "cargo test -p friendlypass-gui (browse, edit, recycle bin, history, attributes/auto-type, icons, multi-selection, references, drag&drop, attachments, layout, keyboard, startup, TOTP, browser, ssh agent)" \
     cargo test --release -p friendlypass-gui --manifest-path "$ROOT/Cargo.toml"
 check "GUI test run writes a database purely through the GUI dialogs" \
     cargo test --release -p friendlypass-gui --manifest-path "$ROOT/Cargo.toml" --test gui write_database_for_external_verification -- --ignored
@@ -152,7 +157,7 @@ check "keepassxc-cli resolves the GUI-created {REF:...} entry reference (Notes s
 
 echo
 echo "== 8. SSH agent (friendlypass-ssh-agent): real OpenSSH tooling cross-checks =="
-check "cargo test -p friendlypass-ssh-agent (10 unit + 4 real-tool e2e tests)" \
+check "cargo test -p friendlypass-ssh-agent (unit + real-tool e2e tests)" \
     cargo test --release -p friendlypass-ssh-agent --manifest-path "$ROOT/Cargo.toml"
 check "real ssh-keygen output is parsed by our OpenSSH key reader" \
     env sh -c "timeout 60 cargo test --release -p friendlypass-ssh-agent --manifest-path '$ROOT/Cargo.toml' --test e2e real_ssh_keygen_key_is_parsed_by_us"
@@ -164,16 +169,26 @@ check "GUI SSH Agent window serves keys listed by real ssh-add (kittest test)" \
     env sh -c "timeout 120 cargo test --release -p friendlypass-gui --manifest-path '$ROOT/Cargo.toml' --test ssh_agent"
 
 echo
-echo "== 9. Browser protocol (friendlypass-browser): REAL keepassxc-proxy interop =="
-check "cargo test -p friendlypass-browser (4 unit + 2 proxy-interop tests)" \
+echo "== 9. Browser stack (friendlypass-browser + browser-host + extension) =="
+check "cargo test -p friendlypass-browser (crypto, sessions, actions, passkeys, peer verification, proxy interop)" \
     cargo test --release -p friendlypass-browser --manifest-path "$ROOT/Cargo.toml"
 check "the REAL shipped keepassxc-proxy relays our protocol: handshake, associate, test-associate, get-logins, error shape" \
     env sh -c "timeout 120 cargo test --release -p friendlypass-browser --manifest-path '$ROOT/Cargo.toml' --test e2e_proxy full_protocol_flow_through_the_real_keepassxc_proxy"
 check "GUI Browser window starts/stops serving the protocol (kittest test)" \
     env sh -c "timeout 120 cargo test --release -p friendlypass-gui --manifest-path '$ROOT/Cargo.toml' --test browser"
+check "cargo test -p friendlypass-browser-host (stdio framing, host identify, app-link transport, ping during approvals)" \
+    cargo test --release -p friendlypass-browser-host --manifest-path "$ROOT/Cargo.toml"
+if [ -d "$ROOT/extension/node_modules" ]; then
+    check "extension unit tests (vitest)" \
+        env sh -c "cd '$ROOT/extension' && npx vitest run"
+    check "extension typecheck (tsc: src + tests)" \
+        env sh -c "cd '$ROOT/extension' && npm run typecheck"
+else
+    echo "SKIP: extension unit tests + typecheck (run 'npm ci' in extension/ first)"
+fi
 
 echo
-echo "== 10. KeeShare (classic shares): C++ keepassxc-cli reads our share containers =="
+echo "== 10. KeeShare (classic + signed shares): C++ keepassxc-cli reads our share containers =="
 check "cargo test -p friendlypass keeshare (reference format + export/import merge)" \
     env sh -c "timeout 120 cargo test --release -p friendlypass --manifest-path '$ROOT/Cargo.toml' --test keeshare"
 check "KeeShare GUI dialog exports a group and persists the reference (kittest test)" \
@@ -281,6 +296,15 @@ echo
 echo "== 21. Website SVG / favicon fetching and caching =="
 check "website SVG icon is preferred over raster favicons, falls back to favicon.ico, and is cached in memory and on disk" \
     env sh -c "timeout 120 cargo test --release -p friendlypass-gui --manifest-path '$ROOT/Cargo.toml' --lib icons && timeout 180 cargo test --release -p friendlypass-gui --manifest-path '$ROOT/Cargo.toml' --test gui website_svg_icon_is_fetched_displayed_and_cached"
+
+echo
+echo "== 22. Passkeys + mobile vault (friendlypass-passkey, friendlypass-mobile) =="
+check "cargo test -p friendlypass-passkey (WebAuthn ES256/EdDSA/RSA, KeePassXC KPEX_PASSKEY_* storage)" \
+    cargo test --release -p friendlypass-passkey --manifest-path "$ROOT/Cargo.toml"
+check "cargo test -p friendlypass-mobile (UniFFI vault: open, search, entry detail, write)" \
+    cargo test --release -p friendlypass-mobile --manifest-path "$ROOT/Cargo.toml"
+echo "NOTE: the Android app (android/) has its own Gradle gates —"
+echo "      ./gradlew :app:testDebugUnitTest and :app:connectedDebugAndroidTest (see AGENTS.md)."
 
 echo
 echo "================================"
