@@ -23,7 +23,7 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-keepass = { version = "0.17", features = ["save_kdbx4", "totp"] }
+keepass = { version = "0.17", features = ["save_kdbx4", "totp", "_merge"] }
 rust-argon2 = "3.0"
 clap = { version = "4", features = ["derive"], optional = true }
 rpassword = { version = "7", optional = true }

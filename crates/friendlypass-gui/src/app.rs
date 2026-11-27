@@ -32,6 +32,9 @@ pub const SIDEBAR_AUTO_HIDE_WIDTH: f32 = 1000.0;
 pub const COPIED_TTL: std::time::Duration = std::time::Duration::from_millis(1200);
 /// How long a toast notification stays on screen.
 pub const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(2600);
+/// How often an unlocked, clean database checks whether the `.kdbx` file on
+/// disk changed externally (e.g. synced by Google Drive).
+pub const DISK_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What the idle auto-lock decided this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +132,11 @@ pub struct App {
     // -- open database state --------------------------------------------
     pub db: Option<Database>,
     pub db_key: Option<DatabaseKey>,
+    /// On-disk fingerprint of `db_path` at the time it was opened or last saved
+    /// (used for auto-reload when clean and merge-on-save when both sides edited).
+    pub db_disk_fingerprint: Option<friendlypass::sync::FileFingerprint>,
+    /// Last time we checked `db_path` for external changes.
+    pub last_disk_check: std::time::Instant,
     pub dirty: bool,
     /// Set once the KDBX3→4.1 upgrade has been confirmed, so we don't ask
     /// again on every save.
@@ -253,6 +261,8 @@ impl Default for App {
             secret_store: Arc::new(startup::KeychainStore),
             db: None,
             db_key: None,
+            db_disk_fingerprint: None,
+            last_disk_check: std::time::Instant::now(),
             dirty: false,
             upgrade_confirmed: false,
             search: String::new(),
@@ -424,6 +434,7 @@ impl App {
             Ok(db) => {
                 self.db = Some(db);
                 self.db_key = Some(key);
+                self.record_disk_fingerprint();
                 self.dirty = false;
                 self.upgrade_confirmed = false;
                 self.search.clear();
@@ -483,6 +494,7 @@ impl App {
             Ok(db) => {
                 app.db = Some(db);
                 app.db_key = Some(key);
+                app.record_disk_fingerprint();
                 app.status = format!("Opened {}", path);
             }
             Err(e) => app.unlock_error = format!("{e:#}"),
@@ -554,6 +566,7 @@ impl App {
             Ok(db) => {
                 self.db = Some(db);
                 self.db_key = Some(key);
+                self.record_disk_fingerprint();
                 self.dirty = false;
                 self.upgrade_confirmed = false;
                 self.search.clear();
@@ -642,6 +655,7 @@ impl App {
         self.selected_entries.clear();
         self.db = None;
         self.db_key = None;
+        self.db_disk_fingerprint = None;
         self.dirty = false;
         self.upgrade_confirmed = false;
         self.selected_entry = None;
@@ -674,10 +688,123 @@ impl App {
         self.perform_save(None);
     }
 
-    /// Perform the actual save (optionally to a new path).
-    pub fn perform_save(&mut self, new_path: Option<String>) {
-        let Some(path) = new_path.clone().or_else(|| Some(self.db_path.clone())) else {
+    /// Record the current on-disk fingerprint of `db_path` (called after open
+    /// and save so external cloud-sync updates can be detected accurately).
+    pub fn record_disk_fingerprint(&mut self) {
+        self.last_disk_check = std::time::Instant::now();
+        if self.db_path.is_empty() {
+            self.db_disk_fingerprint = None;
             return;
+        }
+        self.db_disk_fingerprint =
+            friendlypass::sync::FileFingerprint::from_path(std::path::Path::new(&self.db_path))
+                .ok();
+    }
+
+    /// Clear selection handles that no longer exist in `self.db` (e.g. after
+    /// reloading or merging a remote deletion).
+    fn clamp_selection(&mut self) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        if let Some(gid) = self.selected_group {
+            if db.group(gid).is_none() {
+                self.selected_group = None;
+            }
+        }
+        if let Some(eid) = self.selected_entry {
+            if db.entry(eid).is_none() {
+                self.selected_entry = None;
+            }
+        }
+        self.selected_entries.retain(|eid| db.entry(*eid).is_some());
+        if let Some(anchor) = self.selection_anchor {
+            if db.entry(anchor).is_none() {
+                self.selection_anchor = None;
+            }
+        }
+    }
+
+    fn push_toast(&mut self, text: String) {
+        self.toasts.push(Toast {
+            text,
+            created: std::time::Instant::now(),
+        });
+        if self.toasts.len() > 3 {
+            self.toasts.remove(0);
+        }
+    }
+
+    /// Check whether `db_path` changed on disk (e.g. synced by Google Drive)
+    /// and reload it cleanly when there are no unsaved local edits or open
+    /// editors. Returns `true` when the database was reloaded.
+    pub fn check_external_changes_now(&mut self) -> bool {
+        self.last_disk_check = std::time::Instant::now();
+        if self.dirty
+            || self.inline_edit.is_some()
+            || !matches!(self.dialog, Dialog::None)
+            || self.db_path.is_empty()
+        {
+            return false;
+        }
+        let (Some(prev_fp), Some(key), Some(current_root)) = (
+            self.db_disk_fingerprint.as_ref(),
+            self.db_key.clone(),
+            self.db.as_ref().map(|db| db.root().id().uuid()),
+        ) else {
+            return false;
+        };
+        let path = PathBuf::from(&self.db_path);
+        if !prev_fp.stat_changed(&path) {
+            return false;
+        }
+        let Ok(new_fp) = friendlypass::sync::FileFingerprint::from_path(&path) else {
+            return false;
+        };
+        if new_fp.sha256 == prev_fp.sha256 {
+            // Same content (e.g. cloud syncer touched mtime only): refresh stat metadata.
+            self.db_disk_fingerprint = Some(new_fp);
+            return false;
+        }
+        let Ok(new_db) = friendlypass::sync::open_with_retry(&path, key) else {
+            return false;
+        };
+        if new_db.root().id().uuid() != current_root {
+            // Different database replaced the file on disk: do not silently swap vaults.
+            return false;
+        }
+        self.db = Some(new_db);
+        self.db_disk_fingerprint = Some(new_fp);
+        self.clamp_selection();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.db_path.clone());
+        let msg = format!("Reloaded external changes from {name}");
+        self.status = msg.clone();
+        self.push_toast(msg);
+        true
+    }
+
+    fn tick_external_changes(&mut self, now: std::time::Instant) {
+        if now.saturating_duration_since(self.last_disk_check) < DISK_CHECK_INTERVAL {
+            return;
+        }
+        self.check_external_changes_now();
+    }
+
+    /// Perform the actual save (optionally to a new path). When saving back to
+    /// the currently open file, automatically merges with any external changes
+    /// that landed on disk (e.g. via Google Drive) instead of overwriting them.
+    pub fn perform_save(&mut self, new_path: Option<String>) {
+        let Some(path_str) = new_path.clone().or_else(|| Some(self.db_path.clone())) else {
+            return;
+        };
+        let same_file = new_path.is_none() || new_path.as_deref() == Some(self.db_path.as_str());
+        let expected_fp = if same_file {
+            self.db_disk_fingerprint.clone()
+        } else {
+            None
         };
         let Some(db) = self.db.as_mut() else { return };
         let Some(key) = self.db_key.clone() else { return };
@@ -685,18 +812,27 @@ impl App {
         // KDBX 3.x can only be saved after upgrading to KDBX 4.1.
         friendlypass::commands::ensure_writable_version(db);
 
-        let path = PathBuf::from(&path);
-        match friendlypass::saveutil::save(&path, db, key) {
-            Ok(()) => {
+        let path = PathBuf::from(&path_str);
+        match friendlypass::sync::save_with_merge(&path, db, key, expected_fp.as_ref()) {
+            Ok(outcome) => {
                 if let Some(p) = new_path {
                     self.db_path = p;
                     let saved = self.db_path.clone();
                     self.record_recent_database(&saved);
                 }
+                self.db_disk_fingerprint = Some(outcome.fingerprint);
+                self.last_disk_check = std::time::Instant::now();
                 self.dirty = false;
                 self.upgrade_confirmed = true;
                 self.dialog = Dialog::None;
-                self.status = format!("Saved {}", self.db_path);
+                if let Some(summary) = outcome.merged {
+                    self.clamp_selection();
+                    let detail = summary.describe();
+                    self.status = format!("Merged external changes ({detail}) and saved {}", self.db_path);
+                    self.push_toast(format!("Merged external changes ({detail})"));
+                } else {
+                    self.status = format!("Saved {}", self.db_path);
+                }
             }
             Err(e) => {
                 self.status = format!("{e:#}");
@@ -1266,8 +1402,8 @@ impl App {
                     Err(e) => self.status = format!("cannot move entry to recycle bin: {e}"),
                 }
             }
-        } else if let Some(entry) = db.entry_mut(id) {
-            entry.remove();
+        } else if let Some(mut entry) = db.entry_mut(id) {
+            entry.track_changes().remove();
             self.dirty = true;
             if self.selected_entry == Some(id) {
                 self.selected_entry = None;
@@ -1479,8 +1615,8 @@ impl App {
         let n = entry_ids.len() + group_ids.len();
 
         for id in entry_ids {
-            if let Some(entry) = db.entry_mut(id) {
-                entry.remove();
+            if let Some(mut entry) = db.entry_mut(id) {
+                entry.track_changes().remove();
             }
         }
         for id in group_ids {
@@ -1906,6 +2042,9 @@ impl eframe::App for App {
         }
 
         if self.db.is_some() {
+            // Auto-reload external cloud-sync changes when there are no unsaved local edits.
+            self.tick_external_changes(now);
+
             // Any input counts as activity for the idle auto-lock.
             if ctx.input(|i| !i.events.is_empty() || i.pointer.any_down()) {
                 self.note_activity(now);

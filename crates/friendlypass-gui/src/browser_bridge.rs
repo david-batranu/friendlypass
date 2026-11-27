@@ -974,8 +974,9 @@ fn save_associations_now(app: &mut App) {
     if path.as_os_str().is_empty() {
         return;
     }
+    let expected_fp = app.db_disk_fingerprint.clone();
     let result = {
-        let Some(db) = app.db.as_ref() else {
+        let Some(db) = app.db.as_mut() else {
             return;
         };
         if !matches!(
@@ -984,16 +985,18 @@ fn save_associations_now(app: &mut App) {
         ) {
             None
         } else {
-            app.db_key
-                .clone()
-                .map(|key| friendlypass::saveutil::save(&path, db, key))
+            app.db_key.clone().map(|key| {
+                friendlypass::sync::save_with_merge(&path, db, key, expected_fp.as_ref())
+            })
         }
     };
     match result {
         None => {
             app.status = "Browser association added; save the database to keep it".into();
         }
-        Some(Ok(())) => {
+        Some(Ok(outcome)) => {
+            app.db_disk_fingerprint = Some(outcome.fingerprint);
+            app.last_disk_check = std::time::Instant::now();
             app.dirty = false;
             app.status = "Browser association saved".into();
         }

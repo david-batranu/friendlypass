@@ -3048,6 +3048,7 @@ fn create_new_database(app: &mut App, d: &NewDb) {
     app.db = Some(db);
     app.db_key = Some(key);
     app.db_path = d.path.clone();
+    app.record_disk_fingerprint();
     app.dirty = false;
     app.upgrade_confirmed = true;
     app.selected_group = None;

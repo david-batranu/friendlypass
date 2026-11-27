@@ -33,6 +33,7 @@ pub mod keeshare_signed;
 pub mod key;
 pub mod matching;
 pub mod saveutil;
+pub mod sync;
 
 #[cfg(feature = "cli")]
 pub mod cli;
