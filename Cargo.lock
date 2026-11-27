@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "friendlypass"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes 0.8.4",
  "anyhow",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "friendlypass-browser"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "friendlypass-browser-host"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2371,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "friendlypass-gui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2409,7 +2409,7 @@ dependencies = [
 
 [[package]]
 name = "friendlypass-mobile"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "friendlypass",
  "friendlypass-passkey",
@@ -2423,7 +2423,7 @@ dependencies = [
 
 [[package]]
 name = "friendlypass-passkey"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "friendlypass-ssh-agent"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
