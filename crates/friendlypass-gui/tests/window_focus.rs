@@ -98,6 +98,7 @@ fn coordinator_raises_once_per_prompt_and_restores_previous_app_and_minimize() {
     let driver = RecordingFocusDriver::with_snapshot(FocusSnapshot {
         prev_handle: 4242,
         was_minimized: true,
+        was_hidden: false,
         was_focused: false,
     });
     let mut coord = WindowFocusCoordinator::new(Arc::new(driver.clone()));
@@ -128,6 +129,7 @@ fn coordinator_raises_once_per_prompt_and_restores_previous_app_and_minimize() {
     driver.set_next_snapshot(FocusSnapshot {
         prev_handle: 0,
         was_minimized: false,
+        was_hidden: false,
         was_focused: true,
     });
     let cmds3 = run_frame(&ctx, |ctx| {
@@ -153,6 +155,7 @@ fn coordinator_does_not_minimize_or_steal_back_when_already_focused() {
     let driver = RecordingFocusDriver::with_snapshot(FocusSnapshot {
         prev_handle: 9999,
         was_minimized: false,
+        was_hidden: false,
         was_focused: true,
     });
     let mut coord = WindowFocusCoordinator::new(Arc::new(driver.clone()));
@@ -183,6 +186,7 @@ fn browser_bridge_passkey_prompt_wakes_background_window_and_restores_on_cancel(
     let driver = RecordingFocusDriver::with_snapshot(FocusSnapshot {
         prev_handle: 7777,
         was_minimized: true,
+        was_hidden: false,
         was_focused: false,
     });
     let key = DatabaseKey::new().with_password("testpassword");
@@ -239,6 +243,7 @@ fn unlock_request_wakes_without_pinning_always_on_top() {
     let driver = RecordingFocusDriver::with_snapshot(FocusSnapshot {
         prev_handle: 8888,
         was_minimized: true,
+        was_hidden: false,
         was_focused: false,
     });
     let mut app = friendlypass_gui::App::default().with_window_focus(Arc::new(driver.clone()));
@@ -261,4 +266,41 @@ fn unlock_request_wakes_without_pinning_always_on_top() {
     assert_eq!(driver.snapshot_log().1, vec![false]);
 
     browser_bridge::stop(&mut app);
+}
+
+#[test]
+fn coordinator_re_hides_window_hidden_in_tray_unless_explicitly_shown() {
+    let driver = RecordingFocusDriver::with_snapshot(FocusSnapshot {
+        prev_handle: 5151,
+        was_minimized: false,
+        was_hidden: true,
+        was_focused: false,
+    });
+    let mut coord = WindowFocusCoordinator::new(Arc::new(driver.clone()));
+    let ctx = egui::Context::default();
+
+    // Prompt wakes a window hidden in the status area.
+    let raise_cmds = run_frame(&ctx, |ctx| {
+        coord.sync_prompt(ctx, Some(ActivePrompt::Passkey(10)));
+    });
+    assert!(raise_cmds.contains(&ViewportCommand::Visible(true)));
+
+    // Prompt closes: window hides back to the status area and hands focus back.
+    let restore_cmds = run_frame(&ctx, |ctx| {
+        coord.sync_prompt(ctx, None);
+    });
+    assert!(restore_cmds.contains(&ViewportCommand::Visible(false)));
+    assert!(!restore_cmds.contains(&ViewportCommand::Minimized(true)));
+    assert_eq!(driver.snapshot_log().2, vec![5151]);
+
+    // Second prompt wakes it, then the user explicitly clicks Show in the tray:
+    // closing the prompt must NOT re-hide the window.
+    let _ = run_frame(&ctx, |ctx| {
+        coord.sync_prompt(ctx, Some(ActivePrompt::Passkey(11)));
+        coord.show_and_focus(ctx);
+    });
+    let after_show_cmds = run_frame(&ctx, |ctx| {
+        coord.sync_prompt(ctx, None);
+    });
+    assert!(!after_show_cmds.contains(&ViewportCommand::Visible(false)));
 }

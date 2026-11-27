@@ -8,6 +8,7 @@
 #         branding/derived/friendlypass-logo.jpg      (full artwork + wordmark)
 #         packaging/macos/AppIcon.icns                (macOS app icon, 16..1024)
 #         crates/friendlypass-gui/assets/app-icon.png (512 px squircle)
+#         crates/friendlypass-gui/assets/app-icon.ico (Windows multi-res .ico, 16..256)
 #         extension/src/icons/icon-{16,32,48,128}.png
 #         target/icon-previews/logo-*.png             (review previews; git-ignored,
 #                                                      PREVIEW_DIR overrides the directory)
@@ -22,6 +23,7 @@ MASTER="$ROOT/branding/friendlypass-logo.jpg"
 DERIVED="$ROOT/branding/derived"
 ICONSET_OUT="$ROOT/packaging/macos/AppIcon.icns"
 GUI_ICON="$ROOT/crates/friendlypass-gui/assets/app-icon.png"
+WIN_ICON="$ROOT/crates/friendlypass-gui/assets/app-icon.ico"
 EXT_ICONS="$ROOT/extension/src/icons"
 PREVIEW_DIR="${PREVIEW_DIR:-$ROOT/target/icon-previews}"
 
@@ -134,6 +136,23 @@ mkdir -p "$(dirname "$GUI_ICON")"
 rounded_square "$TMP/mark-full.png" "$GUI_SIZE" \
     "$APP_CONTENT_PER_MILLE" "$GUI_ICON"
 echo "  crates/friendlypass-gui/assets/app-icon.png (${GUI_SIZE}x${GUI_SIZE})"
+
+echo "== Windows .ico app icon =="
+win_dir="$TMP/win-ico"
+mkdir -p "$win_dir"
+# Use the tighter shield-face crop at 16/24/32 px so taskbar/tray icons stay
+# legible, and the full mark at 48..256 px; 88% fill matches Windows taskbar scale.
+for px in 16 24 32; do
+    rounded_square "$TMP/mark-tight.png" "$px" "$EXT_CONTENT" "$win_dir/${px}.png"
+done
+for px in 48 64 128 256; do
+    rounded_square "$TMP/mark-full.png" "$px" "$EXT_CONTENT" "$win_dir/${px}.png"
+done
+magick \
+    "$win_dir/16.png" "$win_dir/24.png" "$win_dir/32.png" \
+    "$win_dir/48.png" "$win_dir/64.png" "$win_dir/128.png" "$win_dir/256.png" \
+    "$WIN_ICON"
+echo "  crates/friendlypass-gui/assets/app-icon.ico (16,24,32,48,64,128,256)"
 
 echo "== extension icons =="
 mkdir -p "$EXT_ICONS"

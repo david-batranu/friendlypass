@@ -2803,6 +2803,43 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             }
                         }
                     }
+                    let mut startup_prefs_changed = false;
+                    ui.add_space(4.0);
+                    startup_prefs_changed |= ui
+                        .checkbox(
+                            &mut app.prefs.start_minimized,
+                            "Start minimized in the taskbar",
+                        )
+                        .on_hover_text(
+                            "Minimizes the window automatically on launch so friendlypass stays \
+                             out of your way in the taskbar until needed.",
+                        )
+                        .changed();
+                    let tray_supported =
+                        crate::tray::is_supported() || app.tray.is_supported();
+                    let close_to_tray_resp = ui
+                        .add_enabled(
+                            tray_supported,
+                            egui::Checkbox::new(
+                                &mut app.prefs.close_to_tray,
+                                "Close to status area",
+                            ),
+                        )
+                        .on_hover_text(
+                            "Closing the window hides friendlypass in the notification area / \
+                             menu bar instead of quitting, so browser autofill and passkeys keep \
+                             working. Use Quit in the status icon menu to exit.",
+                        )
+                        .on_disabled_hover_text(
+                            "Close to status area is currently implemented on Windows and macOS",
+                        );
+                    if close_to_tray_resp.changed() {
+                        startup_prefs_changed = true;
+                        app.tray.sync(app.prefs.close_to_tray, app.db.is_some());
+                    }
+                    if startup_prefs_changed {
+                        app.save_preferences();
+                    }
                     #[cfg(windows)]
                     {
                         ui.add_space(6.0);
@@ -2823,17 +2860,18 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             app.prefs.windows_dpapi_fallback = dpapi;
                             app.save_preferences();
                             app.secret_store = crate::startup::platform_store(dpapi);
+                            app.invalidate_saved_secret_cache();
                             app.auto_unlock = false;
                             app.remember_unlock = false;
-                            app.status = "Auto-unlock backend changed; unlock once with                                           “Remember unlock key” to enroll again"
+                            app.status = "Auto-unlock backend changed; unlock once with \
+                                          “Remember unlock key” to enroll again"
                                 .into();
                         }
                     }
                     ui.add_space(6.0);
                     ui.separator();
                     ui.label("Automatic unlock");
-                    let saved = !app.db_path.is_empty()
-                        && app.has_saved_secret(&app.db_path);
+                    let saved = app.cached_has_saved_secret();
                     if saved {
                         ui.label(format!(
                             "An unlock key for {} is stored in the operating system's keychain.",

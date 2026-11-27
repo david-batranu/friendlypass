@@ -126,6 +126,10 @@ pub struct App {
     pub inline_edit: Option<Box<dialogs::EntryEdit>>,
     /// The OS login item is installed (read by the Settings dialog).
     pub launch_at_login: bool,
+    /// Cached result of [`App::has_saved_secret`] for `(db_path, has_secret)`
+    /// so the Settings dialog never queries the OS keychain / filesystem on
+    /// every UI frame.
+    saved_secret_cache: Option<(String, bool)>,
     /// Where auto-unlock secrets live (the OS keychain in production).
     pub secret_store: Arc<dyn SecretStore>,
 
@@ -219,6 +223,16 @@ pub struct App {
     pub macos_provider_status: Option<crate::macos_provider::MacosProviderStatus>,
     /// Raises and restores the desktop window when browser confirmations arrive.
     pub window_focus: crate::window_focus::WindowFocusCoordinator,
+    /// System status-area (notification area / menu bar) backend.
+    pub tray: Arc<dyn crate::tray::TrayBackend>,
+    /// True while the window is hidden to the status area.
+    pub hidden_to_tray: bool,
+    /// Set when the user explicitly requests Quit (bypasses close-to-tray).
+    pub allow_close: bool,
+    /// Minimize the window once right after the initial startup frame.
+    pub pending_start_minimized: bool,
+    /// Counts initial frames so start-minimized runs after eframe's first-frame show.
+    startup_frames: u8,
 
     // -- persisted preferences ------------------------------------------
     /// Column layout and the recent-databases list.
@@ -258,6 +272,7 @@ impl Default for App {
             auto_unlock: false,
             inline_edit: None,
             launch_at_login: false,
+            saved_secret_cache: None,
             secret_store: Arc::new(startup::KeychainStore),
             db: None,
             db_key: None,
@@ -307,6 +322,11 @@ impl Default for App {
             window_focus: crate::window_focus::WindowFocusCoordinator::new(Arc::new(
                 crate::window_focus::NoopWindowFocus,
             )),
+            tray: Arc::new(crate::tray::NoopTrayBackend),
+            hidden_to_tray: false,
+            allow_close: false,
+            pending_start_minimized: false,
+            startup_frames: 0,
             prefs: Preferences::default(),
             config_path: None,
             reset_columns: false,
@@ -329,12 +349,14 @@ impl App {
         };
         app.window_focus
             .set_driver(Arc::new(crate::window_focus::SystemWindowFocus::default()));
+        app.tray = Arc::new(crate::tray::SystemTrayBackend::new());
         if let Some(path) = initial_db {
             app.db_path = path;
         }
         // If the last database has an enrolled key, unlock it before the
         // first frame. Failures fall back to the normal unlock screen.
         if !app.db_path.is_empty() && app.has_saved_secret(&app.db_path) {
+            app.saved_secret_cache = Some((app.db_path.clone(), true));
             app.auto_unlock = true;
             app.remember_unlock = true;
             app.try_auto_unlock();
@@ -346,12 +368,24 @@ impl App {
         crate::browser_bridge::refresh_native_messaging(&mut app);
         crate::browser_bridge::start_background(&mut app);
         crate::macos_provider::start_background(&mut app);
+        app.tray.sync(app.prefs.close_to_tray, app.db.is_some());
         app
+    }
+
+    /// Wire the `egui::Context` into background subsystems (browser bridge and
+    /// status-area tray) before the first frame, so wakes work even when the
+    /// window starts minimized.
+    pub fn attach_egui_ctx(&mut self, ctx: &egui::Context) {
+        if let Some(bridge) = &self.browser_bridge {
+            bridge.set_egui_ctx(ctx);
+        }
+        self.tray.set_egui_ctx(ctx);
     }
 
     /// Replace the secret store (tests use an in-memory store).
     pub fn with_secret_store(mut self, store: Arc<dyn SecretStore>) -> Self {
         self.secret_store = store;
+        self.saved_secret_cache = None;
         self
     }
 
@@ -361,6 +395,12 @@ impl App {
         driver: Arc<dyn crate::window_focus::WindowFocusDriver>,
     ) -> Self {
         self.window_focus.set_driver(driver);
+        self
+    }
+
+    /// Replace the status-area tray backend (tests use a mock backend).
+    pub fn with_tray(mut self, tray: Arc<dyn crate::tray::TrayBackend>) -> Self {
+        self.tray = tray;
         self
     }
 
@@ -387,6 +427,105 @@ impl App {
             .ok()
             .flatten()
             .is_some()
+    }
+
+    /// Cached version of [`App::has_saved_secret`] for the currently open
+    /// `db_path`, so rendering Settings does not hit the OS keychain / filesystem
+    /// on every frame.
+    pub fn cached_has_saved_secret(&mut self) -> bool {
+        if self.db_path.is_empty() {
+            return false;
+        }
+        if let Some((cached_path, saved)) = &self.saved_secret_cache {
+            if cached_path == &self.db_path {
+                return *saved;
+            }
+        }
+        let saved = self.has_saved_secret(&self.db_path);
+        self.saved_secret_cache = Some((self.db_path.clone(), saved));
+        saved
+    }
+
+    /// Clear the cached auto-unlock lookup (called when the secret store or
+    /// enrolled secret changes).
+    pub fn invalidate_saved_secret_cache(&mut self) {
+        self.saved_secret_cache = None;
+    }
+
+    /// Open the Settings dialog and refresh one-shot OS status fields once.
+    pub fn open_settings_dialog(&mut self) {
+        self.launch_at_login = startup::launch_at_login_enabled();
+        self.invalidate_saved_secret_cache();
+        let _ = self.cached_has_saved_secret();
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_provider_status = Some(crate::macos_provider::status_summary(self));
+        }
+        self.dialog = Dialog::Settings;
+    }
+
+    /// Whether clicking the window close button should hide to the status area
+    /// instead of terminating the application.
+    pub fn should_hide_on_close(&self) -> bool {
+        self.prefs.close_to_tray && self.tray.is_supported() && !self.allow_close
+    }
+
+    /// Explicitly exit the application even when "Close to status area" is enabled.
+    pub fn request_quit(&mut self, ctx: &egui::Context) {
+        self.allow_close = true;
+        self.hidden_to_tray = false;
+        self.tray.sync(false, false);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Run per-frame status-area tray commands, close-to-tray interception, and
+    /// deferred start-minimized handling. Called at the start of `eframe::App::ui`
+    /// (and directly by headless tests).
+    pub fn pump_window_lifecycle(&mut self, ctx: &egui::Context) {
+        self.tray.set_egui_ctx(ctx);
+        for cmd in self.tray.drain_commands() {
+            match cmd {
+                crate::tray::TrayCommand::Show => {
+                    self.hidden_to_tray = false;
+                    self.window_focus.show_and_focus(ctx);
+                }
+                crate::tray::TrayCommand::Lock => {
+                    if self.db.is_some() {
+                        self.lock();
+                    }
+                }
+                crate::tray::TrayCommand::Quit => {
+                    self.request_quit(ctx);
+                }
+            }
+        }
+        if !self.allow_close {
+            self.tray.sync(self.prefs.close_to_tray, self.db.is_some());
+        }
+
+        // Intercept window close when "Close to status area" is active.
+        if ctx.input(|i| i.viewport().close_requested()) && self.should_hide_on_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hidden_to_tray = true;
+        }
+    }
+
+    /// Minimize the window once after frame 1 (after eframe's `post_rendering`
+    /// first-frame `window.set_visible(true)`) so the minimize command is never
+    /// undone by initial window reveal.
+    pub fn pump_start_minimized(&mut self, ctx: &egui::Context) {
+        if self.pending_start_minimized {
+            if self.window_focus.active_prompt().is_some() {
+                self.pending_start_minimized = false;
+            } else if self.startup_frames == 0 {
+                self.startup_frames = 1;
+                ctx.request_repaint();
+            } else {
+                self.pending_start_minimized = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+        }
     }
 
     /// Rebuild the database key from the stored secret and open the
@@ -608,10 +747,12 @@ impl App {
             match self.secret_store.set(&account, &secret) {
                 Ok(()) => {
                     self.auto_unlock = true;
+                    self.saved_secret_cache = Some((path.to_owned(), true));
                     self.status = format!("{} (auto-unlock enabled)", self.status);
                 }
                 Err(e) => {
                     self.auto_unlock = false;
+                    self.saved_secret_cache = None;
                     self.status = format!("{} (auto-unlock not saved: {e:#})", self.status);
                 }
             }
@@ -620,6 +761,7 @@ impl App {
                 self.status = format!("{} (auto-unlock key not removed: {e:#})", self.status);
             }
             self.auto_unlock = false;
+            self.saved_secret_cache = Some((path.to_owned(), false));
         }
     }
 
@@ -631,6 +773,7 @@ impl App {
             Ok(()) => {
                 self.auto_unlock = false;
                 self.remember_unlock = false;
+                self.saved_secret_cache = Some((path, false));
                 self.status = "Saved auto-unlock key removed".into();
                 true
             }
@@ -1745,12 +1888,7 @@ impl App {
             crate::theme::draw_gear_icon,
             |ui| {
                 if ui.button("Settings…").clicked() {
-                    self.launch_at_login = startup::launch_at_login_enabled();
-                    #[cfg(target_os = "macos")]
-                    {
-                        self.macos_provider_status = Some(crate::macos_provider::status_summary(self));
-                    }
-                    self.dialog = Dialog::Settings;
+                    self.open_settings_dialog();
                     ui.close();
                 }
                 if ui.button("Columns…").clicked() {
@@ -1791,6 +1929,14 @@ impl App {
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_passwords, "Show passwords");
+                if self.prefs.close_to_tray && self.tray.is_supported() {
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        let ctx = ui.ctx().clone();
+                        self.request_quit(&ctx);
+                        ui.close();
+                    }
+                }
             },
         );
     }
@@ -2029,10 +2175,16 @@ impl eframe::App for App {
         crate::theme::setup(&ctx, self.prefs.theme);
         let now = std::time::Instant::now();
 
+        // Status-area tray, close-to-tray interception, and window lifecycle.
+        self.pump_window_lifecycle(&ctx);
+
         // Browser-integration bridge: approvals, set-login writes, pushes and
         // the served snapshot all run on the GUI thread.
         crate::browser_bridge::pump(self, &ctx);
         crate::macos_provider::pump(self, &ctx);
+
+        // Deferred start-minimized (after eframe's initial window reveal).
+        self.pump_start_minimized(&ctx);
 
         // Clipboard auto-clear runs on every screen, so a copied password is
         // removed even after the database was locked.
@@ -2065,6 +2217,10 @@ impl eframe::App for App {
         } else {
             self.database_screen(ui);
         }
+    }
+
+    fn on_exit(&mut self) {
+        self.tray.sync(false, false);
     }
 }
 

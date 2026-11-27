@@ -6,11 +6,12 @@
 typedef struct {
     int32_t prev_pid;
     bool was_minimized;
+    bool was_hidden;
     bool was_focused;
 } FpMacosWindowSnapshot;
 
 static bool g_has_pending_snapshot = false;
-static FpMacosWindowSnapshot g_pending_snapshot = {0, false, false};
+static FpMacosWindowSnapshot g_pending_snapshot = {0, false, false, false};
 
 static void activate_app_ignoring_others(NSRunningApplication *app) {
     if (!app || app.terminated) {
@@ -23,7 +24,7 @@ static void activate_app_ignoring_others(NSRunningApplication *app) {
 }
 
 static FpMacosWindowSnapshot capture_and_activate_on_main(void) {
-    FpMacosWindowSnapshot snap = {0, false, false};
+    FpMacosWindowSnapshot snap = {0, false, false, false};
     @autoreleasepool {
         pid_t selfPid = [[NSProcessInfo processInfo] processIdentifier];
         NSRunningApplication *front = [[NSWorkspace sharedWorkspace] frontmostApplication];
@@ -39,9 +40,15 @@ static FpMacosWindowSnapshot capture_and_activate_on_main(void) {
             return snap;
         }
 
+        BOOL anyMainWindow = NO;
         BOOL anyVisible = NO;
         BOOL anyMiniaturized = NO;
         for (NSWindow *win in [app windows]) {
+            // Skip status bar windows / helper panels; inspect only main app windows.
+            if (![win canBecomeMainWindow]) {
+                continue;
+            }
+            anyMainWindow = YES;
             if ([win isMiniaturized]) {
                 anyMiniaturized = YES;
             }
@@ -50,15 +57,17 @@ static FpMacosWindowSnapshot capture_and_activate_on_main(void) {
             }
         }
         snap.was_minimized = (anyMiniaturized && !anyVisible) || [app isHidden];
+        snap.was_hidden = anyMainWindow && !anyVisible && !anyMiniaturized && ![app isHidden];
 
         [app unhide:nil];
         for (NSWindow *win in [app windows]) {
+            if (![win canBecomeMainWindow]) {
+                continue;
+            }
             if ([win isMiniaturized]) {
                 [win deminiaturize:nil];
             }
-            if ([win canBecomeKeyWindow] || [win canBecomeMainWindow]) {
-                [win makeKeyAndOrderFront:nil];
-            }
+            [win makeKeyAndOrderFront:nil];
         }
         if ([app respondsToSelector:@selector(activate)]) {
             [app performSelector:@selector(activate)];
@@ -81,15 +90,30 @@ void fp_macos_wake_from_background(void) {
     });
 }
 
+/// Shows and activates the main application window (used when restoring from
+/// the menu bar status item).
+void fp_macos_show_main_window(void) {
+    void (^work)(void) = ^{
+        g_has_pending_snapshot = false;
+        (void)capture_and_activate_on_main();
+    };
+    if ([NSThread isMainThread]) {
+        work();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), work);
+    }
+}
+
 /// Called on the GUI (main) thread when a confirmation prompt becomes active.
 /// Consumes any snapshot captured by `fp_macos_wake_from_background`, or
 /// captures and activates immediately if not already woken.
 void fp_macos_activate_for_prompt(
     int32_t *out_prev_pid,
     bool *out_was_minimized,
+    bool *out_was_hidden,
     bool *out_was_focused
 ) {
-    FpMacosWindowSnapshot snap = {0, false, false};
+    FpMacosWindowSnapshot snap = {0, false, false, false};
     if ([NSThread isMainThread]) {
         if (g_has_pending_snapshot) {
             snap = g_pending_snapshot;
@@ -102,6 +126,7 @@ void fp_macos_activate_for_prompt(
     }
     if (out_prev_pid) *out_prev_pid = snap.prev_pid;
     if (out_was_minimized) *out_was_minimized = snap.was_minimized;
+    if (out_was_hidden) *out_was_hidden = snap.was_hidden;
     if (out_was_focused) *out_was_focused = snap.was_focused;
 }
 

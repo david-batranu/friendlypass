@@ -811,6 +811,7 @@ pub fn pump(app: &mut App, ctx: &egui::Context) {
             app.focus_password = true;
             app.unlock_error.clear();
             app.status = "Unlock friendlypass to use the browser extension".into();
+            app.hidden_to_tray = false;
             app.window_focus.raise_for_unlock(ctx);
         }
         ctx.request_repaint();

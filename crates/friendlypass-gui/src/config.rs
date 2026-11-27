@@ -97,6 +97,11 @@ pub struct Preferences {
     /// Windows only: store the auto-unlock secret in a DPAPI-protected file
     /// instead of Credential Manager (for accounts without a login password).
     pub windows_dpapi_fallback: bool,
+    /// Start minimized in the taskbar / Dock instead of opening on top.
+    pub start_minimized: bool,
+    /// Hide the window to the notification area / menu bar when closing the
+    /// window instead of quitting the application.
+    pub close_to_tray: bool,
     /// Light, dark, or follow the operating system.
     pub theme: crate::theme::ThemeChoice,
     /// Clear the clipboard a while after copying a value into it (only if it
@@ -142,6 +147,8 @@ impl Default for Preferences {
             last_db: None,
             list_view: true,
             windows_dpapi_fallback: false,
+            start_minimized: false,
+            close_to_tray: false,
             theme: crate::theme::ThemeChoice::System,
             clipboard_clear: true,
             clipboard_clear_secs: DEFAULT_CLIPBOARD_CLEAR_SECS,
@@ -419,6 +426,28 @@ mod tests {
         std::fs::write(&file, br#"{"recent":[]}"#).unwrap();
         let old = Preferences::load(&file);
         assert!(old.clipboard_clear && old.clipboard_clear_secs == 30 && !old.auto_lock);
+    }
+
+    #[test]
+    fn startup_window_preferences_default_off_and_roundtrip() {
+        let prefs = Preferences::default();
+        assert!(!prefs.start_minimized);
+        assert!(!prefs.close_to_tray);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.json");
+        let mut prefs = Preferences::default();
+        prefs.start_minimized = true;
+        prefs.close_to_tray = true;
+        prefs.save(&file).unwrap();
+        let loaded = Preferences::load(&file);
+        assert!(loaded.start_minimized);
+        assert!(loaded.close_to_tray);
+
+        std::fs::write(&file, br#"{"recent":[]}"#).unwrap();
+        let old = Preferences::load(&file);
+        assert!(!old.start_minimized);
+        assert!(!old.close_to_tray);
     }
 
     #[test]

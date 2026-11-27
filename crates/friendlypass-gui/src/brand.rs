@@ -17,8 +17,13 @@ pub const SLUG: &str = "friendlypass";
 /// The cropped app icon (512×512 RGBA, squircle with transparent
 /// corners), embedded straight into the binary so the binary is self
 /// contained and does not need `packaging/` on disk at runtime. The same
-/// artwork is used for the macOS `AppIcon.icns` and the Linux desktop icon.
+/// artwork is used for the macOS `AppIcon.icns`, the Windows `app-icon.ico`,
+/// and the Linux desktop icon.
 pub const ICON_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
+
+/// Multi-resolution Windows icon (16..256 px), also embedded into
+/// `friendlypass-gui.exe` as PE resource ID `1` via `build.rs`.
+pub const ICON_ICO: &[u8] = include_bytes!("../assets/app-icon.ico");
 
 /// Decode [`ICON_PNG`] into something egui can upload as a window icon.
 pub fn window_icon() -> Option<egui::IconData> {
@@ -48,5 +53,14 @@ mod tests {
         // The centre pixel is opaque artwork.
         let centre = ((256 * 512 + 256) * 4 + 3) as usize;
         assert_eq!(icon.rgba[centre], 255);
+    }
+
+    #[test]
+    fn windows_ico_asset_decodes_cleanly() {
+        let img = image::load_from_memory_with_format(ICON_ICO, image::ImageFormat::Ico)
+            .expect("embedded Windows .ico decodes")
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        assert!(w >= 16 && w == h, "expected square icon, got {w}x{h}");
     }
 }

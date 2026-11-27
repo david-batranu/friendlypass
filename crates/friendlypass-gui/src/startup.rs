@@ -244,43 +244,97 @@ fn set_macos_launch_at_login(enabled: bool) -> Result<PathBuf> {
 }
 
 #[cfg(windows)]
+fn windows_run_subkey() -> &'static str {
+    r"Software\Microsoft\Windows\CurrentVersion\Run"
+}
+
+#[cfg(windows)]
 fn windows_run_key() -> &'static str {
     r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
 }
 
 #[cfg(windows)]
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
 fn set_windows_launch_at_login(enabled: bool) -> Result<PathBuf> {
-    let key = windows_run_key();
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
+        HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+    };
+
+    let subkey_w = to_wide(windows_run_subkey());
+    let name_w = to_wide(crate::brand::NAME);
+
     if enabled {
         let exe = std::env::current_exe().context("unable to find the executable")?;
         let value = format!("\"{}\"", exe.display());
-        let out = std::process::Command::new("reg")
-            .args([
-                "add",
-                key,
-                "/v",
-                crate::brand::NAME,
-                "/t",
-                "REG_SZ",
-                "/d",
-                &value,
-                "/f",
-            ])
-            .output()
-            .context("unable to run reg.exe")?;
-        if !out.status.success() {
-            anyhow::bail!(
-                "reg add failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+        let value_w = to_wide(&value);
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let status = unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                subkey_w.as_ptr(),
+                0,
+                std::ptr::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_SET_VALUE,
+                std::ptr::null(),
+                &mut hkey,
+                std::ptr::null_mut(),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            anyhow::bail!("RegCreateKeyExW failed with error {status}");
+        }
+        let set_status = unsafe {
+            let bytes = std::slice::from_raw_parts(
+                value_w.as_ptr() as *const u8,
+                value_w.len() * std::mem::size_of::<u16>(),
             );
+            let res = RegSetValueExW(
+                hkey,
+                name_w.as_ptr(),
+                0,
+                REG_SZ,
+                bytes.as_ptr(),
+                bytes.len() as u32,
+            );
+            RegCloseKey(hkey);
+            res
+        };
+        if set_status != ERROR_SUCCESS {
+            anyhow::bail!("RegSetValueExW failed with error {set_status}");
         }
     } else {
-        // Ignore "not found": disabling an already disabled entry is fine.
-        let _ = std::process::Command::new("reg")
-            .args(["delete", key, "/v", crate::brand::NAME, "/f"])
-            .output();
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let status = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                subkey_w.as_ptr(),
+                0,
+                KEY_SET_VALUE,
+                &mut hkey,
+            )
+        };
+        if status == ERROR_SUCCESS {
+            let del_status = unsafe {
+                let res = RegDeleteValueW(hkey, name_w.as_ptr());
+                RegCloseKey(hkey);
+                res
+            };
+            // Ignore "not found": disabling an already disabled entry is fine.
+            if del_status != ERROR_SUCCESS && del_status != ERROR_FILE_NOT_FOUND {
+                anyhow::bail!("RegDeleteValueW failed with error {del_status}");
+            }
+        } else if status != ERROR_FILE_NOT_FOUND {
+            anyhow::bail!("RegOpenKeyExW failed with error {status}");
+        }
     }
-    Ok(PathBuf::from(key))
+    Ok(PathBuf::from(windows_run_key()))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -325,11 +379,40 @@ pub fn launch_at_login_enabled() -> bool {
     }
     #[cfg(windows)]
     {
-        return std::process::Command::new("reg")
-            .args(["query", windows_run_key(), "/v", crate::brand::NAME])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+        };
+
+        let subkey_w = to_wide(windows_run_subkey());
+        let name_w = to_wide(crate::brand::NAME);
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let status = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                subkey_w.as_ptr(),
+                0,
+                KEY_QUERY_VALUE,
+                &mut hkey,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return false;
+        }
+        let exists = unsafe {
+            let mut size = 0u32;
+            let res = RegQueryValueExW(
+                hkey,
+                name_w.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            );
+            RegCloseKey(hkey);
+            res == ERROR_SUCCESS
+        };
+        return exists;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
